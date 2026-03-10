@@ -1,6 +1,6 @@
 import json
 
-from knowledge_miner.ai_filter import AIRelevanceFilter
+from knowledge_miner.ai_filter import AIRelevanceFilter, describe_ai_filter_runtime
 
 
 def test_ai_filter_parse_result_valid():
@@ -15,3 +15,16 @@ def test_ai_filter_disabled_returns_none():
     out = f.evaluate(title="UPW paper", abstract="...", base_score=5.0, base_decision="auto_accept")
     assert out is None
 
+
+def test_describe_ai_filter_runtime_states():
+    active, warning = describe_ai_filter_runtime(use_ai_filter=False, api_key=None)
+    assert active is False
+    assert warning is not None
+
+    active, warning = describe_ai_filter_runtime(use_ai_filter=True, api_key=None)
+    assert active is False
+    assert warning is not None
+
+    active, warning = describe_ai_filter_runtime(use_ai_filter=True, api_key="token")
+    assert active is True
+    assert warning is None

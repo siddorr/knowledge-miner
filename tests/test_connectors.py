@@ -1,4 +1,5 @@
 import knowledge_miner.connectors as connectors
+from knowledge_miner.domain_allowlist import is_allowed_url
 
 
 def test_openalex_abstract_reconstruction():
@@ -87,3 +88,53 @@ def test_semantic_scholar_citation_expansion_mapping():
     assert backward[0]["semantic_scholar_id"] == "S2_REF_1"
     assert forward[0]["discovery_method"] == "forward_citation"
     assert forward[0]["semantic_scholar_id"] == "S2_CIT_1"
+
+
+def test_brave_allowlist_filters_non_allowed_domains(tmp_path):
+    connector = connectors.BraveConnector()
+    allowlist_path = tmp_path / "domains_allowlist.txt"
+    allowlist_path.write_text("ieee.org\nacm.org\n", encoding="utf-8")
+
+    def fake_request_json(method, url, *, params=None, headers=None):  # noqa: ANN001
+        del method, url, params, headers
+        return {
+            "web": {
+                "results": [
+                    {
+                        "title": "Allowed IEEE result",
+                        "url": "https://ieee.org/doc/1",
+                        "description": "UPW cleaning",
+                        "age": "Published 2024-01-01",
+                    },
+                    {
+                        "title": "Denied random blog",
+                        "url": "https://random-blog.example/post",
+                        "description": "Not allowlisted",
+                        "age": "Published 2024-01-01",
+                    },
+                ]
+            }
+        }
+
+    original_request = connectors._request_json  # noqa: SLF001
+    original_key = connectors.settings.brave_api_key
+    original_path = connectors.settings.domains_allowlist_path
+    try:
+        connectors._request_json = fake_request_json  # noqa: SLF001
+        object.__setattr__(connectors.settings, "brave_api_key", "x")
+        object.__setattr__(connectors.settings, "domains_allowlist_path", str(allowlist_path))
+        out = connector.search("upw", run_id="r1", iteration=1)
+    finally:
+        connectors._request_json = original_request  # noqa: SLF001
+        object.__setattr__(connectors.settings, "brave_api_key", original_key)
+        object.__setattr__(connectors.settings, "domains_allowlist_path", original_path)
+
+    assert len(out) == 1
+    assert out[0]["url"] == "https://ieee.org/doc/1"
+
+
+def test_is_allowed_url_supports_subdomains():
+    allowlist = frozenset({"ieee.org"})
+    assert is_allowed_url("https://ieee.org/x", allowlist)
+    assert is_allowed_url("https://conf.ieee.org/x", allowlist)
+    assert not is_allowed_url("https://example.org/x", allowlist)

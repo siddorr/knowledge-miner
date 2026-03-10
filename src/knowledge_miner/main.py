@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import require_api_key
+from .config import is_sqlite_url, settings
 from .db import Base, engine, get_db
 from .discovery import create_run, enqueue_run, export_sources_raw, review_source
 from .models import Run, Source
@@ -21,9 +24,18 @@ from .schemas import (
 )
 
 app = FastAPI(title="UPW Literature Discovery Engine", version="0.1.0")
+logger = logging.getLogger("knowledge_miner")
 
 # Create tables on module load for v1 local/dev simplicity.
 Base.metadata.create_all(bind=engine)
+
+
+@app.on_event("startup")
+def validate_runtime_config() -> None:
+    if settings.app_env.lower() in {"production", "prod"} and is_sqlite_url(settings.database_url):
+        logger.warning(
+            "Production mode is configured with SQLite. Use PostgreSQL DATABASE_URL for v1 production baseline."
+        )
 
 
 @app.get("/healthz")
@@ -61,6 +73,8 @@ def get_run_status(
         accepted_total=run.accepted_total,
         expanded_candidates_total=run.expanded_candidates_total,
         citation_edges_total=run.citation_edges_total,
+        ai_filter_active=run.ai_filter_active,
+        ai_filter_warning=run.ai_filter_warning,
         new_accept_rate=float(run.new_accept_rate) if run.new_accept_rate is not None else None,
     )
 

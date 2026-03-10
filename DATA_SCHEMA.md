@@ -24,7 +24,7 @@ Indexes:
 - `(run_id, iteration)`
 - `(run_id, accepted)`
 - `(doi)`
-- title trigram index
+- title trigram index (PostgreSQL `pg_trgm`; SQLite uses standard title btree index fallback)
 
 ## citation_edges table
 

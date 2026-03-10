@@ -20,6 +20,8 @@ class RunStatusResponse(BaseModel):
     accepted_total: int
     expanded_candidates_total: int
     citation_edges_total: int
+    ai_filter_active: bool
+    ai_filter_warning: str | None
     new_accept_rate: float | None
 
 

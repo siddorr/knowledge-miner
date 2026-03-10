@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import httpx
 
 from .config import settings
+from .domain_allowlist import is_allowed_url, load_domain_allowlist
 
 if TYPE_CHECKING:
     from .models import Source
@@ -261,16 +262,20 @@ class BraveConnector:
         headers = {"Accept": "application/json", "X-Subscription-Token": settings.brave_api_key}
         response = _request_json("GET", url, params=params, headers=headers)
         rows = response.get("web", {}).get("results", [])
+        allowlist = load_domain_allowlist(settings.domains_allowlist_path)
         out: list[dict] = []
         for row in rows:
             title = row.get("title")
+            row_url = row.get("url")
             if not title:
+                continue
+            if not is_allowed_url(row_url, allowlist):
                 continue
             out.append(
                 {
                     "title": title,
                     "year": _extract_year(row.get("age")),
-                    "url": row.get("url"),
+                    "url": row_url,
                     "doi": None,
                     "abstract": row.get("description"),
                     "source": self.name,

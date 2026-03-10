@@ -4,9 +4,21 @@ import os
 from dataclasses import dataclass
 
 
+def _default_database_url() -> str:
+    # Keep local development friction low while aligning production default with spec.
+    explicit = os.getenv("DATABASE_URL")
+    if explicit:
+        return explicit
+    app_env = os.getenv("APP_ENV", "development").lower()
+    if app_env in {"production", "prod"}:
+        return "postgresql+psycopg://knowledge_miner:knowledge_miner@localhost:5432/knowledge_miner"
+    return "sqlite:///./knowledge_miner.db"
+
+
 @dataclass(frozen=True)
 class Settings:
-    database_url: str = os.getenv("DATABASE_URL", "sqlite:///./knowledge_miner.db")
+    app_env: str = os.getenv("APP_ENV", "development")
+    database_url: str = _default_database_url()
     api_token: str = os.getenv("API_TOKEN", "dev-token")
     artifacts_dir: str = os.getenv("ARTIFACTS_DIR", "./artifacts")
     use_mock_connectors: bool = os.getenv("USE_MOCK_CONNECTORS", "true").lower() == "true"
@@ -23,6 +35,11 @@ class Settings:
     ai_min_confidence_override: float = float(os.getenv("AI_MIN_CONFIDENCE_OVERRIDE", "0.6"))
     citation_expansion_limit_per_direction: int = int(os.getenv("CITATION_EXPANSION_LIMIT_PER_DIRECTION", "50"))
     citation_expansion_parent_cap_per_iteration: int = int(os.getenv("CITATION_EXPANSION_PARENT_CAP_PER_ITERATION", "10"))
+    domains_allowlist_path: str = os.getenv("DOMAINS_ALLOWLIST_PATH", "./config/domains_allowlist.txt")
 
 
 settings = Settings()
+
+
+def is_sqlite_url(database_url: str) -> bool:
+    return database_url.strip().lower().startswith("sqlite")

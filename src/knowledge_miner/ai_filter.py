@@ -18,6 +18,14 @@ class AIRelevanceResult:
     reason: str | None = None
 
 
+def describe_ai_filter_runtime(*, use_ai_filter: bool, api_key: str | None) -> tuple[bool, str | None]:
+    if not use_ai_filter:
+        return False, "AI filter disabled (USE_AI_FILTER=false); heuristic filtering only."
+    if not api_key:
+        return False, "AI filter requested but AI_API_KEY is missing; heuristic filtering only."
+    return True, None
+
+
 class AIRelevanceFilter:
     def __init__(
         self,
@@ -98,4 +106,3 @@ class AIRelevanceFilter:
             raise ValueError("invalid_ai_confidence")
         reason = data.get("reason")
         return AIRelevanceResult(decision=decision, confidence=confidence, reason=reason if isinstance(reason, str) else None)
-

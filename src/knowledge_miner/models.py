@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     Numeric,
@@ -37,6 +38,8 @@ class Run(Base):
     accepted_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     expanded_candidates_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     citation_edges_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ai_filter_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ai_filter_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     new_accept_rate: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
@@ -57,10 +60,16 @@ class Source(Base):
             "review_status IN ('auto_accept','auto_reject','needs_review','human_accept','human_reject')",
             name="ck_sources_review_status_values",
         ),
+        Index("ix_sources_run_id_iteration", "run_id", "iteration"),
+        Index("ix_sources_run_id_accepted", "run_id", "accepted"),
+        Index("ix_sources_doi", "doi"),
+        # PostgreSQL can apply trigram ops via migration; this generic index keeps
+        # SQLite/local behavior consistent for create_all paths.
+        Index("ix_sources_title", "title"),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -71,7 +80,7 @@ class Source(Base):
     source_native_id: Mapped[str | None] = mapped_column(String, nullable=True)
     patent_office: Mapped[str | None] = mapped_column(String, nullable=True)
     patent_number: Mapped[str | None] = mapped_column(String, nullable=True)
-    iteration: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    iteration: Mapped[int] = mapped_column(Integer, nullable=False)
     discovery_method: Mapped[str] = mapped_column(String, nullable=False)
     relevance_score: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
     accepted: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -79,6 +88,7 @@ class Source(Base):
     ai_decision: Mapped[str | None] = mapped_column(String, nullable=True)
     ai_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
     parent_source_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    provenance_history: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 

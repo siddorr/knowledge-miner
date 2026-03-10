@@ -1,0 +1,15 @@
+# Allowlisted vendor and conference/reference domains for Brave web ingestion
+ieee.org
+acm.org
+springer.com
+nature.com
+wiley.com
+sciencedirect.com
+elsevier.com
+arxiv.org
+usenix.org
+semiconductor-digest.com
+appliedmaterials.com
+lamresearch.com
+asml.com
+semiengineering.com

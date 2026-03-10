@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, datetime
 import json
+import time
 from pathlib import Path
 import threading
 from typing import Iterable
@@ -11,18 +12,23 @@ import uuid
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from .ai_filter import AIRelevanceFilter
+from .ai_filter import AIRelevanceFilter, describe_ai_filter_runtime
 from .config import settings
 from .connectors import Connector, RetryableProviderError, build_connectors
 from .db import SessionLocal
 from .dedup import canonical_id, canonicalize_url, is_fuzzy_duplicate
 from .iteration import build_next_queries, extract_keywords
 from .models import CitationEdge, Keyword, Run, Source
+from .observability import RunObservability
 from .retry import retry_call
 from .scoring import decision_from_score, score_text
 
 
 def create_run(db: Session, seed_queries: list[str], max_iterations: int) -> Run:
+    ai_filter_active, ai_filter_warning = describe_ai_filter_runtime(
+        use_ai_filter=settings.use_ai_filter,
+        api_key=settings.ai_api_key,
+    )
     run = Run(
         id=f"run_{uuid.uuid4().hex[:12]}",
         status="queued",
@@ -32,6 +38,8 @@ def create_run(db: Session, seed_queries: list[str], max_iterations: int) -> Run
         accepted_total=0,
         expanded_candidates_total=0,
         citation_edges_total=0,
+        ai_filter_active=ai_filter_active,
+        ai_filter_warning=ai_filter_warning,
     )
     db.add(run)
     db.commit()
@@ -53,9 +61,20 @@ def execute_run_by_id(run_id: str) -> None:
 
 
 def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None) -> None:
+    observability = RunObservability()
     try:
         run.status = "running"
         db.commit()
+        if run.ai_filter_warning:
+            observability.record_provider_call(
+                run_id=run.id,
+                iteration=0,
+                provider="ai_filter",
+                operation="runtime_warning",
+                latency_ms=0.0,
+                ok=False,
+                error=run.ai_filter_warning,
+            )
 
         queries = list(run.seed_queries)
         low_yield_streak = 0
@@ -64,8 +83,15 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
         active_connectors = connectors or build_connectors()
         connectors_by_name = {c.name: c for c in active_connectors}
         for iteration in range(1, run.max_iterations + 1):
-            candidates = _collect_candidates(run.id, queries, iteration, active_connectors)
-            new_accepted_unique = _ingest_candidates(db, run.id, iteration, candidates, ai_filter=ai_filter)
+            candidates = _collect_candidates(run.id, queries, iteration, active_connectors, observability=observability)
+            new_accepted_unique = _ingest_candidates(
+                db,
+                run.id,
+                iteration,
+                candidates,
+                ai_filter=ai_filter,
+                observability=observability,
+            )
             citation_candidates, citation_edges = _expand_citations_for_iteration(
                 db,
                 run.id,
@@ -73,9 +99,17 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
                 connectors_by_name,
                 per_direction_limit=settings.citation_expansion_limit_per_direction,
                 parent_cap=settings.citation_expansion_parent_cap_per_iteration,
+                observability=observability,
             )
             if citation_candidates:
-                new_accepted_unique += _ingest_candidates(db, run.id, iteration, citation_candidates, ai_filter=ai_filter)
+                new_accepted_unique += _ingest_candidates(
+                    db,
+                    run.id,
+                    iteration,
+                    citation_candidates,
+                    ai_filter=ai_filter,
+                    observability=observability,
+                )
                 run.expanded_candidates_total += len(citation_candidates)
             if citation_edges:
                 persisted_edges = _persist_citation_edges(db, run.id, iteration, citation_edges)
@@ -101,12 +135,15 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
         run.status = "completed"
         run.updated_at = datetime.now(UTC)
         db.commit()
+        observability.emit_run_summary(run_id=run.id, status=run.status, current_iteration=run.current_iteration)
     except Exception as exc:  # pragma: no cover - defensive failure path
         db.rollback()
         run.status = "failed"
         run.error_message = str(exc)
         run.updated_at = datetime.now(UTC)
         db.commit()
+        observability.inc("api_errors")
+        observability.emit_run_summary(run_id=run.id, status=run.status, current_iteration=run.current_iteration)
         raise
 
 
@@ -154,6 +191,7 @@ def export_sources_raw(db: Session, run_id: str) -> Path:
                 "accepted": s.accepted,
                 "review_status": s.review_status,
                 "parent_source": s.parent_source_id,
+                "provenance_history": s.provenance_history,
             }
             for s in sources
         ],
@@ -177,16 +215,46 @@ def _load_run_seed_queries(db: Session, run_id: str) -> list[str]:
     return list(run.seed_queries)
 
 
-def _collect_candidates(run_id: str, queries: list[str], iteration: int, connectors: list[Connector]) -> list[dict]:
+def _collect_candidates(
+    run_id: str,
+    queries: list[str],
+    iteration: int,
+    connectors: list[Connector],
+    *,
+    observability: RunObservability,
+) -> list[dict]:
     candidates: list[dict] = []
     for query in queries[:10]:
         for connector in connectors:
-            rows = retry_call(
-                lambda: connector.search(query, run_id=run_id, iteration=iteration),
-                attempts=3,
-                delays=(1.0, 2.0, 4.0),
-                should_retry=lambda exc: isinstance(exc, RetryableProviderError),
-            )
+            started = time.perf_counter()
+            try:
+                rows = retry_call(
+                    lambda: connector.search(query, run_id=run_id, iteration=iteration),
+                    attempts=3,
+                    delays=(1.0, 2.0, 4.0),
+                    should_retry=lambda exc: isinstance(exc, RetryableProviderError),
+                )
+                observability.record_provider_call(
+                    run_id=run_id,
+                    iteration=iteration,
+                    provider=connector.name,
+                    operation="search",
+                    latency_ms=(time.perf_counter() - started) * 1000.0,
+                    ok=True,
+                )
+            except Exception as exc:
+                observability.inc("api_errors")
+                observability.record_provider_call(
+                    run_id=run_id,
+                    iteration=iteration,
+                    provider=connector.name,
+                    operation="search",
+                    latency_ms=(time.perf_counter() - started) * 1000.0,
+                    ok=False,
+                    error=str(exc),
+                )
+                continue
+            observability.inc("fetched", len(rows))
             candidates.extend(rows)
     return candidates
 
@@ -199,6 +267,7 @@ def _expand_citations_for_iteration(
     *,
     per_direction_limit: int,
     parent_cap: int,
+    observability: RunObservability,
 ) -> tuple[list[dict], list[tuple[str, str, str]]]:
     parents = db.scalars(
         select(Source)
@@ -213,16 +282,43 @@ def _expand_citations_for_iteration(
         connector = connectors_by_name.get(parent.source)
         if connector is None:
             continue
-        backward, forward = retry_call(
-            lambda: connector.expand_citations(parent, per_direction_limit=per_direction_limit, iteration=iteration),
-            attempts=3,
-            delays=(1.0, 2.0, 4.0),
-            should_retry=lambda exc: isinstance(exc, RetryableProviderError),
-        )
-        for c in backward:
+        internal_limit = max(per_direction_limit * 3, per_direction_limit)
+        started = time.perf_counter()
+        try:
+            backward, forward = retry_call(
+                lambda: connector.expand_citations(parent, per_direction_limit=internal_limit, iteration=iteration),
+                attempts=3,
+                delays=(1.0, 2.0, 4.0),
+                should_retry=lambda exc: isinstance(exc, RetryableProviderError),
+            )
+            observability.record_provider_call(
+                run_id=run_id,
+                iteration=iteration,
+                provider=connector.name,
+                operation="expand_citations",
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+                ok=True,
+            )
+        except Exception as exc:
+            observability.inc("api_errors")
+            observability.record_provider_call(
+                run_id=run_id,
+                iteration=iteration,
+                provider=connector.name,
+                operation="expand_citations",
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+                ok=False,
+                error=str(exc),
+            )
+            continue
+
+        ranked_backward = _rank_citation_candidates(parent, backward)[: max(0, per_direction_limit)]
+        ranked_forward = _rank_citation_candidates(parent, forward)[: max(0, per_direction_limit)]
+        observability.inc("fetched", len(ranked_backward) + len(ranked_forward))
+        for c in ranked_backward:
             expanded_candidates.append(c)
             edge_triples.append((parent.id, _candidate_target_id(c), "cites"))
-        for c in forward:
+        for c in ranked_forward:
             expanded_candidates.append(c)
             edge_triples.append((parent.id, _candidate_target_id(c), "cited_by"))
     return expanded_candidates, edge_triples
@@ -243,6 +339,29 @@ def _candidate_target_id(candidate: dict) -> str:
         patent_office=candidate.get("patent_office"),
         patent_number=candidate.get("patent_number"),
     )
+
+
+def _rank_citation_candidates(parent: Source, candidates: list[dict]) -> list[dict]:
+    parent_tokens = _citation_tokens(parent.title, parent.abstract)
+
+    def sort_key(candidate: dict) -> tuple:
+        title = str(candidate.get("title") or "")
+        abstract = candidate.get("abstract")
+        year = candidate.get("year") if isinstance(candidate.get("year"), int) else 0
+        overlap = len(parent_tokens & _citation_tokens(title, abstract))
+        has_abstract = int(bool(abstract))
+        has_doi = int(bool(candidate.get("doi")))
+        # Deterministic tie-break with canonical id and lowercased title.
+        tie_id = _candidate_target_id(candidate)
+        return (-has_abstract, -has_doi, -year, -overlap, title.lower(), tie_id)
+
+    return sorted(candidates, key=sort_key)
+
+
+def _citation_tokens(title: str | None, abstract: str | None) -> set[str]:
+    text = f"{title or ''} {abstract or ''}".lower()
+    tokens = {"".join(ch for ch in token if ch.isalnum()) for token in text.split()}
+    return {t for t in tokens if len(t) >= 3}
 
 
 def _persist_citation_edges(db: Session, run_id: str, iteration: int, edges: list[tuple[str, str, str]]) -> int:
@@ -268,6 +387,7 @@ def _ingest_candidates(
     candidates: Iterable[dict],
     *,
     ai_filter: AIRelevanceFilter | None = None,
+    observability: RunObservability | None = None,
 ) -> int:
     new_accepted_unique = 0
     pending_source_ids: set[str] = set()
@@ -286,12 +406,16 @@ def _ingest_candidates(
         )
 
         if sid in pending_source_ids:
+            if observability is not None:
+                observability.inc("dedup")
             continue
 
         existing = _find_existing_source(db, run_id, c, sid)
         if existing is not None:
-            _merge_source(existing, c)
+            _merge_source(existing, c, iteration=iteration)
             db.add(existing)
+            if observability is not None:
+                observability.inc("dedup")
             continue
 
         score = score_text(c["title"], c.get("abstract"))
@@ -313,6 +437,10 @@ def _ingest_candidates(
                     ai_confidence = ai_result.confidence
         if accepted:
             new_accepted_unique += 1
+            if observability is not None:
+                observability.inc("accepted")
+        elif observability is not None:
+            observability.inc("rejected")
 
         source = Source(
             id=sid,
@@ -335,6 +463,7 @@ def _ingest_candidates(
             ai_decision=ai_decision,
             ai_confidence=ai_confidence,
             parent_source_id=c.get("parent_source_id"),
+            provenance_history=[_provenance_event(c, iteration)],
         )
         db.add(source)
         pending_source_ids.add(sid)
@@ -399,7 +528,7 @@ def _find_existing_source(db: Session, run_id: str, candidate: dict, candidate_i
     return None
 
 
-def _merge_source(target: Source, incoming: dict) -> None:
+def _merge_source(target: Source, incoming: dict, *, iteration: int) -> None:
     # Keep the more complete record when dedup identifies the same source.
     if not target.abstract and incoming.get("abstract"):
         target.abstract = incoming["abstract"]
@@ -415,7 +544,21 @@ def _merge_source(target: Source, incoming: dict) -> None:
         target.patent_office = incoming["patent_office"]
     if not target.patent_number and incoming.get("patent_number"):
         target.patent_number = incoming["patent_number"]
+    history = list(target.provenance_history or [])
+    history.append(_provenance_event(incoming, iteration))
+    target.provenance_history = history
     target.updated_at = datetime.now(UTC)
+
+
+def _provenance_event(candidate: dict, iteration: int) -> dict:
+    return {
+        "recorded_at": datetime.now(UTC).isoformat(),
+        "iteration": iteration,
+        "discovery_method": candidate.get("discovery_method"),
+        "parent_source_id": candidate.get("parent_source_id"),
+        "provider": candidate.get("source"),
+        "source_native_id": candidate.get("source_native_id"),
+    }
 
 
 def _count_accepted(db: Session, run_id: str) -> int:
