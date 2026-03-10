@@ -16,6 +16,7 @@ v1 deploys as a single Python service with PostgreSQL and batch-style run execut
 10. Keyword extraction
 11. Query generation
 12. Next iteration
+13. Document acquisition (Phase 2): PDF-first download, HTML fallback, artifact indexing
 
 ## Runtime Model
 
@@ -34,5 +35,15 @@ v1 deploys as a single Python service with PostgreSQL and batch-style run execut
 5. Iteration planner (keyword extraction and query generation)
 6. Persistence layer (PostgreSQL)
 7. Export layer (`sources_raw.json`)
+8. Acquisition worker layer (download jobs, retries, resume)
+9. Artifact storage layer (filesystem paths + DB metadata index)
+
+## Phase 2 Acquisition Runtime
+
+1. `POST /v1/acquisition/runs` queues acquisition for a completed discovery run.
+2. Background worker resolves URLs and downloads files per source.
+3. Format policy: PDF preferred, HTML snapshot fallback.
+4. Progress and outcomes persist in acquisition tables.
+5. Manifest endpoint exports complete artifact listing for downstream parsing.
 
 See `V1_SPEC.md` for detailed contracts.

@@ -53,40 +53,51 @@
 
 ## Phase 2 Implementation Tasks (Document Acquisition)
 
-1. [ ] Add acquisition API endpoints
+Decision lock (approved):
+- Access policy: best-effort all links
+- Storage: filesystem + DB index
+- Formats: PDF first, HTML fallback
+
+1. [ ] P0 - Add acquisition API endpoints
 - `POST /v1/acquisition/runs`
 - `GET /v1/acquisition/runs/{acq_run_id}`
 - `GET /v1/acquisition/runs/{acq_run_id}/items`
 - `GET /v1/acquisition/artifacts/{artifact_id}`
 - `GET /v1/acquisition/runs/{acq_run_id}/manifest`
 
-2. [ ] Add acquisition database schema and migrations
+2. [ ] P0 - Add acquisition database schema and migrations
 - `acquisition_runs`
 - `acquisition_items`
 - `artifacts`
 - Required indexes for status/source/checksum lookups
 
-3. [ ] Implement URL resolution and download engine
+3. [ ] P0 - Implement URL resolution and download engine
 - Candidate URL resolution from DOI/source metadata
 - PDF-first strategy with HTML fallback
 - File validation (content-type, size limits)
 - SHA256 checksuming
 
-4. [ ] Add retry/resume behavior
+4. [ ] P0 - Add retry/resume behavior
 - Per-download retry policy (`3 attempts`, `1/2/4s`)
 - `retry_failed_only` mode
 - Skip already-successful items on resume
 
-5. [ ] Add filesystem artifact layout and manifest generation
+5. [ ] P1 - Add filesystem artifact layout and manifest generation
 - `acquisition/{acq_run_id}/{source_id}/source.pdf|source.html`
 - Run-level `manifest.json`
 - Artifact metadata parity between DB and filesystem
 
-6. [ ] Add tests for acquisition stage
+6. [ ] P1 - Add tests for acquisition stage
 - Unit: URL selection, content classification, checksum, status transitions
 - Integration: mixed success/failure run, resume behavior
 - API: endpoint semantics, auth/rate-limit/error consistency
 
-7. [ ] Add observability for acquisition stage
+7. [ ] P1 - Add observability for acquisition stage
 - Structured logs (`acq_run_id`, `source_id`, `domain`, `latency_ms`, `status`)
 - Metrics counters and latency histogram
+
+Definition of done for Phase 2:
+1. Acquisition run can process accepted discovery sources end-to-end.
+2. Each successful artifact has checksum, size, MIME, and deterministic path.
+3. Failed/partial statuses are queryable via API and resumable with retry mode.
+4. Manifest content matches DB artifact records for the same run.
