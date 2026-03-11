@@ -35,6 +35,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Copy ID" in body
     assert "Context:" in body
     assert "__KM_HMI_DEFAULT_TOKEN__" in body
+    assert "__KM_HMI_LAUNCH_SECTION__" in body
     assert "Load Download Issues" in body
     assert "Export CSV" in body
     assert "Upload PDF" in body
@@ -88,6 +89,7 @@ def test_hmi_static_js_served():
     assert "emitTelemetryEvent" in body
     assert "emitDebouncedInputTelemetry" in body
     assert "initTelemetry" in body
+    assert "LAUNCH_SECTION" in body
     assert "updateStatusStrip" in body
 
 

@@ -88,6 +88,22 @@ Status:
     - run AI enabled + missing/invalid key -> deterministic `needs_review` + visible warning + AI error metrics
     - run AI disabled + global AI enabled -> no AI calls, policy remains manual/heuristic fallback
 
+6. [ ] P0 - Fix runtime DB mismatch causing `no such table: runs`
+- Goal: prevent server from attaching to an uninitialized SQLite file and breaking review/acquisition flows after restart.
+- Problem observed:
+  - `2026-03-11 23:55:17` in `logs/knowledge_miner.log`: `sqlite3.OperationalError: no such table: runs`
+  - HMI then showed `run_not_found`/`404` and actions failed.
+- Tasks:
+  - Standardize dev SQLite path to an absolute project path (remove CWD-dependent ambiguity).
+  - Add startup DB readiness check for required tables (`runs`, `sources`, `acquisition_runs`, `parse_runs`).
+  - Add explicit startup error/warning when schema is missing and surface it in `/v1/system/status`.
+  - Add optional auto-migrate-on-start flag for local development only.
+  - Improve API error mapping so schema-missing state is returned as a clear operator-facing error (not generic 500/404 cascade).
+  - Add tests:
+    - missing schema DB -> deterministic not-ready status + clear message
+    - migrated DB -> healthy status and run lookup works
+    - restart keeps same DB target path
+
 ## Must-Fix (Spec Compliance)
 
 1. [x] Align default runtime database with v1 spec
@@ -722,7 +738,7 @@ Goal:
   - one next-action button
 - Keep strip visible and synchronized across navigation.
 
-3. [ ] P0 - Add launch routing policy (no standalone dashboard first)
+3. [x] P0 - Add launch routing policy (no standalone dashboard first)
 - On `/hmi` open:
   - no topic -> `Build` in create-topic state
   - review queue exists -> `Review`

@@ -3,6 +3,7 @@ const POLL_BACKGROUND_MS = 15000;
 const TELEMETRY_INPUT_DEBOUNCE_MS = 400;
 const SYSTEM_TOKEN = typeof window !== "undefined" ? window.__KM_HMI_DEFAULT_TOKEN__ || null : null;
 const AUTH_ENABLED = typeof window !== "undefined" ? window.__KM_HMI_AUTH_ENABLED__ !== false : true;
+const LAUNCH_SECTION = typeof window !== "undefined" ? window.__KM_HMI_LAUNCH_SECTION__ || "build" : "build";
 
 const state = {
   apiKey: "",
@@ -230,9 +231,10 @@ function setContext(patch) {
 }
 
 function activeSection() {
-  const id = window.location.hash.replace("#", "") || "build";
+  const fallback = ["build", "review", "documents", "library", "advanced"].includes(LAUNCH_SECTION) ? LAUNCH_SECTION : "build";
+  const id = window.location.hash.replace("#", "") || fallback;
   const valid = ["build", "discover", "review", "documents", "library", "advanced"];
-  return valid.includes(id) ? id : "build";
+  return valid.includes(id) ? id : fallback;
 }
 
 function updateSectionVisibility() {
@@ -1041,6 +1043,9 @@ function initPagination() {
 }
 
 function init() {
+  if (!window.location.hash) {
+    window.location.hash = `#${activeSection()}`;
+  }
   initAuth();
   initTelemetry();
   updateSectionVisibility();

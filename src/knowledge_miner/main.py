@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .acquisition import (
@@ -447,11 +447,33 @@ def update_ai_filter_settings(
 
 
 @app.get("/hmi")
-def hmi_shell() -> HTMLResponse:
+def hmi_shell(db: Session = Depends(get_db)) -> HTMLResponse:
+    run_count = db.scalar(select(func.count()).select_from(Run)) or 0
+    if run_count == 0:
+        launch_section = "build"
+    else:
+        review_count = db.scalar(
+            select(func.count()).select_from(Source).where(Source.review_status == "needs_review")
+        ) or 0
+        if review_count > 0:
+            launch_section = "review"
+        else:
+            failed_docs_count = db.scalar(
+                select(func.count())
+                .select_from(AcquisitionItem)
+                .where(AcquisitionItem.status.in_(("failed", "partial")))
+            ) or 0
+            launch_section = "documents" if failed_docs_count > 0 else "build"
     template = (HMI_DIR / "index.html").read_text(encoding="utf-8")
     token_json = json.dumps(settings.hmi_api_token) if settings.auth_enabled and settings.hmi_api_token else "null"
     auth_enabled_json = "true" if settings.auth_enabled else "false"
-    html = template.replace("__HMI_DEFAULT_TOKEN_JSON__", token_json).replace("__HMI_AUTH_ENABLED__", auth_enabled_json)
+    launch_section_json = json.dumps(launch_section)
+    html = (
+        template
+        .replace("__HMI_DEFAULT_TOKEN_JSON__", token_json)
+        .replace("__HMI_AUTH_ENABLED__", auth_enabled_json)
+        .replace("__HMI_LAUNCH_SECTION_JSON__", launch_section_json)
+    )
     return HTMLResponse(content=html)
 
 
