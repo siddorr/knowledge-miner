@@ -792,7 +792,7 @@ Goal:
 - Add filters (topic/year/docs/parsed) and preview pane.
 - Keep advanced metadata hidden by default.
 
-9. [ ] P1 - Copy button consistency pass across all pages
+9. [x] P1 - Copy button consistency pass across all pages
 - One-click copy + lightweight confirmation (`Copied`) for:
   - DOI
   - title

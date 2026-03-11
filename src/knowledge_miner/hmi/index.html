@@ -146,6 +146,9 @@
           <pre id="buildDetails" class="metrics">No topic selected.</pre>
         </aside>
       </div>
+      <div class="row compact">
+        <button type="button" class="copy-value-btn" data-target-id="dashboardError" data-feedback-id="dashboardState">Copy Error</button>
+      </div>
       <p id="dashboardError" class="error"></p>
     </section>
 
@@ -186,6 +189,9 @@
         </form>
         <p id="discoverTechState" class="muted"></p>
       </details>
+      <div class="row compact">
+        <button type="button" class="copy-value-btn" data-target-id="discoverError" data-feedback-id="discoverState">Copy Error</button>
+      </div>
       <p id="discoverError" class="error"></p>
     </section>
 
@@ -249,6 +255,9 @@
         </label>
       </details>
       <p id="reviewState" class="muted"></p>
+      <div class="row compact">
+        <button type="button" class="copy-value-btn" data-target-id="reviewError" data-feedback-id="reviewState">Copy Error</button>
+      </div>
       <p id="reviewError" class="error"></p>
     </section>
 
@@ -312,6 +321,9 @@
           <input id="manualUploadSourceId" type="text" placeholder="source_id">
         </label>
       </details>
+      <div class="row compact">
+        <button type="button" class="copy-value-btn" data-target-id="documentsError" data-feedback-id="documentsState">Copy Error</button>
+      </div>
       <p id="documentsError" class="error"></p>
     </section>
 
@@ -322,6 +334,7 @@
         <label>
           Query
           <input id="searchQuery" type="text" placeholder="UPW membrane">
+          <button type="button" class="copy-value-btn" data-target-id="searchQuery" data-feedback-id="searchState">Copy</button>
         </label>
         <label>
           Limit
@@ -385,6 +398,9 @@
         <h3>Related Source Context</h3>
         <pre id="searchSourceContext" class="metrics">No source selected.</pre>
       </details>
+      <div class="row compact">
+        <button type="button" class="copy-value-btn" data-target-id="searchError" data-feedback-id="searchState">Copy Error</button>
+      </div>
       <p id="searchError" class="error"></p>
     </section>
 
@@ -528,6 +544,11 @@
           <button type="submit">Start Parse</button>
         </form>
         <p id="parseError" class="error"></p>
+        <div class="row compact">
+          <button type="button" class="copy-value-btn" data-target-id="runsError" data-feedback-id="globalSearchState">Copy Runs Error</button>
+          <button type="button" class="copy-value-btn" data-target-id="acqError" data-feedback-id="globalSearchState">Copy Acquisition Error</button>
+          <button type="button" class="copy-value-btn" data-target-id="parseError" data-feedback-id="globalSearchState">Copy Parse Error</button>
+        </div>
       </details>
     </section>
   </main>

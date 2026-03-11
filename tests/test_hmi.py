@@ -29,6 +29,9 @@ def test_hmi_shell_route_and_navigation():
     assert "Send Accepted to Documents" in body
     assert "Preview" in body
     assert "Copy DOI" in body
+    assert "Copy Error" in body
+    assert "Copy Runs Error" in body
+    assert "Copy Parse Error" in body
     assert "Documents" in body
     assert "Acquire Pending" in body
     assert "Retry Failed" in body
@@ -125,6 +128,7 @@ def test_hmi_static_js_served():
     assert "handleBulkSource" in body
     assert "sourceFingerprint" in body
     assert "handleCopyValueClick" in body
+    assert "copyFeedbackIdForTarget" in body
     assert "applyReviewDecisionToSelected" in body
     assert "sendAcceptedSelectedToDocuments" in body
     assert "documentsAcquirePending" in body

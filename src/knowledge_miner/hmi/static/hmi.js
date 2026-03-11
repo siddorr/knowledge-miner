@@ -414,16 +414,33 @@ function sourceFingerprint(value) {
   return value.trim().toLowerCase();
 }
 
-async function copyFieldValue(targetId) {
+function copyFeedbackIdForTarget(sourceNode, explicitFeedbackId = "") {
+  if (explicitFeedbackId) return explicitFeedbackId;
+  const sectionId = sourceNode?.closest("section")?.id || "";
+  if (sectionId === "review") return "reviewState";
+  if (sectionId === "documents") return "documentsState";
+  if (sectionId === "library") return "searchState";
+  if (sectionId === "discover") return "discoverState";
+  if (sectionId === "advanced") return "idCopyState";
+  return "addSourceState";
+}
+
+async function copyFieldValue(targetId, explicitFeedbackId = "", sourceNode = null) {
   const node = el(targetId);
   if (!node) return;
-  const value = String(node.value || "").trim();
-  if (!value) return;
+  const feedbackId = copyFeedbackIdForTarget(sourceNode, explicitFeedbackId);
+  const hasValue = "value" in node;
+  let value = hasValue ? String(node.value || "").trim() : "";
+  if (!value) value = String(node.textContent || "").trim();
+  if (!value) {
+    setText(feedbackId, "Nothing to copy.");
+    return;
+  }
   try {
     await navigator.clipboard.writeText(value);
-    setText("addSourceState", "Copied");
+    setText(feedbackId, "Copied");
   } catch (_err) {
-    setText("addSourceState", "Copy failed.");
+    setText(feedbackId, "Copy failed.");
   }
 }
 
@@ -1021,7 +1038,7 @@ function handleCopyValueClick(event) {
   if (!(target instanceof HTMLElement) || !target.classList.contains("copy-value-btn")) return;
   const targetId = target.dataset.targetId || "";
   if (!targetId) return;
-  copyFieldValue(targetId);
+  copyFieldValue(targetId, target.dataset.feedbackId || "", target);
 }
 
 async function loadReviewClick(event) {
@@ -1589,7 +1606,11 @@ function init() {
   addListener("bulkSourceForm", "submit", handleBulkSource);
   addListener("buildQueryForm", "submit", handleBuildQuery);
   addListener("build", "click", handleCopyValueClick);
+  addListener("discover", "click", handleCopyValueClick);
   addListener("review", "click", handleCopyValueClick);
+  addListener("documents", "click", handleCopyValueClick);
+  addListener("library", "click", handleCopyValueClick);
+  addListener("advanced", "click", handleCopyValueClick);
   addListener("loadDiscoverBtn", "click", async () => {
     try {
       await loadDiscover();
