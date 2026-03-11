@@ -35,6 +35,11 @@ def test_hmi_shell_route_and_navigation():
     assert "Copy Selected DOI/URL" in body
     assert "documentsDetails" in body
     assert "Library" in body
+    assert "Unified browser + search. Leave query empty to browse corpus." in body
+    assert "Load Library" in body
+    assert "Topic Contains" in body
+    assert "Parsed Decision" in body
+    assert "searchPreview" in body
     assert "Advanced" in body
     assert "reviewNavBadge" in body
     assert "documentsNavBadge" in body
@@ -98,6 +103,9 @@ def test_hmi_static_js_served():
     assert "loadAiSettings" in body
     assert "saveAiSettings" in body
     assert "runGlobalSearch" in body
+    assert "loadLibraryBrowser" in body
+    assert "libraryDocPassesFilters" in body
+    assert "libraryFilterForm" in body
     assert "loadDashboard" in body
     assert "reviewNavBadge" in body
     assert "documentsNavBadge" in body

@@ -317,11 +317,11 @@
 
     <section id="library" class="panel">
       <h2>Library</h2>
-      <p class="muted">Single query search over parsed chunks.</p>
+      <p class="muted">Unified browser + search. Leave query empty to browse corpus.</p>
       <form id="searchForm" class="row">
         <label>
           Query
-          <input id="searchQuery" type="text" placeholder="UPW membrane" required>
+          <input id="searchQuery" type="text" placeholder="UPW membrane">
         </label>
         <label>
           Limit
@@ -332,15 +332,46 @@
             <option value="100">100</option>
           </select>
         </label>
-        <button type="submit">Search</button>
+        <button type="submit">Load Library</button>
+      </form>
+      <form id="libraryFilterForm" class="row">
+        <label>
+          Topic Contains
+          <input id="libraryTopicFilter" type="text" placeholder="keyword">
+        </label>
+        <label>
+          Year
+          <input id="libraryYearFilter" type="number" min="1900" max="2100" placeholder="2024">
+        </label>
+        <label>
+          Docs
+          <select id="libraryDocsFilter">
+            <option value="all" selected>All</option>
+            <option value="available">Available</option>
+            <option value="errors">Errors</option>
+          </select>
+        </label>
+        <label>
+          Parsed Decision
+          <select id="libraryParsedFilter">
+            <option value="all" selected>All</option>
+            <option value="accept">Accept</option>
+            <option value="reject">Reject</option>
+            <option value="review">Review</option>
+            <option value="unset">Unset</option>
+          </select>
+        </label>
+        <button type="submit">Apply Filters</button>
       </form>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Title/Snippet</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Title/Snippet</th><th>Meta</th><th>Actions</th></tr></thead>
           <tbody id="searchRows"></tbody>
         </table>
       </div>
       <p id="searchState" class="muted"></p>
+      <h3>Preview</h3>
+      <pre id="searchPreview" class="metrics">No document selected.</pre>
       <details>
         <summary>Technical details</summary>
         <label>

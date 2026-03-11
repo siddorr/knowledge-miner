@@ -785,7 +785,7 @@ Goal:
   - `Awaiting`, `Acquired`, `Failed`, `Manual Recovery`
 - Details panel includes error reason, attempts, `Open Source`, `Retry`, `Manual Complete`.
 
-8. [ ] P1 - Library page merge (browser + search)
+8. [x] P1 - Library page merge (browser + search)
 - Single screen behavior:
   - empty query -> corpus browser
   - query present -> ranked search results
