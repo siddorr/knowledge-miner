@@ -112,6 +112,12 @@ Status:
 
 7. [ ] P0 - Add focused diagnostics for intermittent `run_not_found/source_not_found` flapping
 - Goal: collect unambiguous runtime evidence to isolate and close the `200 -> 404` run/source disappearance bug.
+- Progress:
+  - startup DB context logging added
+  - request trace logging for discovery/review paths added
+  - `/v1/system/status` DB diagnostics fields added
+  - optional `/v1/debug/db-context` endpoint added (guarded by env flag)
+  - `scripts/capture_db_flap_diagnostics.sh` added for timeline capture
 - Scope:
   - discovery/read/review endpoints
   - startup/reload lifecycle
