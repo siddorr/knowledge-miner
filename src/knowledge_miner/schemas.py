@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from pydantic import BaseModel, Field
 
 
@@ -318,3 +319,25 @@ class AISettingsResponse(BaseModel):
     api_key_masked: str | None
     ai_model: str
     ai_base_url: str
+
+
+class HMIEventIn(BaseModel):
+    event_type: Literal["click", "change", "input", "submit", "navigate"]
+    control_id: str = Field(min_length=1, max_length=120)
+    control_label: str | None = Field(default=None, max_length=160)
+    page: str = Field(min_length=1, max_length=64)
+    section: str | None = Field(default=None, max_length=64)
+    session_id: str = Field(min_length=1, max_length=120)
+    run_id: str | None = Field(default=None, max_length=120)
+    acq_run_id: str | None = Field(default=None, max_length=120)
+    parse_run_id: str | None = Field(default=None, max_length=120)
+    value_preview: str | None = Field(default=None, max_length=256)
+    timestamp_ms: int | None = Field(default=None, ge=0)
+
+
+class HMIEventsIngestRequest(BaseModel):
+    events: list[HMIEventIn] = Field(min_length=1, max_length=100)
+
+
+class HMIEventsIngestResponse(BaseModel):
+    accepted: int

@@ -77,6 +77,10 @@ def test_hmi_static_js_served():
     assert "/v1/work-queue" in body
     assert "/v1/system/status" in body
     assert "/v1/search/global" in body
+    assert "/v1/hmi/events" in body
+    assert "emitTelemetryEvent" in body
+    assert "emitDebouncedInputTelemetry" in body
+    assert "initTelemetry" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

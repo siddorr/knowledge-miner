@@ -43,6 +43,34 @@ Status:
     - missing/invalid token -> deterministic fallback to `needs_review` + operator-visible warning
     - HMI AI toggle + token update applies to newly created runs
 
+4. [x] P0 - Track every HMI user operation (full UI telemetry)
+- Goal: persist a clear audit trail of operator actions in HMI (query edits, button clicks, tab switches, form changes, submits).
+- Tasks:
+  - Define event taxonomy and schema:
+    - `event_type` (`click|change|input|submit|navigate`)
+    - `control_id`, `control_label`, `page`, `section`, `session_id`
+    - context fields (`run_id`, `acq_run_id`, `parse_run_id` when available)
+    - safe `value_preview` (truncated/redacted)
+  - Add backend ingest endpoint:
+    - `POST /v1/hmi/events` with auth/rate-limit parity to existing API mode.
+    - Validate payloads and reject oversized/invalid events.
+  - Add structured persistent logging:
+    - write `hmi_event` records to project log with timestamp and correlation ids.
+    - include client fingerprint basics (user agent hash) without storing sensitive data.
+  - Add frontend instrumentation in HMI:
+    - track button presses (`Run Discovery`, `Accept`, `Reject`, `Retry`, exports, uploads).
+    - track search/query changes with debounce to avoid log spam.
+    - track filter/select changes and tab/page navigation.
+    - send fire-and-forget events so UI is never blocked by telemetry failures.
+  - Add privacy/safety guardrails:
+    - never log raw API keys/tokens/password-like values.
+    - truncate long text input and mark as redacted where needed.
+    - add allowlist-based capture for fields safe to log.
+  - Add observability and tests:
+    - API tests for event ingestion and validation errors.
+    - UI tests verifying core actions emit telemetry.
+    - smoke check that logs contain expected `hmi_event` lines after manual workflow.
+
 ## Must-Fix (Spec Compliance)
 
 1. [x] Align default runtime database with v1 spec

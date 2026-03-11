@@ -109,6 +109,8 @@ Contains:
 3. Every important state change has clear text feedback.
 4. Polling must preserve context/filter/pagination state.
 5. Error states must be actionable and visible inline.
+6. HMI emits fire-and-forget telemetry events for click/change/input/submit/navigate actions.
+7. Telemetry never blocks user actions and redacts sensitive values by default.
 
 ## State and Status Presentation
 
