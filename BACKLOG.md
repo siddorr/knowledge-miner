@@ -1,7 +1,7 @@
 # Backlog
 
 Status:
-- In progress: remaining items exist in Phase 2.1, Phase 3, and HMI plan (updated on 2026-03-11).
+- In progress: remaining items exist in Phase 4+ HMI and AI-first rollout plans (updated on 2026-03-11).
 
 ## Must-Fix (Spec Compliance)
 
@@ -304,14 +304,14 @@ Decision lock (approved):
   - Discovery -> Acquisition -> Parse -> Search
   - failed acquisition -> manual recovery queue -> CSV export -> manual upload registration
 
-9. [ ] P0 - Extend discovery APIs for visualization parity
+9. [x] P0 - Extend discovery APIs for visualization parity
 - `GET /v1/discovery/runs/{run_id}`:
   - include `seed_queries` in response
 - `GET /v1/discovery/runs/{run_id}/sources`:
   - add `status=accepted|rejected|needs_review|all`
   - keep backward compatible default (`accepted` when omitted)
 
-10. [ ] P1 - Set discovery dashboard default source visibility
+10. [x] P1 - Set discovery dashboard default source visibility
 - Default table view: `accepted + needs_review`
 - Add quick toggles:
   - `accepted`
@@ -320,7 +320,7 @@ Decision lock (approved):
   - `all`
 - Persist selected filter across polling refresh.
 
-11. [ ] P1 - Add tests for discovery visibility behavior
+11. [x] P1 - Add tests for discovery visibility behavior
 - API tests for `status` filter:
   - accepted only
   - rejected only
