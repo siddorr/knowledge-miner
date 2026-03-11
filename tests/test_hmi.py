@@ -12,13 +12,18 @@ def test_hmi_shell_route_and_navigation():
     assert response.status_code == 200
     body = response.text
     assert "Knowledge Miner Task Dashboard" in body
-    assert "Dashboard" in body
-    assert "Discover" in body
+    assert "Build" in body
     assert "Review" in body
     assert "Documents" in body
-    assert "Parse" in body
-    assert "Search" in body
+    assert "Library" in body
     assert "Advanced" in body
+    assert "reviewNavBadge" in body
+    assert "documentsNavBadge" in body
+    assert "UPW Knowledge Miner" in body
+    assert "Pending review:" in body
+    assert "Accepted waiting docs:" in body
+    assert "Document failures:" in body
+    assert "statusNextActionBtn" in body
     assert "/hmi/static/hmi.js" in body
     assert "Run Discovery" in body
     assert "Load Review Queue" in body
@@ -74,6 +79,8 @@ def test_hmi_static_js_served():
     assert "saveAiSettings" in body
     assert "runGlobalSearch" in body
     assert "loadDashboard" in body
+    assert "reviewNavBadge" in body
+    assert "documentsNavBadge" in body
     assert "/v1/work-queue" in body
     assert "/v1/system/status" in body
     assert "/v1/search/global" in body
@@ -81,6 +88,7 @@ def test_hmi_static_js_served():
     assert "emitTelemetryEvent" in body
     assert "emitDebouncedInputTelemetry" in body
     assert "initTelemetry" in body
+    assert "updateStatusStrip" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

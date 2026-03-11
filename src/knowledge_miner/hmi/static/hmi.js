@@ -18,6 +18,9 @@ const state = {
     sessionId: "",
     inputTimers: new Map(),
   },
+  statusStrip: {
+    nextActionRoute: "build",
+  },
 };
 
 function el(id) {
@@ -227,14 +230,14 @@ function setContext(patch) {
 }
 
 function activeSection() {
-  const id = window.location.hash.replace("#", "") || "dashboard";
-  const valid = ["dashboard", "discover", "review", "documents", "search", "advanced"];
-  return valid.includes(id) ? id : "dashboard";
+  const id = window.location.hash.replace("#", "") || "build";
+  const valid = ["build", "discover", "review", "documents", "library", "advanced"];
+  return valid.includes(id) ? id : "build";
 }
 
 function updateSectionVisibility() {
   const current = activeSection();
-  for (const id of ["dashboard", "discover", "review", "documents", "search", "advanced"]) {
+  for (const id of ["build", "discover", "review", "documents", "library", "advanced"]) {
     const node = el(id);
     if (!node) continue;
     node.hidden = id !== current;
@@ -330,6 +333,24 @@ function renderTable(tbodyId, rows, cols) {
   tbody.innerHTML = rows.join("");
 }
 
+function updateStatusStrip({
+  pendingReview,
+  awaitingDocs,
+  docFailures,
+  lastRunState,
+  activeTopic = "Default Topic",
+}) {
+  setText("statusActiveTopic", activeTopic);
+  setText("statusPendingReview", String(pendingReview));
+  setText("statusAwaitingDocs", String(awaitingDocs));
+  setText("statusDocFailures", String(docFailures));
+  setText("statusLastRun", lastRunState || "none");
+  if (pendingReview > 0) state.statusStrip.nextActionRoute = "review";
+  else if (docFailures > 0 || awaitingDocs > 0) state.statusStrip.nextActionRoute = "documents";
+  else state.statusStrip.nextActionRoute = "build";
+  setText("statusNextActionBtn", `Next: ${state.statusStrip.nextActionRoute}`);
+}
+
 function abstractView(text, expanded) {
   const raw = (text || "").trim();
   if (!raw) return { text: "", long: false };
@@ -356,6 +377,8 @@ async function loadDashboard() {
   const needsReview = queue.items.filter((i) => i.phase === "discovery" && i.status === "needs_review").length;
   const docIssues = queue.items.filter((i) => i.phase === "acquisition" && (i.status === "failed" || i.status === "partial")).length;
   const parseErrors = queue.items.filter((i) => i.phase === "parse" && i.status === "failed").length;
+  setText("reviewNavBadge", String(needsReview));
+  setText("documentsNavBadge", String(docIssues));
 
   let recent = "No run loaded";
   if (state.latest.discovery) {
@@ -376,6 +399,12 @@ async function loadDashboard() {
     ],
     4,
   );
+  updateStatusStrip({
+    pendingReview: needsReview,
+    awaitingDocs: docIssues,
+    docFailures: docIssues,
+    lastRunState: recent,
+  });
   return true;
 }
 
@@ -862,11 +891,11 @@ async function handleSearchAction(event) {
 
 async function refreshCurrentSection() {
   const section = activeSection();
-  if (section === "dashboard") return loadDashboard();
+  if (section === "build") return loadDashboard();
   if (section === "discover") return loadDiscover();
   if (section === "review" && state.review.loaded) return loadReview();
   if (section === "documents" && state.documents.loaded) return loadDocuments();
-  if (section === "search" && state.search.loaded && state.search.payload) return runSearchData(state.search.payload);
+  if (section === "library" && state.search.loaded && state.search.payload) return runSearchData(state.search.payload);
   return true;
 }
 
@@ -1067,6 +1096,10 @@ function init() {
   addListener("copyDiscoveryIdBtn", "click", () => copyLatestId("discovery"));
   addListener("copyAcqIdBtn", "click", () => copyLatestId("acquisition"));
   addListener("copyParseIdBtn", "click", () => copyLatestId("parse"));
+  addListener("statusNextActionBtn", "click", () => {
+    const route = state.statusStrip.nextActionRoute || "build";
+    window.location.hash = `#${route}`;
+  });
 
   initPagination();
 

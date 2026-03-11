@@ -122,6 +122,8 @@ def test_discovery_run_status_includes_seed_queries():
     body = response.json()
     assert body["run_id"] == run_id
     assert body["seed_queries"] == ["upw", "semiconductor"]
+    assert "ai_filter_effective_enabled" in body
+    assert body["ai_filter_config_source"] == "run"
 
 
 def test_discovery_sources_status_filter():

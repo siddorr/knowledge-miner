@@ -47,6 +47,16 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
+.status-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  background: #f8faf6;
+}
+
 .idrow {
   display: inline-flex;
   align-items: center;
@@ -98,6 +108,17 @@ button:hover {
 .nav a:hover {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+.badge {
+  display: inline-block;
+  min-width: 1.3em;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  text-align: center;
+  font-size: 0.8rem;
 }
 
 .stack {

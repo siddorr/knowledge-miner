@@ -71,6 +71,23 @@ Status:
     - UI tests verifying core actions emit telemetry.
     - smoke check that logs contain expected `hmi_event` lines after manual workflow.
 
+5. [x] P0 - Fix AI run-toggle mismatch (run-level AI must be effective at execution time)
+- Goal: if a run is created with AI enabled, relevance decisions must be produced by AI (or explicit AI error fallback), not silent heuristic fallback.
+- Problem observed:
+  - `run_d8cc48a33dbc`: `run.ai_filter_active=true`, but all rows were `decision_source=fallback_heuristic` and no `ai_filter:evaluate` calls were logged.
+- Tasks:
+  - Instantiate `AIRelevanceFilter` in discovery execution with run-scoped config (`enabled=run.ai_filter_active` + effective key/model/base_url), not global-only defaults.
+  - Align run creation and run execution logic so AI mode is consistent across lifecycle.
+  - Add explicit runtime warning when run AI is enabled but effective AI credentials/config are missing.
+  - Ensure `provider_call` observability always records AI evaluation attempts/failures for AI-enabled runs.
+  - Expose run diagnostics in API response:
+    - `ai_filter_effective_enabled`
+    - `ai_filter_config_source` (`run|global`)
+  - Add tests:
+    - run AI enabled + valid key -> at least some rows with `decision_source=ai`
+    - run AI enabled + missing/invalid key -> deterministic `needs_review` + visible warning + AI error metrics
+    - run AI disabled + global AI enabled -> no AI calls, policy remains manual/heuristic fallback
+
 ## Must-Fix (Spec Compliance)
 
 1. [x] Align default runtime database with v1 spec
@@ -673,3 +690,121 @@ Reference:
 - Keyboard navigation for core task flow.
 - Explicit text labels on primary actions.
 - Status readability without relying on color only.
+
+## Phase 4.3 Implementation Tasks (GUI Spec Alignment from DOCX)
+
+Reference:
+- `Downloads/Knowledge_Miner_GUI_Spec.docx` (imported UX source-of-truth)
+- `UI_SPEC.md` (canonical in-repo UI contract to implement against)
+- `README.md` (documents UI source-of-truth and doc hierarchy)
+
+Goal:
+- Align HMI with the approved Build/Review/Documents/Library/Advanced operating model for first-time and daily operators.
+
+1. [x] P0 - Replace primary navigation with spec tabs
+- Required top-level nav:
+  - `Build`
+  - `Review`
+  - `Documents`
+  - `Library`
+  - `Advanced`
+- Remove `Dashboard` from primary navigation (can remain as internal route only if needed).
+- Add badge counters on `Review` and `Documents` tabs.
+
+2. [x] P0 - Implement global top status strip on all pages
+- Show:
+  - project/corpus name
+  - active topic
+  - pending review count
+  - accepted waiting for documents
+  - document failures count
+  - last run state
+  - one next-action button
+- Keep strip visible and synchronized across navigation.
+
+3. [ ] P0 - Add launch routing policy (no standalone dashboard first)
+- On `/hmi` open:
+  - no topic -> `Build` in create-topic state
+  - review queue exists -> `Review`
+  - document failures exist -> `Documents` failed view
+  - otherwise -> `Build`
+- Add deterministic precedence and tests.
+
+4. [ ] P0 - Build screen restructuring (topic workspace only)
+- Build page must contain:
+  - topic list (`+ New Topic`)
+  - tabs: `Add Sources`, `Queries`, `Runs`
+  - right details panel for selected topic/run
+- Keep review actions out of Build.
+
+5. [ ] P0 - Promote manual source addition to first-class Build flow
+- Add source input paths:
+  - DOI
+  - URL
+  - citation/free-text
+  - bulk paste
+- Add duplicate check + assign-to-topic before save.
+- Add copy buttons for query/source fields.
+
+6. [ ] P0 - Review as dedicated decision workspace
+- Queue-focused screen with:
+  - filters (`Pending`, `Accepted`, `Rejected`, `Later`)
+  - row actions (`Accept`, `Reject`, `Later`)
+  - batch actions (`Accept Selected`, `Reject Selected`, `Send Accepted to Documents`)
+  - preview panel with title/abstract/DOI/URL/citation + copy buttons
+- Keep manual ID entry out of primary review flow.
+
+7. [ ] P0 - Documents page as acquisition operations center
+- Primary actions:
+  - `Acquire Pending`
+  - `Retry Failed`
+  - `Copy Selected DOI/URL`
+- Queue filters:
+  - `Awaiting`, `Acquired`, `Failed`, `Manual Recovery`
+- Details panel includes error reason, attempts, `Open Source`, `Retry`, `Manual Complete`.
+
+8. [ ] P1 - Library page merge (browser + search)
+- Single screen behavior:
+  - empty query -> corpus browser
+  - query present -> ranked search results
+- Add filters (topic/year/docs/parsed) and preview pane.
+- Keep advanced metadata hidden by default.
+
+9. [ ] P1 - Copy button consistency pass across all pages
+- One-click copy + lightweight confirmation (`Copied`) for:
+  - DOI
+  - title
+  - URL
+  - citation
+  - search query/topic query
+  - error message
+  - selected DOI/URL sets in Documents
+- Ensure copied text is value-only (no labels/clutter).
+
+10. [ ] P1 - Topic coverage model + per-topic counters
+- Topics behave as coverage buckets.
+- Per topic show:
+  - candidates
+  - accepted
+  - awaiting documents
+  - failed documents
+- Ensure counters drive status strip and nav badges.
+
+11. [ ] P1 - Advanced page scope enforcement
+- Keep technical-only tools in Advanced:
+  - run IDs
+  - logs
+  - raw records
+  - pipeline status
+  - settings
+- Remove raw IDs/storage paths/low-level statuses from task pages unless inside expandable technical drawer.
+
+12. [ ] P1 - Archive or mark legacy stage-first UI docs as deprecated
+- Mark old conflicting UI docs clearly (`deprecated`/`archive` banner).
+- Keep one active UI source-of-truth referenced from README.
+
+Definition of done for Phase 4.3:
+1. Primary workflow visible to user is `Build -> Review -> Documents -> Library`.
+2. First-time user can complete one full cycle without manual IDs or external docs.
+3. Copy actions are available and consistent across all operational screens.
+4. Technical internals remain accessible in Advanced but do not dominate task screens.

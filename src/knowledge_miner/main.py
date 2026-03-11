@@ -478,6 +478,7 @@ def get_run_status(
     run = db.get(Run, run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    ai_filter_effective_enabled = bool(run.ai_filter_active and settings.ai_api_key)
     return RunStatusResponse(
         run_id=run.id,
         status=run.status,
@@ -488,6 +489,8 @@ def get_run_status(
         citation_edges_total=run.citation_edges_total,
         ai_filter_active=run.ai_filter_active,
         ai_filter_warning=run.ai_filter_warning,
+        ai_filter_effective_enabled=ai_filter_effective_enabled,
+        ai_filter_config_source="run",
         new_accept_rate=float(run.new_accept_rate) if run.new_accept_rate is not None else None,
     )
 

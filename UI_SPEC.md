@@ -1,65 +1,56 @@
 # UI Specification
 
-Status: Implemented baseline (task-first model)
+Status: Active source of truth (aligned with `Knowledge_Miner_GUI_Spec.docx` imported on 2026-03-11)
 
 ## Navigation (Single Canonical Model)
 
 Top-level navigation is fixed to:
-1. `Dashboard`
-2. `Discover`
-3. `Review`
-4. `Documents`
-5. `Search`
-6. `Advanced`
+1. `Build`
+2. `Review`
+3. `Documents`
+4. `Library`
+5. `Advanced`
 
 No stage-first navigation is valid for primary UX.
 
 ## Global Shell
 
-1. Header with first-time flow guidance.
-2. Poll/system status strip.
-3. Task navigation.
-4. Main task content.
-5. Advanced diagnostics/settings section.
+1. Global status strip on every page:
+- project/corpus
+- active topic
+- pending review
+- accepted waiting for documents
+- document failures
+- last run state
+- one next-action button
+2. Task navigation.
+3. Main task content.
+4. Optional right details panel.
 
 ## Page Contracts
 
-## Dashboard
+## Build
 
 Goal:
-1. Show next action in under 5 seconds.
+1. Planning and iteration workspace.
 
 Must include:
-1. `Run Discovery` action (queries, max iterations, AI mode).
-2. Attention summary counts:
-- sources needing review
-- download issues
-- parse errors
-3. Recent discovery summary.
-
-## Discover
-
-Goal:
-1. Minimal run-start and summary view.
-
-Must include:
-1. Latest run summary.
-2. `Export sources_raw` action.
-3. Technical drawer for run overrides/filters.
-
-Default rule:
-1. No raw IDs in primary surface.
+1. Topic list and create-topic flow.
+2. Tabs: `Add Sources`, `Queries`, `Runs`.
+3. Manual source addition as first-class action (DOI/URL/citation/bulk).
+4. Query management and run history.
+5. Details panel for selected topic/run.
 
 ## Review
 
 Goal:
-1. Fast row-level accept/reject decisions.
+1. Dedicated decision workspace.
 
 Must include:
-1. Source table with title, abstract, decisions, reason context.
-2. Expand/collapse abstract behavior.
-3. Status text + color badge.
-4. Pagination.
+1. Queue filters: `Pending`, `Accepted`, `Rejected`, `Later`.
+2. Row actions: `Accept`, `Reject`, `Later`.
+3. Batch actions including `Send Accepted to Documents`.
+4. Details/preview panel with copy buttons.
 
 Primary action:
 1. `Accept` / `Reject` calls review API directly from row context.
@@ -70,24 +61,24 @@ Goal:
 1. Resolve acquisition failures without CLI.
 
 Must include:
-1. Failed/partial download queue.
+1. Acquisition queue with `Awaiting`, `Acquired`, `Failed`, `Manual Recovery`.
 2. Actions per row:
 - `Retry`
 - `Upload PDF`
 - `Open source`
-3. CSV export.
-4. Manual upload form.
-5. Technical drawer for run/source overrides.
+3. Batch copy for selected DOI/URL.
+4. CSV export and manual upload workflow.
 
-## Search
+## Library
 
 Goal:
-1. Simple search-first experience for end users.
+1. Combined corpus browser and search.
 
 Must include:
-1. Single query input and result list.
-2. Row actions: `Doc`, `Text`, `Source`.
-3. Technical drawer for parse-run override and detailed payloads.
+1. Empty query state behaves as corpus browser.
+2. Query state behaves as retrieval/search.
+3. Result preview and copy actions.
+4. Topic/year/docs/parsed filters.
 
 ## Advanced
 
@@ -95,22 +86,21 @@ Goal:
 1. Isolate technical complexity from task pages.
 
 Contains:
-1. Auth/token controls.
-2. AI runtime settings.
-3. Run lookup and filters.
-4. Global technical search.
-5. ID copy controls.
-6. Low-level start/export/diagnostic controls.
+1. Runs and raw statuses.
+2. Logs and diagnostics.
+3. Raw records/pipeline status/settings.
+4. ID-level operations and low-level controls.
 
 ## Behavior Rules
 
-1. Task pages avoid mandatory manual ID entry.
+1. Task pages avoid mandatory manual ID entry and raw IDs.
 2. IDs are shown in `Advanced` and technical drawers only.
 3. Every important state change has clear text feedback.
 4. Polling must preserve context/filter/pagination state.
 5. Error states must be actionable and visible inline.
 6. HMI emits fire-and-forget telemetry events for click/change/input/submit/navigate actions.
 7. Telemetry never blocks user actions and redacts sensitive values by default.
+8. Copy buttons are required for DOI/title/URL/citation/query/error and selected DOI/URL sets.
 
 ## State and Status Presentation
 
@@ -135,7 +125,7 @@ Task pages depend on:
 
 ## Acceptance Criteria
 
-1. First-time user completes `Dashboard -> Discover -> Review -> Documents -> Search` without docs.
+1. First-time user completes `Build -> Review -> Documents -> Library` without external docs.
 2. No manual ID copy/paste required in default flow.
 3. Advanced controls remain available without cluttering task pages.
 4. Navigation model remains single and consistent across docs/tests/UI.

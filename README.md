@@ -29,13 +29,14 @@ Source of truth docs:
 1. `README.md` - entry point
 2. `CURRENT_SCOPE.md` - what exists now, scope boundaries, near-term direction
 3. `ARCHITECTURE.md` - system components, data flow, runtime boundaries
-4. `UI_SPEC.md` - user workflow and HMI behavior contract
+4. `UI_SPEC.md` - canonical user workflow and HMI behavior contract (Build/Review/Documents/Library/Advanced)
 5. `PIPELINE_RULES.md` - discovery/decision/iteration rules
 6. `DATA_SCHEMA.md` - data model and constraints
 7. `BACKLOG.md` - active implementation tasks
 8. `AGENTS.md` - contributor/AI operating rules
 
 Archived legacy docs are in `archive/`.
+Imported UX source (`Downloads/Knowledge_Miner_GUI_Spec.docx`) is reflected in `UI_SPEC.md` and tracked via `BACKLOG.md` Phase 4.3 tasks.
 
 ## Runtime Modes
 

@@ -25,6 +25,8 @@ class RunStatusResponse(BaseModel):
     citation_edges_total: int
     ai_filter_active: bool
     ai_filter_warning: str | None
+    ai_filter_effective_enabled: bool
+    ai_filter_config_source: str
     new_accept_rate: float | None
 
 

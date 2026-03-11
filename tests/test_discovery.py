@@ -507,6 +507,117 @@ def test_create_run_ai_enabled_without_warning():
         object.__setattr__(settings, "ai_api_key", original_key)
 
 
+def test_execute_run_uses_run_level_ai_when_global_ai_disabled(monkeypatch):
+    original_use_ai = settings.use_ai_filter
+    original_key = settings.ai_api_key
+    try:
+        object.__setattr__(settings, "use_ai_filter", False)
+        object.__setattr__(settings, "ai_api_key", "token")
+        monkeypatch.setattr(
+            "knowledge_miner.ai_filter.AIRelevanceFilter.evaluate",
+            lambda self, *, title, abstract, base_score, base_decision: AIRelevanceResult(  # noqa: ARG005
+                decision="auto_accept",
+                confidence=0.95,
+                reason="run-level-ai",
+            ),
+        )
+        with SessionLocal() as db:
+            run = create_run(db, ["upw"], max_iterations=1, ai_filter_enabled=True)
+            assert run.ai_filter_active is True
+            execute_run(db, run)
+            rows = db.scalars(select(Source).where(Source.run_id == run.id)).all()
+            assert rows
+            assert any(row.decision_source == "ai" for row in rows)
+    finally:
+        object.__setattr__(settings, "use_ai_filter", original_use_ai)
+        object.__setattr__(settings, "ai_api_key", original_key)
+
+
+def test_execute_run_ai_enabled_missing_key_routes_policy_no_ai_with_warning(caplog):
+    original_use_ai = settings.use_ai_filter
+    original_key = settings.ai_api_key
+    try:
+        object.__setattr__(settings, "use_ai_filter", True)
+        object.__setattr__(settings, "ai_api_key", "token")
+        with SessionLocal() as db:
+            run = create_run(db, ["upw"], max_iterations=1, ai_filter_enabled=True)
+            assert run.ai_filter_active is True
+            object.__setattr__(settings, "ai_api_key", None)
+            caplog.set_level("INFO", logger="knowledge_miner")
+            execute_run(db, run)
+            db.refresh(run)
+            assert run.ai_filter_warning is not None
+            assert "missing at execution time" in run.ai_filter_warning
+            rows = db.scalars(select(Source).where(Source.run_id == run.id)).all()
+            assert rows
+            assert all(row.final_decision == "needs_review" for row in rows)
+            assert all(row.decision_source == "policy_no_ai" for row in rows)
+
+        provider_events = []
+        summaries = []
+        for rec in caplog.records:
+            if rec.name != "knowledge_miner":
+                continue
+            try:
+                payload = json.loads(rec.message)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("event") == "provider_call":
+                provider_events.append(payload)
+            if payload.get("event") == "run_summary":
+                summaries.append(payload)
+        assert any(
+            event.get("provider") == "ai_filter"
+            and event.get("operation") == "evaluate"
+            and event.get("ok") is False
+            and event.get("error") == "missing_config"
+            for event in provider_events
+        )
+        assert summaries
+        counters = summaries[-1]["counters"]
+        assert counters.get("ai_provider_error", 0) >= 1
+    finally:
+        object.__setattr__(settings, "use_ai_filter", original_use_ai)
+        object.__setattr__(settings, "ai_api_key", original_key)
+
+
+def test_execute_run_ai_disabled_run_ignores_global_ai_and_makes_no_ai_calls(caplog, monkeypatch):
+    original_use_ai = settings.use_ai_filter
+    original_key = settings.ai_api_key
+    try:
+        object.__setattr__(settings, "use_ai_filter", True)
+        object.__setattr__(settings, "ai_api_key", "token")
+
+        def _should_not_call(*args, **kwargs):  # noqa: ANN002,ANN003
+            raise AssertionError("AI evaluate should not be called for run-level AI disabled")
+
+        monkeypatch.setattr("knowledge_miner.ai_filter.AIRelevanceFilter.evaluate", _should_not_call)
+        with SessionLocal() as db:
+            run = create_run(db, ["upw"], max_iterations=1, ai_filter_enabled=False)
+            assert run.ai_filter_active is False
+            caplog.set_level("INFO", logger="knowledge_miner")
+            execute_run(db, run)
+            rows = db.scalars(select(Source).where(Source.run_id == run.id)).all()
+            assert rows
+            assert all(row.decision_source == "policy_no_ai" for row in rows)
+            assert all(row.final_decision == "needs_review" for row in rows)
+
+        provider_events = []
+        for rec in caplog.records:
+            if rec.name != "knowledge_miner":
+                continue
+            try:
+                payload = json.loads(rec.message)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("event") == "provider_call":
+                provider_events.append(payload)
+        assert not any(event.get("provider") == "ai_filter" and event.get("operation") == "evaluate" for event in provider_events)
+    finally:
+        object.__setattr__(settings, "use_ai_filter", original_use_ai)
+        object.__setattr__(settings, "ai_api_key", original_key)
+
+
 def test_cross_run_canonical_id_collision_does_not_fail():
     candidates = [
         {

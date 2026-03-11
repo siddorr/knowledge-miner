@@ -81,11 +81,10 @@ def test_hmi_route_exposes_operator_first_shell_and_advanced_section():
     response = client.get("/hmi")
     assert response.status_code == 200
     body = response.text
-    assert "Dashboard" in body
-    assert "Discover" in body
+    assert "Build" in body
     assert "Review" in body
     assert "Documents" in body
-    assert "Search" in body
+    assert "Library" in body
     assert "Advanced" in body
     assert "Global Search" in body
 
@@ -108,5 +107,5 @@ def test_hmi_first_time_flow_labels_and_no_required_manual_ids():
     assert "Run Discovery" in body
     assert "Load Review Queue" in body
     assert "Load Download Issues" in body
-    assert "Search" in body
+    assert "Library" in body
     assert "Technical details" in body

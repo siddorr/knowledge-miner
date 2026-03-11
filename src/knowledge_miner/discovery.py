@@ -89,6 +89,14 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
     current_iteration = 0
     try:
         run.status = "running"
+        ai_requested = bool(run.ai_filter_active)
+        ai_effective_enabled = bool(ai_requested and settings.ai_api_key)
+        if ai_requested and not ai_effective_enabled:
+            ai_warning = "AI filter requested for run but effective AI config is missing at execution time; routing to needs_review."
+            run.ai_filter_warning = ai_warning
+        elif ai_requested and ai_effective_enabled and ai_warning:
+            run.ai_filter_warning = None
+            ai_warning = None
         db.commit()
         if ai_warning:
             observability.record_provider_call(
@@ -100,9 +108,30 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
                 ok=False,
                 error=ai_warning,
             )
+        if ai_requested and not ai_effective_enabled:
+            observability.inc("ai_provider_error")
+            observability.record_provider_call(
+                run_id=run_id,
+                iteration=0,
+                provider="ai_filter",
+                operation="evaluate",
+                latency_ms=0.0,
+                ok=False,
+                error="missing_config",
+            )
 
         low_yield_streak = 0
-        ai_filter = AIRelevanceFilter()
+        ai_filter = (
+            AIRelevanceFilter(
+                enabled=True,
+                api_key=settings.ai_api_key,
+                model=settings.ai_model,
+                base_url=settings.ai_base_url,
+                timeout_seconds=settings.ai_timeout_seconds,
+            )
+            if ai_effective_enabled
+            else None
+        )
 
         active_connectors = connectors or build_connectors()
         connectors_by_name = {c.name: c for c in active_connectors}
@@ -114,7 +143,7 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
                 iteration,
                 candidates,
                 ai_filter=ai_filter,
-                ai_policy_no_ai=not bool(run.ai_filter_active),
+                ai_policy_no_ai=not ai_effective_enabled,
                 observability=observability,
             )
             citation_candidates, citation_edges = _expand_citations_for_iteration(
@@ -133,7 +162,7 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
                     iteration,
                     citation_candidates,
                     ai_filter=ai_filter,
-                    ai_policy_no_ai=not bool(run.ai_filter_active),
+                    ai_policy_no_ai=not ai_effective_enabled,
                     observability=observability,
                 )
                 run.expanded_candidates_total = int(run.expanded_candidates_total) + len(citation_candidates)

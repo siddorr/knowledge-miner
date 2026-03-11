@@ -19,17 +19,26 @@
   </section>
 
   <nav class="nav" aria-label="Primary">
-    <a href="#dashboard">Dashboard</a>
-    <a href="#discover">Discover</a>
-    <a href="#review">Review</a>
-    <a href="#documents">Documents</a>
-    <a href="#search">Search</a>
+    <a href="#build">Build</a>
+    <a href="#review">Review <span id="reviewNavBadge" class="badge">0</span></a>
+    <a href="#documents">Documents <span id="documentsNavBadge" class="badge">0</span></a>
+    <a href="#library">Library</a>
     <a href="#advanced">Advanced</a>
   </nav>
 
+  <section id="topStatusStrip" class="status-strip" aria-label="Global status">
+    <strong id="statusProjectName">UPW Knowledge Miner</strong>
+    <span>Topic: <span id="statusActiveTopic">Default Topic</span></span>
+    <span>Pending review: <span id="statusPendingReview">0</span></span>
+    <span>Accepted waiting docs: <span id="statusAwaitingDocs">0</span></span>
+    <span>Document failures: <span id="statusDocFailures">0</span></span>
+    <span>Last run: <span id="statusLastRun">none</span></span>
+    <button id="statusNextActionBtn" type="button">Next Action</button>
+  </section>
+
   <main class="stack">
-    <section id="dashboard" class="panel">
-      <h2>Dashboard</h2>
+    <section id="build" class="panel">
+      <h2>Build</h2>
       <p class="muted">Start discovery and handle the next actionable task.</p>
       <form id="startDiscoveryForm" class="row">
         <label>
@@ -200,8 +209,8 @@
       <p id="documentsError" class="error"></p>
     </section>
 
-    <section id="search" class="panel">
-      <h2>Search</h2>
+    <section id="library" class="panel">
+      <h2>Library</h2>
       <p class="muted">Single query search over parsed chunks.</p>
       <form id="searchForm" class="row">
         <label>
