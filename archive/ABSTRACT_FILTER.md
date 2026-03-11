@@ -1,3 +1,5 @@
+> Deprecated: This document is archived and not an active product spec. Use ../UI_SPEC.md, ../CURRENT_SCOPE.md, and ../BACKLOG.md as source of truth.
+
 # Abstract Relevance Filtering
 
 Candidate sources are filtered based on abstract relevance.

@@ -110,6 +110,40 @@ Status:
     - restart keeps same DB target path
     - after reload, same run/source IDs remain queryable and review actions do not flap between `200` and `404`
 
+7. [ ] P0 - Add focused diagnostics for intermittent `run_not_found/source_not_found` flapping
+- Goal: collect unambiguous runtime evidence to isolate and close the `200 -> 404` run/source disappearance bug.
+- Scope:
+  - discovery/read/review endpoints
+  - startup/reload lifecycle
+  - DB target resolution
+- Required diagnostics:
+  - Startup log block (single structured line):
+    - `pid`, `ppid`, `cwd`, `database_url`, resolved sqlite absolute file path, file inode, file mtime, process role (`reloader|worker|single`).
+  - Per-request trace fields for key endpoints:
+    - `request_id`, `pid`, `method`, `path`, `run_id`, `source_id`, `db_file`, `db_inode`.
+  - On `run_not_found` / `source_not_found`:
+    - include diagnostic context in logs:
+      - queried id
+      - row count in `runs` and `sources` tables
+      - latest 5 run ids visible in current DB session
+      - whether corresponding source exists in any run
+  - Add `/v1/system/status` diagnostic fields (read-only):
+    - `db_target_url`
+    - `db_target_resolved_path` (when sqlite)
+    - `db_schema_ready`
+    - `db_run_count`
+    - `process_pid`
+  - Optional debug endpoint (guarded by env flag, off by default):
+    - `GET /v1/debug/db-context?run_id=...&source_id=...`
+    - returns same diagnostics payload used in logs.
+- Test/verification tasks:
+  - integration test: create run, poll run/sources repeatedly across reload cycle, assert no `200 -> 404` flapping.
+  - test: `source_review` for DOI IDs remains stable before/after reload.
+  - manual reproduction script committed under `scripts/` to capture timeline + diagnostics automatically.
+- Exit criteria:
+  - one captured trace proving root cause, linked in backlog note.
+  - fix PR references this diagnostics output and removes need for temporary debug endpoint/log verbosity.
+
 ## Must-Fix (Spec Compliance)
 
 1. [x] Align default runtime database with v1 spec
@@ -803,7 +837,7 @@ Goal:
   - selected DOI/URL sets in Documents
 - Ensure copied text is value-only (no labels/clutter).
 
-10. [ ] P1 - Topic coverage model + per-topic counters
+10. [x] P1 - Topic coverage model + per-topic counters
 - Topics behave as coverage buckets.
 - Per topic show:
   - candidates
@@ -812,7 +846,7 @@ Goal:
   - failed documents
 - Ensure counters drive status strip and nav badges.
 
-11. [ ] P1 - Advanced page scope enforcement
+11. [x] P1 - Advanced page scope enforcement
 - Keep technical-only tools in Advanced:
   - run IDs
   - logs
@@ -821,7 +855,7 @@ Goal:
   - settings
 - Remove raw IDs/storage paths/low-level statuses from task pages unless inside expandable technical drawer.
 
-12. [ ] P1 - Archive or mark legacy stage-first UI docs as deprecated
+12. [x] P1 - Archive or mark legacy stage-first UI docs as deprecated
 - Mark old conflicting UI docs clearly (`deprecated`/`archive` banner).
 - Keep one active UI source-of-truth referenced from README.
 

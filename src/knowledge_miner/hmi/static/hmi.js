@@ -17,6 +17,16 @@ const state = {
     activeTab: "runs",
     stagedSourcesByTopic: { topic_default: [] },
     sourceKeysByTopic: { topic_default: new Set() },
+    topicQueriesByTopic: { topic_default: "" },
+    coverageByTopic: {
+      topic_default: {
+        candidates: 0,
+        accepted: 0,
+        pending_review: 0,
+        awaiting_documents: 0,
+        failed_documents: 0,
+      },
+    },
   },
   review: { offset: 0, loaded: false, expanded: new Set(), selected: new Set(), later: new Set(), items: [] },
   documents: { offset: 0, loaded: false, selectedSourceId: "", selected: new Set(), items: [], acqRunMeta: null },
@@ -352,6 +362,13 @@ function renderBuildDetails() {
     setText("buildDetails", "No topic selected.");
     return;
   }
+  const coverage = state.build.coverageByTopic[topic.id] || {
+    candidates: 0,
+    accepted: 0,
+    pending_review: 0,
+    awaiting_documents: 0,
+    failed_documents: 0,
+  };
   setText(
     "buildDetails",
     JSON.stringify(
@@ -359,7 +376,9 @@ function renderBuildDetails() {
         topic_id: topic.id,
         topic_name: topic.name,
         selected_tab: state.build.activeTab,
+        topic_query: state.build.topicQueriesByTopic[topic.id] || "",
         latest_discovery_run: state.latest.discovery || null,
+        coverage,
       },
       null,
       2,
@@ -385,9 +404,18 @@ function renderBuildTopics() {
   host.innerHTML = state.build.topics
     .map((topic) => {
       const active = topic.id === state.build.activeTopicId ? " active" : "";
-      return `<button type="button" class="topic-btn${active}" data-topic-id="${escapeHtml(topic.id)}">${escapeHtml(topic.name)}</button>`;
+      const c = state.build.coverageByTopic[topic.id] || {
+        candidates: 0,
+        accepted: 0,
+        awaiting_documents: 0,
+        failed_documents: 0,
+      };
+      const badge = `c:${c.candidates} a:${c.accepted} w:${c.awaiting_documents} f:${c.failed_documents}`;
+      return `<button type="button" class="topic-btn${active}" data-topic-id="${escapeHtml(topic.id)}">${escapeHtml(topic.name)} <small>${escapeHtml(badge)}</small></button>`;
     })
     .join("");
+  const queryInput = el("buildTopicQuery");
+  if (queryInput) queryInput.value = state.build.topicQueriesByTopic[state.build.activeTopicId] || "";
   renderBuildDetails();
   renderBuildSources();
 }
@@ -412,6 +440,90 @@ function setBuildTab(tab) {
 
 function sourceFingerprint(value) {
   return value.trim().toLowerCase();
+}
+
+function topicKeywords(topic) {
+  const query = state.build.topicQueriesByTopic[topic.id] || "";
+  const raw = `${topic.name} ${query}`.toLowerCase();
+  return raw
+    .split(/[^a-z0-9]+/g)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 3);
+}
+
+function topicForSource(source, topicList) {
+  if (!topicList.length) return null;
+  if (topicList.length === 1) return topicList[0].id;
+  const hay = `${source.title || ""} ${source.abstract || ""} ${source.url || ""}`.toLowerCase();
+  let bestTopicId = topicList[0].id;
+  let bestScore = -1;
+  for (const topic of topicList) {
+    const keywords = topicKeywords(topic);
+    let score = 0;
+    for (const kw of keywords) {
+      if (hay.includes(kw)) score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestTopicId = topic.id;
+    }
+  }
+  return bestTopicId;
+}
+
+function emptyTopicCoverage() {
+  return {
+    candidates: 0,
+    accepted: 0,
+    pending_review: 0,
+    awaiting_documents: 0,
+    failed_documents: 0,
+  };
+}
+
+function mergeTopicCoverage(queueItems, sources) {
+  const byTopic = {};
+  const sourceToTopic = new Map();
+  for (const topic of state.build.topics) byTopic[topic.id] = emptyTopicCoverage();
+  const fallbackTopicId = state.build.activeTopicId || state.build.topics[0]?.id || "topic_default";
+
+  for (const source of sources) {
+    const topicId = topicForSource(source, state.build.topics) || fallbackTopicId;
+    sourceToTopic.set(source.id, topicId);
+    const bucket = byTopic[topicId] || (byTopic[topicId] = emptyTopicCoverage());
+    bucket.candidates += 1;
+    if (source.accepted || source.review_status === "auto_accept" || source.review_status === "human_accept") {
+      bucket.accepted += 1;
+    }
+  }
+
+  for (const item of queueItems) {
+    const topicId = sourceToTopic.get(item.source_id) || fallbackTopicId;
+    const bucket = byTopic[topicId] || (byTopic[topicId] = emptyTopicCoverage());
+    if (item.phase === "discovery" && item.status === "needs_review") {
+      bucket.pending_review += 1;
+    }
+    if (item.phase === "acquisition") {
+      bucket.awaiting_documents += 1;
+      if (item.status === "failed" || item.status === "partial") {
+        bucket.failed_documents += 1;
+      }
+    }
+  }
+  return byTopic;
+}
+
+function applyActiveTopicCoverageToShell() {
+  const c = state.build.coverageByTopic[state.build.activeTopicId] || emptyTopicCoverage();
+  setText("reviewNavBadge", String(c.pending_review));
+  setText("documentsNavBadge", String(c.awaiting_documents));
+  updateStatusStrip({
+    pendingReview: c.pending_review,
+    awaitingDocs: c.awaiting_documents,
+    docFailures: c.failed_documents,
+    lastRunState: (el("statusLastRun")?.textContent || "").trim() || "none",
+    activeTopic: activeTopic()?.name || "Default Topic",
+  });
 }
 
 function copyFeedbackIdForTarget(sourceNode, explicitFeedbackId = "") {
@@ -485,11 +597,27 @@ async function loadSystemStatus() {
 async function loadDashboard() {
   setText("dashboardError", "");
   const queue = await apiGet("/v1/work-queue?limit=200&offset=0");
-  const needsReview = queue.items.filter((i) => i.phase === "discovery" && i.status === "needs_review").length;
-  const docIssues = queue.items.filter((i) => i.phase === "acquisition" && (i.status === "failed" || i.status === "partial")).length;
+  const queueItems = queue.items || [];
+  const needsReview = queueItems.filter((i) => i.phase === "discovery" && i.status === "needs_review").length;
+  const docIssues = queueItems.filter((i) => i.phase === "acquisition" && (i.status === "failed" || i.status === "partial")).length;
   const parseErrors = queue.items.filter((i) => i.phase === "parse" && i.status === "failed").length;
-  setText("reviewNavBadge", String(needsReview));
-  setText("documentsNavBadge", String(docIssues));
+  let sources = [];
+  if (state.latest.discovery) {
+    try {
+      const payload = await apiGet(`/v1/discovery/runs/${encodeURIComponent(state.latest.discovery)}/sources?status=all&limit=500&offset=0`);
+      sources = payload.items || [];
+    } catch (_err) {
+      sources = [];
+    }
+  }
+  state.build.coverageByTopic = mergeTopicCoverage(queueItems, sources);
+  const activeCoverage = state.build.coverageByTopic[state.build.activeTopicId] || emptyTopicCoverage();
+  const pendingForUi = activeCoverage.pending_review ?? needsReview;
+  const awaitingForUi = activeCoverage.awaiting_documents ?? docIssues;
+  const failedForUi = activeCoverage.failed_documents ?? docIssues;
+  setText("reviewNavBadge", String(pendingForUi));
+  setText("documentsNavBadge", String(awaitingForUi));
+  renderBuildTopics();
 
   let recent = "No run loaded";
   if (state.latest.discovery) {
@@ -511,10 +639,11 @@ async function loadDashboard() {
     4,
   );
   updateStatusStrip({
-    pendingReview: needsReview,
-    awaitingDocs: docIssues,
-    docFailures: docIssues,
+    pendingReview: pendingForUi,
+    awaitingDocs: awaitingForUi,
+    docFailures: failedForUi,
     lastRunState: recent,
+    activeTopic: activeTopic()?.name || "Default Topic",
   });
   return true;
 }
@@ -931,7 +1060,7 @@ async function startDiscovery(event) {
     setLatestId("discovery", result.run_id);
     el("discoverRunIdInput").value = result.run_id;
     el("reviewRunIdInput").value = result.run_id;
-    setText("dashboardState", `Run created: ${result.run_id}`);
+    setText("dashboardState", "Discovery run started. IDs are available in Advanced.");
     await loadDashboard();
     await loadDiscover();
     window.location.hash = "#discover";
@@ -947,6 +1076,7 @@ function handleBuildTopicClick(event) {
   if (!topicId) return;
   state.build.activeTopicId = topicId;
   renderBuildTopics();
+  applyActiveTopicCoverageToShell();
 }
 
 function createNewTopic() {
@@ -958,8 +1088,17 @@ function createNewTopic() {
   state.build.topics.push({ id, name: normalized });
   state.build.stagedSourcesByTopic[id] = [];
   state.build.sourceKeysByTopic[id] = new Set();
+  state.build.topicQueriesByTopic[id] = "";
+  state.build.coverageByTopic[id] = {
+    candidates: 0,
+    accepted: 0,
+    pending_review: 0,
+    awaiting_documents: 0,
+    failed_documents: 0,
+  };
   state.build.activeTopicId = id;
   renderBuildTopics();
+  applyActiveTopicCoverageToShell();
 }
 
 function handleAddSource(event) {
@@ -1030,7 +1169,12 @@ function handleBuildQuery(event) {
     setText("buildQueryState", "Query is required.");
     return;
   }
+  const topic = activeTopic();
+  if (topic) {
+    state.build.topicQueriesByTopic[topic.id] = query;
+  }
   setText("buildQueryState", `Saved topic query for ${activeTopic()?.name || "topic"}.`);
+  renderBuildTopics();
 }
 
 function handleCopyValueClick(event) {
@@ -1120,7 +1264,7 @@ async function handleReviewAction(event) {
   if (!sourceId) return;
   try {
     await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision: action === "accept" ? "accept" : "reject" });
-    setText("reviewState", `Reviewed ${sourceId}: ${action}`);
+    setText("reviewState", `Review decision saved: ${action}.`);
     await loadReview();
     await loadDashboard();
   } catch (err) {
@@ -1171,7 +1315,7 @@ async function sendAcceptedSelectedToDocuments() {
     const acq = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: false });
     setLatestId("acquisition", acq.acq_run_id);
     el("documentsAcqRunIdInput").value = acq.acq_run_id;
-    setText("reviewState", `Sent accepted rows to Documents via ${acq.acq_run_id}.`);
+    setText("reviewState", "Sent accepted rows to Documents.");
     window.location.hash = "#documents";
     await loadDocuments();
     await loadDashboard();
@@ -1190,7 +1334,7 @@ async function startAcquisition(event) {
     const result = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: retryFailedOnly });
     setLatestId("acquisition", result.acq_run_id);
     el("documentsAcqRunIdInput").value = result.acq_run_id;
-    setText("acqError", `Started acquisition: ${result.acq_run_id}`);
+    setText("acqError", "Acquisition started. IDs are available in Advanced.");
   } catch (err) {
     setText("acqError", `Start failed: ${err.message}`);
   }
@@ -1206,7 +1350,7 @@ async function startParse(event) {
     const result = await apiPost("/v1/parse/runs", { acq_run_id: acqRunId, retry_failed_only: retryFailedOnly });
     setLatestId("parse", result.parse_run_id);
     el("searchParseRunIdInput").value = result.parse_run_id;
-    setText("parseError", `Started parse: ${result.parse_run_id}`);
+    setText("parseError", "Parse started. IDs are available in Advanced.");
   } catch (err) {
     setText("parseError", `Start failed: ${err.message}`);
   }
@@ -1309,7 +1453,7 @@ async function registerManualUpload(event) {
       content_base64: contentBase64,
       content_type: file.type || null,
     });
-    setText("documentsState", `Registered artifact: ${res.artifact_id}`);
+    setText("documentsState", "Manual upload registered.");
     await loadDocuments();
   } catch (err) {
     setText("documentsError", `Upload failed: ${err.message}`);
@@ -1337,7 +1481,7 @@ async function documentsAcquirePending() {
     const next = await apiPost("/v1/acquisition/runs", { run_id: run.discovery_run_id, retry_failed_only: false });
     setLatestId("acquisition", next.acq_run_id);
     el("documentsAcqRunIdInput").value = next.acq_run_id;
-    setText("documentsState", `Started acquisition for pending sources: ${next.acq_run_id}`);
+    setText("documentsState", "Started acquisition for pending sources.");
     await loadDocuments();
   } catch (err) {
     setText("documentsError", `Acquire pending failed: ${err.message}`);
@@ -1354,7 +1498,7 @@ async function documentsRetryFailed() {
     const next = await apiPost("/v1/acquisition/runs", { run_id: run.discovery_run_id, retry_failed_only: true });
     setLatestId("acquisition", next.acq_run_id);
     el("documentsAcqRunIdInput").value = next.acq_run_id;
-    setText("documentsState", `Started retry-failed acquisition: ${next.acq_run_id}`);
+    setText("documentsState", "Started retry-failed acquisition.");
     await loadDocuments();
   } catch (err) {
     setText("documentsError", `Retry failed failed: ${err.message}`);

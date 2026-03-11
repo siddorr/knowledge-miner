@@ -102,7 +102,7 @@ def test_hmi_static_js_served():
     assert "Reject" in body
     assert "updateSectionVisibility" in body
     assert "statusBadge" in body
-    assert "Run created:" in body
+    assert "IDs are available in Advanced." in body
     assert "loadAiSettings" in body
     assert "saveAiSettings" in body
     assert "runGlobalSearch" in body

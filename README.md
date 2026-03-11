@@ -36,6 +36,7 @@ Source of truth docs:
 8. `AGENTS.md` - contributor/AI operating rules
 
 Archived legacy docs are in `archive/`.
+UI navigation/source-of-truth model is defined only in `UI_SPEC.md`; archived UI docs are explicitly deprecated.
 Imported UX source (`Downloads/Knowledge_Miner_GUI_Spec.docx`) is reflected in `UI_SPEC.md` and tracked via `BACKLOG.md` Phase 4.3 tasks.
 
 ## Runtime Modes

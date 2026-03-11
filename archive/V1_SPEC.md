@@ -1,3 +1,5 @@
+> Deprecated: This document is archived and not an active product spec. Use ../UI_SPEC.md, ../CURRENT_SCOPE.md, and ../BACKLOG.md as source of truth.
+
 # UPW Literature Discovery Engine - v1 Specification
 
 Status: Approved baseline for implementation
