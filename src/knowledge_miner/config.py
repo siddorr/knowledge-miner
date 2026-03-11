@@ -39,6 +39,11 @@ class Settings:
     domains_allowlist_path: str = os.getenv("DOMAINS_ALLOWLIST_PATH", "./config/domains_allowlist.txt")
     acquisition_timeout_seconds: float = float(os.getenv("ACQUISITION_TIMEOUT_SECONDS", "20"))
     acquisition_max_bytes: int = int(os.getenv("ACQUISITION_MAX_BYTES", "25000000"))
+    log_dir: str = os.getenv("LOG_DIR", "./logs")
+    log_file: str = os.getenv("LOG_FILE", "knowledge_miner.log")
+    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    log_max_bytes: int = int(os.getenv("LOG_MAX_BYTES", "10485760"))
+    log_backup_count: int = int(os.getenv("LOG_BACKUP_COUNT", "5"))
 
 
 settings = Settings()

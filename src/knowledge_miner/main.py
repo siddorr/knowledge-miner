@@ -27,6 +27,7 @@ from .discovery import create_run, enqueue_run, export_sources_raw, review_sourc
 from .models import AcquisitionItem, AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Run, Source
 from .parse import create_parse_run, enqueue_parse_run
 from .rate_limit import require_rate_limit
+from .logging_setup import configure_logging
 from .schemas import (
     AcquisitionItemsListResponse,
     AcquisitionItemOut,
@@ -70,6 +71,8 @@ app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_st
 
 @app.on_event("startup")
 def validate_runtime_config() -> None:
+    log_path = configure_logging()
+    logger.info("Persistent logging initialized at %s", log_path)
     if settings.app_env.lower() in {"production", "prod"} and is_sqlite_url(settings.database_url):
         logger.warning(
             "Production mode is configured with SQLite. Use PostgreSQL DATABASE_URL for v1 production baseline."

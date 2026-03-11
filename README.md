@@ -76,6 +76,18 @@ Note:
 1. OpenAlex does not require an API key.
 2. Real-provider mode requires host network access (sandboxed runs may not have DNS/internet).
 
+## Persistent Logs
+
+The service writes persistent rotating logs to file (and stdout) using:
+1. `LOG_DIR` (default `./logs`)
+2. `LOG_FILE` (default `knowledge_miner.log`)
+3. `LOG_LEVEL` (default `INFO`)
+4. `LOG_MAX_BYTES` (default `10485760`)
+5. `LOG_BACKUP_COUNT` (default `5`)
+
+Example:
+1. `tail -f /home/garik/Documents/git/knowledge-miner/logs/knowledge_miner.log`
+
 ## Discovery Visibility (Planned Extension)
 
 For operations dashboard and review workflows, discovery visibility is being extended as follows:
