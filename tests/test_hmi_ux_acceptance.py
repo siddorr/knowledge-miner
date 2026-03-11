@@ -81,8 +81,12 @@ def test_hmi_route_exposes_operator_first_shell_and_advanced_section():
     response = client.get("/hmi")
     assert response.status_code == 200
     body = response.text
-    assert "Work Queue" in body
-    assert "Runs &amp; Logs (Advanced)" in body
+    assert "Dashboard" in body
+    assert "Discover" in body
+    assert "Review" in body
+    assert "Documents" in body
+    assert "Search" in body
+    assert "Advanced" in body
     assert "Global Search" in body
 
 
@@ -93,3 +97,16 @@ def test_queue_rows_include_reason_text():
     assert queue.status_code == 200
     items = queue.json()["items"]
     assert any((item.get("reason_text") or "") for item in items)
+
+
+def test_hmi_first_time_flow_labels_and_no_required_manual_ids():
+    client = TestClient(app)
+    response = client.get("/hmi")
+    assert response.status_code == 200
+    body = response.text
+    assert "First-time-user flow: Discover -> Review -> Documents -> Search." in body
+    assert "Run Discovery" in body
+    assert "Load Review Queue" in body
+    assert "Load Download Issues" in body
+    assert "Search" in body
+    assert "Technical details" in body

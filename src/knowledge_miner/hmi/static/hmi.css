@@ -194,6 +194,33 @@ th {
   flex-wrap: wrap;
 }
 
+.status-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  border: 1px solid transparent;
+}
+
+.status-ready {
+  color: #0f6a46;
+  background: #e8f5ed;
+  border-color: #9dcfb2;
+}
+
+.status-warn {
+  color: #7a5d00;
+  background: #fff6dd;
+  border-color: #e5cd84;
+}
+
+.status-alert {
+  color: #a21b1b;
+  background: #fdeaea;
+  border-color: #e1a7a7;
+}
+
 @media (max-width: 720px) {
   .stack {
     padding: 12px;

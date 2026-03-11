@@ -1,216 +1,195 @@
-# HMI Plan - UX Rebuild (Operator-First)
+# HMI Plan - Task-First UX (Implemented Baseline)
 
 ## Summary
 
-Rebuild the HMI as an operator-first console with a search-first workflow.
+HMI must present user tasks, not pipeline internals.
 
-Primary goals:
-1. Fast triage loop across Discovery -> Acquisition -> Parse -> Manual Recovery.
-2. Minimal manual ID handling in normal operations.
-3. Clear status reasons and actionability for non-technical operators.
+Primary user flow:
+1. Discover
+2. Review
+3. Fix Documents
+4. Search
 
-Decision lock:
-1. Scope: full dashboard redesign (all tabs).
-2. Primary interaction: search-first.
-3. ID visibility: hidden by default.
-4. Auth/key UX: system env by default + optional temporary manual override.
-5. Rollout: hard replace (no side-by-side feature flag).
+Pipeline terms (`discovery`, `acquisition`, `parse`) remain in system internals and in `Advanced` only.
 
-## UX Principles
+## Core UX Principle
 
-1. Row-first actions:
-- Operators act from the item row (`Approve`, `Reject`, `Retry`, `Manual Upload`) without copy/paste.
+User-facing model:
+1. `Discover -> Review -> Fix -> Search`
 
-2. Human context before technical data:
-- Show title, abstract snippet, source/provider, status reason first.
-- Keep IDs in optional "technical details" panels.
+System-facing model:
+1. Discovery
+2. Acquisition
+3. Parse
+4. Diagnostics
 
-3. One selected context:
-- Selecting an item synchronizes context across sections (Discovery/Acquisition/Parse/Search/Recovery).
+Rule:
+1. Do not require first-time users to understand system stages to complete core tasks.
 
-4. Explicit "why" messaging:
-- Every non-terminal/problem state must expose reason code + readable explanation.
+## Navigation Model
 
-## Information Architecture
+Top-level navigation:
+1. `Dashboard`
+2. `Discover`
+3. `Review`
+4. `Documents`
+5. `Search`
+6. `Advanced`
 
-1. Global shell:
-- Top bar:
-  - global search
-  - `Create New Session`
-  - connection/health badges
-  - auth mode indicator (`System token` / `Manual override`)
-- Left navigation:
-  - `Work Queue` (default)
-  - `Discovery`
-  - `Acquisition`
-  - `Parse`
-  - `Search`
-  - `Manual Recovery`
-  - `Runs & Logs` (advanced)
+Meaning:
+1. `Dashboard`: overview + next actions.
+2. `Discover`: start discovery runs.
+3. `Review`: accept/reject found sources.
+4. `Documents`: resolve download issues.
+5. `Search`: query accepted/parsed knowledge.
+6. `Advanced`: runs, logs, IDs, raw technical views.
 
-2. Work Queue (new default screen):
-- Unified actionable items:
-  - discovery `needs_review`
-  - acquisition `failed|partial`
-  - parse `failed`
-- Inline actions:
-  - `Approve`
-  - `Reject`
-  - `Retry`
-  - `Open Source`
-  - `Manual Upload`
+## One-Screen Dashboard
 
-3. Stage screens:
-- Discovery:
-  - create run
-  - review queue
-  - status filters and decision provenance
-- Acquisition:
-  - run counters
-  - item outcomes + retry actions
-  - send failures to recovery
-- Parse:
-  - parse run counters
-  - document/chunk viewers
-  - failed parse visibility
-- Search:
-  - query parsed corpus
-  - open document/detail/source context
-- Manual Recovery:
-  - failed/partial list
-  - legal candidate links
-  - upload registration
-- Runs & Logs:
-  - explicit run IDs and technical diagnostics
+Dashboard sections:
+1. Discover Knowledge
+- `Run Discovery` primary button.
+2. Things Needing Attention
+- `Sources to review` + CTA `Review`.
+- `Failed document downloads` + CTA `Fix`.
+- `Processing errors` + CTA `Inspect` (to Advanced).
+3. Explore Knowledge
+- `Search Library` button.
+4. Recent Activity
+- last run time.
+- discovered/accepted/rejected counts.
 
-## API Contract
+Dashboard success criterion:
+1. User knows what to do next in under 5 seconds.
 
-Existing endpoints remain in use:
-1. Discovery, review, export endpoints
-2. Acquisition run/items/manifest/manual recovery endpoints
-3. Parse run/documents/chunks endpoints
-4. Search endpoint
-5. AI filter settings endpoint
+## Page Specifications
 
-New endpoints for UX v2:
+## Discover
+Goal:
+1. Start discovery with minimal input.
+
+UI:
+1. Query list input.
+2. `Run Discovery` button.
+3. Last run summary (found/accepted/rejected).
+
+Non-goals:
+1. No technical IDs in default view.
+2. No cross-phase controls.
+
+## Review
+Goal:
+1. Fast relevance triage.
+
+Table columns:
+1. Title
+2. Decision (`Accept` / `Reject`)
+
+Expandable per-row details:
+1. Abstract
+2. Keywords (if available)
+3. Citation count (if available)
+4. Why panel (`reason_code`, `reason_text`, confidence when available)
+
+Rule:
+1. No manual source ID entry in primary review workflow.
+
+## Documents
+Goal:
+1. Resolve acquisition problems clearly.
+
+Table columns:
+1. Title
+2. Problem (`Paywalled`, `Blocked`, `Retryable`, `No OA found`)
+3. Action (`Upload PDF`, `Retry`, `Open source`)
+
+Rule:
+1. User acts from row context only; no manual ID copy/paste.
+
+## Search
+Goal:
+1. Explore knowledge with minimal friction.
+
+UI:
+1. Single search box.
+2. Result title + snippet list.
+3. Open source/document details on click.
+
+Rule:
+1. Avoid technical status fields in primary results.
+
+## Advanced
+Goal:
+1. Keep full operator/developer control without cluttering primary UX.
+
+Contains:
+1. Run tables and filters.
+2. Logs and diagnostics.
+3. API/system status details.
+4. Raw IDs and JSON/debug payloads.
+
+## ID Visibility Policy
+
+Default:
+1. Hide `run_id`, `source_id`, `acq_run_id`, `parse_run_id` from task pages.
+
+Allowed visibility:
+1. `Advanced`.
+2. Explicit "Technical details" drawer.
+3. Copy-ID controls for support/debug only.
+
+## Status Presentation Model
+
+Primary UI status model:
+1. Green: completed/ready
+2. Yellow: needs attention/review/in progress
+3. Red: failed/blocker
+
+Rule:
+1. Use text + color together.
+2. Avoid exposing full backend status taxonomy in primary pages.
+
+## API Contract Requirements
+
+Existing action APIs remain authoritative:
+1. Discovery run create/status/source listing.
+2. Source review.
+3. Acquisition runs/items/manual recovery/upload.
+4. Parse and search APIs.
+
+Task-first aggregator/status APIs:
 1. `GET /v1/work-queue`
-- Aggregated actionable rows across phases.
-- Query support:
-  - `kind=discovery|acquisition|parse|all`
-  - `status=needs_review|failed|partial|all`
-  - `limit`
-  - `offset` (or cursor in future iteration)
+- Task-grouped actionable items for Dashboard/Review/Documents.
+2. `GET /v1/system/status`
+- Auth mode, AI readiness, provider readiness.
+3. `GET /v1/search/global`
+- Unified search across runs/sources/acquisition/parse artifacts.
 
-2. `GET /v1/search/global`
-- Unified search across:
-  - sources
-  - runs
-  - acquisition items
-  - parsed documents
-  - chunks
+Preferred response additions for task pages:
+1. `reason_code`
+2. `reason_text`
+3. `ui_status` (mapped status for green/yellow/red)
 
-3. `GET /v1/system/status`
-- Returns:
-  - auth mode and readiness
-  - AI filter readiness and warning
-  - provider readiness summary
+## First-Time User Journey (Acceptance Path)
 
-Contract additions for operator clarity:
-1. list responses should include:
-- `reason_code`
-- `reason_text`
-- `last_transition_at` (when available)
+1. User opens Dashboard.
+2. User clicks `Run Discovery`.
+3. User reviews sources in `Review`.
+4. User fixes failed downloads in `Documents`.
+5. User searches corpus in `Search`.
 
-## ID Handling Policy
+Acceptance criterion:
+1. This flow must be executable without reading documentation and without manual ID entry.
 
-1. IDs are not required as primary user input in core workflows.
-2. IDs are displayed only in:
-- copy controls
-- technical details drawers
-- `Runs & Logs` section
-3. Existing ID-based APIs remain unchanged for compatibility.
+## Accessibility and Clarity
 
-## Auth and Token UX
+1. Primary actions must be text-labeled buttons.
+2. Keyboard navigation for task flow must work end-to-end.
+3. Important state changes must be visible and understandable without logs.
 
-1. `AUTH_ENABLED=false`:
-- hide token input controls
-- show "No app token required"
+## Out of Scope
 
-2. `AUTH_ENABLED=true`:
-- show current mode:
-  - system token present
-  - manual override active
-- allow temporary manual override from UI
-- never echo plaintext token in API responses
-
-3. Provider keys:
-- system env remains source of truth
-- readiness is shown through `GET /v1/system/status`
-
-## Polling and Runtime Behavior
-
-1. Polling:
-- 5s for active tabs/runs
-- 15s when browser tab is hidden
-
-2. Polling stop:
-- stop for terminal statuses (`completed`, `failed`) with manual refresh option
-
-3. State persistence:
-- preserve filters/pagination/selected context on refresh
-
-4. Error mapping:
-- `400`: invalid request
-- `401/403`: auth/config
-- `404`: resource missing
-- `409`: invalid run state
-- `429`: rate limit
-- `5xx`: retry guidance
-
-## Accessibility and Clarity Requirements
-
-1. All action buttons must have clear labels (no icon-only critical actions).
-2. Keyboard focus order must allow operator workflow without mouse.
-3. Status uses text + color (not color only).
-4. Tables support truncation + expand/collapse for abstract/error text.
-
-## Test and Acceptance Matrix
-
-1. Functional:
-- create session from UI without manual run-ID typing
-- review from queue row (approve/reject)
-- retry failed acquisition from row
-- register manual upload from row context
-- open parsed document and source context from search result
-
-2. UX:
-- IDs hidden by default in core views
-- row-level actions complete without copy-paste IDs
-- context sync works across sections
-
-3. Security/config:
-- auth disabled mode works with no token UI
-- auth enabled mode validates token and supports manual override
-- AI readiness/warnings visible and accurate
-
-4. Regression:
-- existing API clients remain compatible
-- DOI-style source IDs remain reviewable
-- manual recovery CSV/export/upload flows unchanged
-
-## Implementation Order
-
-1. Add backend aggregator/status endpoints (`work-queue`, `global-search`, `system-status`).
-2. Implement new shell + global search + context store.
-3. Build Work Queue and row action flows.
-4. Refactor Discovery/Acquisition/Parse/Search/Recovery screens to row-first behavior.
-5. Remove legacy ID-first forms from core paths.
-6. Keep advanced technical views under `Runs & Logs`.
-7. Hard replace old HMI route.
-
-## Out of Scope for This UX Rebuild
-
-1. Separate frontend repository/framework migration.
-2. WebSocket event streaming.
-3. Multi-user RBAC/login redesign.
-4. Mobile-native app.
+1. WebSocket architecture changes.
+2. Frontend framework migration.
+3. New auth/RBAC system.
+4. Mobile-native application.

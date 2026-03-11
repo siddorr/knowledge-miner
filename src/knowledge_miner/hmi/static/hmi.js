@@ -6,17 +6,12 @@ const AUTH_ENABLED = typeof window !== "undefined" ? window.__KM_HMI_AUTH_ENABLE
 const state = {
   apiKey: "",
   tokenSource: "none",
-  runRows: [],
   pollTimer: null,
-  view: {
-    queue: { loaded: false, offset: 0, limit: 100 },
-    discovery: { loaded: false, offset: 0, expandedAbstractIds: new Set(), createdRunId: null },
-    acq: { loaded: false, offset: 0 },
-    parse: { loaded: false, docsOffset: 0, chunksOffset: 0 },
-    manual: { loaded: false, offset: 0 },
-    search: { loaded: false, payload: null, latestItems: [] },
-    globalSearch: { loaded: false, latestItems: [] },
-  },
+  runRows: [],
+  latest: { discovery: "", acquisition: "", parse: "" },
+  review: { offset: 0, loaded: false, expanded: new Set() },
+  documents: { offset: 0, loaded: false, selectedSourceId: "" },
+  search: { loaded: false, payload: null, items: [] },
   context: {},
 };
 
@@ -38,40 +33,6 @@ function escapeHtml(text) {
     .replaceAll("'", "&#039;");
 }
 
-function truncatedAbstract(text, expanded) {
-  const raw = (text || "").trim();
-  if (!raw) return { body: "", toggle: false, expanded: false };
-  if (raw.length <= 220) return { body: raw, toggle: false, expanded: false };
-  if (expanded) return { body: raw, toggle: true, expanded: true };
-  return { body: `${raw.slice(0, 220)}...`, toggle: true, expanded: false };
-}
-
-function requiredKey() {
-  if (!AUTH_ENABLED) return;
-  if (!state.apiKey) {
-    throw new Error("API key is required");
-  }
-}
-
-function authHeaders() {
-  if (!AUTH_ENABLED || !state.apiKey) {
-    return {};
-  }
-  return { Authorization: `Bearer ${state.apiKey}` };
-}
-
-function isTerminalStatus(status) {
-  return status === "completed" || status === "failed";
-}
-
-function activeSection() {
-  const id = window.location.hash.replace("#", "") || "work-queue";
-  if (["work-queue", "runs", "discovery", "acquisition", "parse", "search", "manual-recovery"].includes(id)) {
-    return id;
-  }
-  return "work-queue";
-}
-
 function setPollState(message, stale = false) {
   const node = el("pollState");
   if (!node) return;
@@ -80,10 +41,14 @@ function setPollState(message, stale = false) {
   node.classList.add(stale ? "poll-stale" : "poll-ok");
 }
 
-function schedulePoll() {
-  if (state.pollTimer) clearTimeout(state.pollTimer);
-  const interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
-  state.pollTimer = setTimeout(runPollCycle, interval);
+function requiredKey() {
+  if (!AUTH_ENABLED) return;
+  if (!state.apiKey) throw new Error("API key is required");
+}
+
+function authHeaders() {
+  if (!AUTH_ENABLED || !state.apiKey) return {};
+  return { Authorization: `Bearer ${state.apiKey}` };
 }
 
 async function apiGet(path) {
@@ -95,7 +60,7 @@ async function apiGet(path) {
       const body = await res.json();
       detail = body.detail || detail;
     } catch (_err) {
-      // ignore json parse errors
+      // ignore
     }
     throw new Error(detail);
   }
@@ -115,7 +80,7 @@ async function apiPost(path, payload) {
       const body = await res.json();
       detail = body.detail || detail;
     } catch (_err) {
-      // ignore json parse errors
+      // ignore
     }
     throw new Error(detail);
   }
@@ -131,7 +96,7 @@ async function apiDownload(path, filename) {
       const body = await res.json();
       detail = body.detail || detail;
     } catch (_err) {
-      // ignore json parse errors
+      // ignore
     }
     throw new Error(detail);
   }
@@ -146,118 +111,121 @@ async function apiDownload(path, filename) {
   URL.revokeObjectURL(objectUrl);
 }
 
-function summaryForRun(phase, payload) {
-  if (phase === "discovery") {
-    return `iter=${payload.current_iteration}, accepted=${payload.accepted_total}, expanded=${payload.expanded_candidates_total}`;
-  }
-  if (phase === "acquisition") {
-    return `downloaded=${payload.downloaded_total}, partial=${payload.partial_total}, failed=${payload.failed_total}`;
-  }
-  return `parsed=${payload.parsed_total}, failed=${payload.failed_total}, chunks=${payload.chunked_total}`;
-}
-
-function setLatestId(kind, value) {
-  const id = value && value.trim() ? value.trim() : "-";
-  if (kind === "discovery") setText("latestDiscoveryId", id);
-  if (kind === "acquisition") setText("latestAcqId", id);
-  if (kind === "parse") setText("latestParseId", id);
-}
-
 function setContext(patch) {
   state.context = { ...state.context, ...patch };
-  el("globalContext").textContent = JSON.stringify(state.context, null, 2);
+  const out = el("globalContext");
+  if (out) out.textContent = JSON.stringify(state.context, null, 2);
 }
 
-function syncDiscoveryRunInputs(runId) {
-  const id = (runId || "").trim();
-  if (!id) return;
-  el("discoveryRunId").value = id;
-  el("runPhaseSelect").value = "discovery";
-  el("runIdInput").value = id;
+function activeSection() {
+  const id = window.location.hash.replace("#", "") || "dashboard";
+  const valid = ["dashboard", "discover", "review", "documents", "search", "advanced"];
+  return valid.includes(id) ? id : "dashboard";
 }
 
-function updatePostCreateGuidance(run, sourcesTotal) {
-  const guidanceNode = el("postCreateGuidance");
-  if (!guidanceNode) return;
-  if (!state.view.discovery.createdRunId || run.run_id !== state.view.discovery.createdRunId) {
-    guidanceNode.textContent = "";
-    return;
+function updateSectionVisibility() {
+  const current = activeSection();
+  for (const id of ["dashboard", "discover", "review", "documents", "search", "advanced"]) {
+    const node = el(id);
+    if (!node) continue;
+    node.hidden = id !== current;
   }
-  const statusFilter = el("discoveryStatusFilter").value;
-  let message = `Run created: ${run.run_id}. Status filter currently: ${statusFilter}.`;
-  if (statusFilter === "accepted" && Number(sourcesTotal || 0) === 0) {
-    message += " No accepted sources yet. Switch filter to all or needs_review.";
-  }
-  guidanceNode.textContent = message;
 }
 
-function getLatestId(kind) {
-  if (kind === "discovery") return (el("latestDiscoveryId").textContent || "").trim();
-  if (kind === "acquisition") return (el("latestAcqId").textContent || "").trim();
-  return (el("latestParseId").textContent || "").trim();
-}
-
-async function copyLatestId(kind) {
-  const id = getLatestId(kind);
-  if (!id || id === "-") {
-    setText("idCopyState", "No ID to copy.");
-    return;
-  }
-  try {
-    await navigator.clipboard.writeText(id);
-    setText("idCopyState", `Copied ${kind} ID: ${id}`);
-  } catch (_err) {
-    setText("idCopyState", "Copy failed (clipboard unavailable).");
-  }
+function schedulePoll() {
+  if (state.pollTimer) clearTimeout(state.pollTimer);
+  const interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
+  state.pollTimer = setTimeout(runPollCycle, interval);
 }
 
 function upsertRunRow(phase, runId, payload) {
+  const summary =
+    phase === "discovery"
+      ? `iter=${payload.current_iteration || 0}, accepted=${payload.accepted_total || 0}, expanded=${payload.expanded_candidates_total || 0}`
+      : phase === "acquisition"
+        ? `downloaded=${payload.downloaded_total || 0}, partial=${payload.partial_total || 0}, failed=${payload.failed_total || 0}`
+        : `parsed=${payload.parsed_total || 0}, failed=${payload.failed_total || 0}, chunks=${payload.chunked_total || 0}`;
+  const row = { phase, id: runId, status: payload.status || "queued", summary };
   const idx = state.runRows.findIndex((r) => r.phase === phase && r.id === runId);
-  const row = { phase, id: runId, status: payload.status, summary: summaryForRun(phase, payload) };
   if (idx >= 0) state.runRows[idx] = row;
   else state.runRows.unshift(row);
 }
 
 function renderRunsTable() {
-  const phaseFilter = el("runFilterPhase").value;
-  const statusFilter = el("runFilterStatus").value;
   const tbody = el("runsTable");
-  const rows = state.runRows.filter((row) => {
-    const phaseOk = phaseFilter === "all" || row.phase === phaseFilter;
-    const statusOk = statusFilter === "all" || row.status === statusFilter;
-    return phaseOk && statusOk;
-  });
-
+  if (!tbody) return;
+  const phaseFilter = (el("runFilterPhase") || {}).value || "all";
+  const statusFilter = (el("runFilterStatus") || {}).value || "all";
+  const rows = state.runRows.filter((r) => (phaseFilter === "all" || r.phase === phaseFilter) && (statusFilter === "all" || r.status === statusFilter));
   if (!rows.length) {
     tbody.innerHTML = '<tr><td colspan="4">No runs loaded.</td></tr>';
     return;
   }
-
   tbody.innerHTML = rows
-    .map(
-      (row) =>
-        `<tr><td>${escapeHtml(row.phase)}</td><td>${escapeHtml(row.id)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.summary)}</td></tr>`,
-    )
+    .map((r) => `<tr><td>${escapeHtml(r.phase)}</td><td>${escapeHtml(r.id)}</td><td>${escapeHtml(r.status)}</td><td>${escapeHtml(r.summary)}</td></tr>`)
     .join("");
 }
 
-async function refreshRunsData() {
-  if (!state.runRows.length) return true;
-  let hasNonTerminal = false;
-  for (const row of state.runRows) {
-    const endpoint =
-      row.phase === "discovery"
-        ? `/v1/discovery/runs/${encodeURIComponent(row.id)}`
-        : row.phase === "acquisition"
-          ? `/v1/acquisition/runs/${encodeURIComponent(row.id)}`
-          : `/v1/parse/runs/${encodeURIComponent(row.id)}`;
-    const payload = await apiGet(endpoint);
-    row.status = payload.status;
-    row.summary = summaryForRun(row.phase, payload);
-    if (!isTerminalStatus(row.status)) hasNonTerminal = true;
+function setLatestId(kind, value) {
+  const trimmed = (value || "").trim();
+  state.latest[kind] = trimmed;
+  if (kind === "discovery") setText("latestDiscoveryId", trimmed || "-");
+  if (kind === "acquisition") setText("latestAcqId", trimmed || "-");
+  if (kind === "parse") setText("latestParseId", trimmed || "-");
+}
+
+function getDiscoveryRunId() {
+  const override = (el("reviewRunIdInput") || {}).value || "";
+  const discoverOverride = (el("discoverRunIdInput") || {}).value || "";
+  return override.trim() || discoverOverride.trim() || state.latest.discovery;
+}
+
+function getAcqRunId() {
+  const override = (el("documentsAcqRunIdInput") || {}).value || "";
+  return override.trim() || state.latest.acquisition;
+}
+
+function getParseRunId() {
+  const override = (el("searchParseRunIdInput") || {}).value || "";
+  return override.trim() || state.latest.parse;
+}
+
+function statusToUi(status) {
+  if (["completed", "downloaded", "parsed", "accepted"].includes(status)) return "Ready";
+  if (["failed", "error", "rejected", "partial"].includes(status)) return "Needs Action";
+  return "In Progress";
+}
+
+function statusBadge(status) {
+  const text = statusToUi(status);
+  const klass = text === "Ready" ? "status-ready" : text === "Needs Action" ? "status-alert" : "status-warn";
+  return `<span class="status-badge ${klass}">${escapeHtml(text)}</span>`;
+}
+
+function reasonText(reasonCode) {
+  if (reasonCode === "paywalled") return "Paywalled";
+  if (reasonCode === "no_oa_found") return "No open-access source found";
+  if (reasonCode === "rate_limited") return "Provider rate limited";
+  if (reasonCode === "robots_blocked") return "Blocked by robots/legal policy";
+  if (reasonCode === "source_error") return "Source retrieval error";
+  return reasonCode || "Unknown issue";
+}
+
+function renderTable(tbodyId, rows, cols) {
+  const tbody = el(tbodyId);
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="${cols}">No records found.</td></tr>`;
+    return;
   }
-  renderRunsTable();
-  return hasNonTerminal;
+  tbody.innerHTML = rows.join("");
+}
+
+function abstractView(text, expanded) {
+  const raw = (text || "").trim();
+  if (!raw) return { text: "", long: false };
+  if (raw.length <= 220 || expanded) return { text: raw, long: raw.length > 220 };
+  return { text: `${raw.slice(0, 220)}...`, long: true };
 }
 
 async function loadSystemStatus() {
@@ -273,793 +241,219 @@ async function loadSystemStatus() {
   }
 }
 
-async function loadWorkQueueData() {
-  setText("workQueueError", "");
-  const payload = await apiGet(`/v1/work-queue?limit=${state.view.queue.limit}&offset=${state.view.queue.offset}`);
+async function loadDashboard() {
+  setText("dashboardError", "");
+  const queue = await apiGet("/v1/work-queue?limit=200&offset=0");
+  const needsReview = queue.items.filter((i) => i.phase === "discovery" && i.status === "needs_review").length;
+  const docIssues = queue.items.filter((i) => i.phase === "acquisition" && (i.status === "failed" || i.status === "partial")).length;
+  const parseErrors = queue.items.filter((i) => i.phase === "parse" && i.status === "failed").length;
+
+  let recent = "No run loaded";
+  if (state.latest.discovery) {
+    try {
+      const run = await apiGet(`/v1/discovery/runs/${encodeURIComponent(state.latest.discovery)}`);
+      recent = `status=${run.status}, accepted=${run.accepted_total}, discovered=${run.expanded_candidates_total}`;
+      upsertRunRow("discovery", state.latest.discovery, run);
+      renderRunsTable();
+    } catch (_err) {
+      recent = `latest run unavailable (${state.latest.discovery})`;
+    }
+  }
+
   renderTable(
-    "workQueueRows",
-    payload.items.map((item) => {
-      const contextJson = escapeHtml(JSON.stringify(item.context || {}));
-      let actions = "";
-      if (item.item_type === "source_review") {
-        actions = `<button type="button" class="queue-action" data-action="approve" data-source-id="${escapeHtml(item.source_id || "")}" data-context="${contextJson}">Approve</button>
-          <button type="button" class="queue-action" data-action="reject" data-source-id="${escapeHtml(item.source_id || "")}" data-context="${contextJson}">Reject</button>`;
-      } else if (item.item_type === "acquisition_issue") {
-        actions = `<button type="button" class="queue-action" data-action="retry-acq" data-context="${contextJson}">Retry Acquisition</button>
-          <button type="button" class="queue-action" data-action="open-manual" data-context="${contextJson}">Manual Recovery</button>`;
-      } else if (item.item_type === "parse_issue") {
-        actions = `<button type="button" class="queue-action" data-action="retry-parse" data-context="${contextJson}">Retry Parse</button>`;
-      }
-      return `<tr><td>${escapeHtml(item.phase)}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.title || item.source_id || item.item_id || "")}</td><td>${escapeHtml(item.reason_text || item.reason_code || "")}</td><td>${actions}</td></tr>`;
-    }),
-    5,
+    "dashboardCards",
+    [
+      `<tr><td>${needsReview}</td><td>${docIssues}</td><td>${parseErrors}</td><td>${escapeHtml(recent)}</td></tr>`,
+    ],
+    4,
   );
-  setText("workQueueState", `items=${payload.total}`);
-  state.view.queue.loaded = true;
   return true;
 }
 
-async function refreshWorkQueue() {
-  try {
-    await loadWorkQueueData();
-    schedulePoll();
-  } catch (err) {
-    setText("workQueueError", `Load failed: ${err.message}`);
+async function loadDiscover() {
+  setText("discoverError", "");
+  const runId = getDiscoveryRunId();
+  if (!runId) {
+    setText("discoverSummary", "No discovery run selected.");
+    return true;
   }
-}
-
-async function handleQueueAction(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLElement) || !target.classList.contains("queue-action")) return;
-  const action = target.dataset.action || "";
-  let context = {};
-  try {
-    context = JSON.parse(target.dataset.context || "{}");
-  } catch (_err) {
-    context = {};
-  }
-  setContext(context);
-  try {
-    if (action === "approve" || action === "reject") {
-      const sourceId = target.dataset.sourceId || "";
-      if (!sourceId) throw new Error("source id is required");
-      await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision: action === "approve" ? "accept" : "reject" });
-    } else if (action === "retry-acq") {
-      if (!context.discovery_run_id) throw new Error("discovery run id missing");
-      await apiPost("/v1/acquisition/runs", { run_id: context.discovery_run_id, retry_failed_only: true });
-    } else if (action === "retry-parse") {
-      if (!context.acq_run_id) throw new Error("acq run id missing");
-      await apiPost("/v1/parse/runs", { acq_run_id: context.acq_run_id, retry_failed_only: true });
-    } else if (action === "open-manual") {
-      if (context.acq_run_id) el("manualAcqRunId").value = context.acq_run_id;
-      if (context.source_id) el("manualUploadSourceId").value = context.source_id;
-      window.location.hash = "#manual-recovery";
-      await loadManualRecoveryData();
-    }
-    await loadWorkQueueData();
-  } catch (err) {
-    setText("workQueueError", `Action failed: ${err.message}`);
-  }
-}
-
-async function runGlobalSearch(event) {
-  event.preventDefault();
-  setText("globalSearchState", "");
-  const query = el("globalSearchQuery").value.trim();
-  const limit = Number(el("globalSearchLimit").value);
-  if (!query) return;
-  try {
-    const payload = await apiGet(`/v1/search/global?q=${encodeURIComponent(query)}&limit=${limit}`);
-    state.view.globalSearch.latestItems = payload.items || [];
-    setText("globalSearchState", `results=${payload.total}`);
-    if (payload.items && payload.items.length) {
-      setContext(payload.items[0].context || {});
-    }
-  } catch (err) {
-    setText("globalSearchState", `Search failed: ${err.message}`);
-  }
-}
-
-async function lookupRun(event) {
-  event.preventDefault();
-  setText("runsError", "");
-  const phase = el("runPhaseSelect").value;
-  const runId = el("runIdInput").value.trim();
-  if (!runId) return;
-
-  const endpoint =
-    phase === "discovery"
-      ? `/v1/discovery/runs/${encodeURIComponent(runId)}`
-      : phase === "acquisition"
-        ? `/v1/acquisition/runs/${encodeURIComponent(runId)}`
-        : `/v1/parse/runs/${encodeURIComponent(runId)}`;
-
-  try {
-    const payload = await apiGet(endpoint);
-    upsertRunRow(phase, runId, payload);
-    setLatestId(phase, runId);
-    renderRunsTable();
-    schedulePoll();
-  } catch (err) {
-    setText("runsError", `Lookup failed: ${err.message}`);
-  }
-}
-
-function renderTable(tbodyId, rows, fallbackCols) {
-  const tbody = el(tbodyId);
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="${fallbackCols}">No records found.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows.join("");
-}
-
-async function loadDiscoveryData() {
-  setText("discoveryError", "");
-  const runId = el("discoveryRunId").value.trim();
-  const status = el("discoveryStatusFilter").value;
-  const limit = Number(el("discoveryLimit").value);
-  const offset = state.view.discovery.offset;
-  if (!runId) return true;
-
-  const [run, sources] = await Promise.all([
-    apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`),
-    apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`),
-  ]);
-
-  upsertRunRow("discovery", runId, run);
+  const run = await apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
   setLatestId("discovery", runId);
+  upsertRunRow("discovery", runId, run);
   renderRunsTable();
-
-  el("discoveryMetrics").textContent = JSON.stringify(
-    {
-      run_id: run.run_id,
-      status: run.status,
-      current_iteration: run.current_iteration,
-      seed_queries: run.seed_queries,
-      accepted_total: run.accepted_total,
-      expanded_candidates_total: run.expanded_candidates_total,
-      citation_edges_total: run.citation_edges_total,
-      ai_filter_active: run.ai_filter_active,
-      ai_filter_warning: run.ai_filter_warning,
-      listing_status_filter: status,
-      listed_sources: sources.total,
-    },
-    null,
-    2,
-  );
-
-  renderTable(
-    "discoverySources",
-    sources.items.map(
-      (s) => {
-        const expanded = state.view.discovery.expandedAbstractIds.has(s.id);
-        const abstract = truncatedAbstract(s.abstract || "", expanded);
-        const toggle = abstract.toggle
-          ? `<button type="button" class="abstract-toggle" data-action="toggle-abstract" data-source-id="${escapeHtml(s.id)}">${abstract.expanded ? "Collapse" : "Expand"}</button>`
-          : "";
-        return `<tr data-source-id="${escapeHtml(s.id)}"><td>${escapeHtml(s.id)}</td><td>${escapeHtml(s.title)}</td><td><span class="abstract-text">${escapeHtml(abstract.body)}</span>${toggle}</td><td class="discovery-status-cell">${escapeHtml(s.review_status)}</td><td>${escapeHtml(String(s.relevance_score))}</td><td>${escapeHtml(s.type)}</td><td>${escapeHtml(s.source)}</td><td><div class="review-actions"><button type="button" class="discovery-review-action" data-action="approve" data-source-id="${escapeHtml(s.id)}">Approve</button><button type="button" class="discovery-review-action" data-action="reject" data-source-id="${escapeHtml(s.id)}">Reject</button><button type="button" class="discovery-context-action" data-action="use-context" data-source-id="${escapeHtml(s.id)}">Use Context</button></div></td></tr>`;
+  setText(
+    "discoverSummary",
+    JSON.stringify(
+      {
+        run_id: run.run_id,
+        status: run.status,
+        seed_queries: run.seed_queries,
+        current_iteration: run.current_iteration,
+        accepted_total: run.accepted_total,
+        expanded_candidates_total: run.expanded_candidates_total,
+        citation_edges_total: run.citation_edges_total,
+        ai_filter_active: run.ai_filter_active,
+        ai_filter_warning: run.ai_filter_warning,
       },
+      null,
+      2,
     ),
-    8,
   );
-  setText("discoveryPage", `offset=${offset}, limit=${limit}, total=${sources.total}`);
-  updatePostCreateGuidance(run, sources.total);
-  state.view.discovery.loaded = true;
-  return !isTerminalStatus(run.status);
+  setText("discoverState", `Loaded run ${runId}`);
+  return true;
 }
 
-async function loadDiscovery(event) {
-  event.preventDefault();
-  state.view.discovery.offset = 0;
-  try {
-    await loadDiscoveryData();
-    schedulePoll();
-  } catch (err) {
-    setText("discoveryError", `Load failed: ${err.message}`);
-  }
-}
-
-async function loadAcquisitionData() {
-  setText("acqError", "");
-  const runId = el("acqRunId").value.trim();
-  const limit = Number(el("acqLimit").value);
-  const offset = state.view.acq.offset;
-  if (!runId) return true;
-
-  const [run, items] = await Promise.all([
-    apiGet(`/v1/acquisition/runs/${encodeURIComponent(runId)}`),
-    apiGet(`/v1/acquisition/runs/${encodeURIComponent(runId)}/items?limit=${limit}&offset=${offset}`),
-  ]);
-
-  upsertRunRow("acquisition", runId, run);
-  setLatestId("acquisition", runId);
-  if (!el("manualAcqRunId").value.trim()) {
-    el("manualAcqRunId").value = runId;
-  }
-  renderRunsTable();
-
-  el("acqMetrics").textContent = JSON.stringify(
-    {
-      acq_run_id: run.acq_run_id,
-      status: run.status,
-      total_sources: run.total_sources,
-      downloaded_total: run.downloaded_total,
-      partial_total: run.partial_total,
-      failed_total: run.failed_total,
-      skipped_total: run.skipped_total,
-      error_message: run.error_message,
-    },
-    null,
-    2,
+async function loadReview() {
+  setText("reviewError", "");
+  const runId = getDiscoveryRunId();
+  if (!runId) throw new Error("discovery run id is required");
+  const status = el("reviewStatusFilter").value;
+  const limit = Number(el("reviewLimit").value);
+  const offset = state.review.offset;
+  const page = await apiGet(
+    `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`,
   );
-
+  setLatestId("discovery", runId);
+  setText("reviewPage", `offset=${offset}, limit=${limit}, total=${page.total}`);
   renderTable(
-    "acqItems",
-    items.items.map(
-      (i) =>
-        `<tr data-item-id="${escapeHtml(i.item_id)}" data-source-id="${escapeHtml(i.source_id)}"><td>${escapeHtml(i.item_id)}</td><td>${escapeHtml(i.source_id)}</td><td>${escapeHtml(i.status)}</td><td>${escapeHtml(String(i.attempt_count))}</td><td>${escapeHtml(i.selected_url || "")}</td><td>${escapeHtml(i.last_error || "")}</td><td><div class="review-actions"><button type="button" class="acq-row-action" data-action="open-manual" data-source-id="${escapeHtml(i.source_id)}">Manual Recovery</button><button type="button" class="acq-row-action" data-action="prefill-upload" data-source-id="${escapeHtml(i.source_id)}">Prefill Upload</button></div></td></tr>`,
-    ),
-    7,
+    "reviewRows",
+    page.items.map((s) => {
+      const expanded = state.review.expanded.has(s.id);
+      const view = abstractView(s.abstract || "", expanded);
+      const toggle = view.long
+        ? `<button type="button" class="review-action" data-action="toggle" data-source-id="${escapeHtml(s.id)}">${expanded ? "Collapse" : "Expand"}</button>`
+        : "";
+      const why = `${escapeHtml(s.decision_source || "")}${s.heuristic_score != null ? ` | score=${escapeHtml(String(s.heuristic_score))}` : ""}`;
+      return `<tr data-source-id="${escapeHtml(s.id)}"><td>${escapeHtml(s.title || "")}</td><td><span>${escapeHtml(view.text)}</span> ${toggle}</td><td><button type="button" class="review-action" data-action="accept" data-source-id="${escapeHtml(s.id)}">Accept</button> <button type="button" class="review-action" data-action="reject" data-source-id="${escapeHtml(s.id)}">Reject</button> ${statusBadge(s.review_status)}</td><td>${why}</td></tr>`;
+    }),
+    4,
   );
-  setText("acqPage", `offset=${offset}, limit=${limit}, total=${items.total}`);
-  state.view.acq.loaded = true;
-  return !isTerminalStatus(run.status);
+  state.review.loaded = true;
+  return true;
 }
 
-async function loadAcquisition(event) {
-  event.preventDefault();
-  state.view.acq.offset = 0;
-  try {
-    await loadAcquisitionData();
-    schedulePoll();
-  } catch (err) {
-    setText("acqError", `Load failed: ${err.message}`);
-  }
-}
-
-async function loadParseData() {
-  setText("parseError", "");
-  const runId = el("parseRunId").value.trim();
-  const docsLimit = Number(el("parseDocsLimit").value);
-  const chunksLimit = Number(el("parseChunksLimit").value);
-  const docsOffset = state.view.parse.docsOffset;
-  const chunksOffset = state.view.parse.chunksOffset;
-  if (!runId) return true;
-
-  const [run, docs, chunks] = await Promise.all([
-    apiGet(`/v1/parse/runs/${encodeURIComponent(runId)}`),
-    apiGet(`/v1/parse/runs/${encodeURIComponent(runId)}/documents?limit=${docsLimit}&offset=${docsOffset}`),
-    apiGet(`/v1/parse/runs/${encodeURIComponent(runId)}/chunks?limit=${chunksLimit}&offset=${chunksOffset}`),
-  ]);
-
-  upsertRunRow("parse", runId, run);
-  setLatestId("parse", runId);
-  renderRunsTable();
-
-  el("parseMetrics").textContent = JSON.stringify(
-    {
-      parse_run_id: run.parse_run_id,
-      status: run.status,
-      total_documents: run.total_documents,
-      parsed_total: run.parsed_total,
-      failed_total: run.failed_total,
-      chunked_total: run.chunked_total,
-      ai_filter_active: run.ai_filter_active,
-      ai_filter_warning: run.ai_filter_warning,
-    },
-    null,
-    2,
-  );
-
-  renderTable(
-    "parseDocuments",
-    docs.items.map(
-      (d) =>
-        `<tr><td>${escapeHtml(d.document_id)}</td><td>${escapeHtml(d.status)}</td><td>${escapeHtml(d.decision || "")}</td><td>${escapeHtml(String(d.confidence || ""))}</td><td>${escapeHtml(d.parser_used || "")}</td><td>${escapeHtml(String(d.char_count))}</td><td><div class="review-actions"><button type="button" class="parse-doc-action" data-action="detail" data-document-id="${escapeHtml(d.document_id)}">Detail</button><button type="button" class="parse-doc-action" data-action="text" data-document-id="${escapeHtml(d.document_id)}">Text</button></div></td></tr>`,
-    ),
-    7,
-  );
-
-  renderTable(
-    "parseChunks",
-    chunks.items.map(
-      (c) =>
-        `<tr><td>${escapeHtml(c.chunk_id)}</td><td>${escapeHtml(c.document_id)}</td><td>${escapeHtml(String(c.chunk_index))}</td><td>${escapeHtml(c.decision || "")}</td><td>${escapeHtml(String(c.confidence || ""))}</td><td>${escapeHtml(`${c.start_char}-${c.end_char}`)}</td></tr>`,
-    ),
-    6,
-  );
-
-  setText("parseDocsPage", `offset=${docsOffset}, limit=${docsLimit}, total=${docs.total}`);
-  setText("parseChunksPage", `offset=${chunksOffset}, limit=${chunksLimit}, total=${chunks.total}`);
-  state.view.parse.loaded = true;
-  return !isTerminalStatus(run.status);
-}
-
-async function loadParse(event) {
-  event.preventDefault();
-  state.view.parse.docsOffset = 0;
-  state.view.parse.chunksOffset = 0;
-  try {
-    await loadParseData();
-    schedulePoll();
-  } catch (err) {
-    setText("parseError", `Load failed: ${err.message}`);
-  }
-}
-
-async function loadManualRecoveryData() {
-  setText("manualError", "");
-  const acqRunId = el("manualAcqRunId").value.trim();
-  const limit = Number(el("manualLimit").value);
-  const offset = state.view.manual.offset;
-  if (!acqRunId) return true;
-
+async function loadDocuments() {
+  setText("documentsError", "");
+  const acqRunId = getAcqRunId();
+  if (!acqRunId) throw new Error("acquisition run id is required");
+  const limit = Number(el("documentsLimit").value);
+  const offset = state.documents.offset;
   const queue = await apiGet(
     `/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads?limit=${limit}&offset=${offset}`,
   );
+  const run = await apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}`);
+  setLatestId("acquisition", acqRunId);
+  upsertRunRow("acquisition", acqRunId, run);
+  renderRunsTable();
 
   renderTable(
-    "manualQueueRows",
-    queue.items.map(
-      (item) =>
-        `<tr><td>${escapeHtml(item.item_id)}</td><td>${escapeHtml(item.source_id)}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(String(item.attempt_count))}</td><td>${escapeHtml(item.title)}</td><td>${escapeHtml(item.doi || "")}</td><td>${escapeHtml(item.source_url || "")}</td><td>${escapeHtml(item.selected_url || "")}</td><td>${escapeHtml((item.manual_url_candidates || []).join(" | "))}</td><td>${escapeHtml(item.last_error || "")}</td><td><button type="button" class="manual-row-action" data-action="prefill-upload" data-source-id="${escapeHtml(item.source_id)}">Prefill Upload</button></td></tr>`,
-    ),
-    11,
+    "documentsRows",
+    queue.items.map((item) => {
+      const candidates = item.manual_url_candidates || [];
+      const openUrl = item.selected_url || item.source_url || candidates[0] || "";
+      return `<tr><td>${escapeHtml(item.title || "")}</td><td>${escapeHtml(reasonText(item.reason_code || item.last_error || item.status))}</td><td><button type="button" class="documents-action" data-action="retry" data-source-id="${escapeHtml(item.source_id)}" data-discovery-run-id="${escapeHtml(run.discovery_run_id)}">Retry</button> <button type="button" class="documents-action" data-action="upload" data-source-id="${escapeHtml(item.source_id)}">Upload PDF</button> ${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : ""}</td></tr>`;
+    }),
+    3,
   );
-  setText("manualPage", `offset=${offset}, limit=${limit}, total=${queue.total}`);
-  state.view.manual.loaded = true;
-
-  const run = await apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}`);
-  upsertRunRow("acquisition", acqRunId, run);
-  setLatestId("acquisition", acqRunId);
-  renderRunsTable();
-  return !isTerminalStatus(run.status);
-}
-
-async function loadManualRecovery(event) {
-  event.preventDefault();
-  state.view.manual.offset = 0;
-  setText("manualState", "");
-  try {
-    await loadManualRecoveryData();
-    schedulePoll();
-  } catch (err) {
-    setText("manualError", `Load failed: ${err.message}`);
-  }
-}
-
-async function exportManualCsv() {
-  setText("manualError", "");
-  try {
-    const acqRunId = el("manualAcqRunId").value.trim();
-    if (!acqRunId) throw new Error("acquisition run id is required");
-    await apiDownload(
-      `/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads.csv`,
-      `manual_downloads_${acqRunId}.csv`,
-    );
-  } catch (err) {
-    setText("manualError", `Export failed: ${err.message}`);
-  }
-}
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || "");
-      const comma = result.indexOf(",");
-      if (comma < 0) {
-        reject(new Error("file_read_failed"));
-        return;
-      }
-      resolve(result.slice(comma + 1));
-    };
-    reader.onerror = () => reject(new Error("file_read_failed"));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function registerManualUpload(event) {
-  event.preventDefault();
-  setText("manualError", "");
-  setText("manualState", "");
-  try {
-    const acqRunId = el("manualAcqRunId").value.trim();
-    const sourceId = el("manualUploadSourceId").value.trim();
-    const fileInput = el("manualUploadFile");
-    const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
-    if (!acqRunId) throw new Error("acquisition run id is required");
-    if (!sourceId) throw new Error("source id is required");
-    if (!file) throw new Error("file is required");
-    const contentBase64 = await fileToBase64(file);
-    const result = await apiPost(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-upload`, {
-      source_id: sourceId,
-      filename: file.name,
-      content_base64: contentBase64,
-      content_type: file.type || null,
-    });
-    setText("manualState", `Registered artifact: ${result.artifact_id}`);
-    await loadManualRecoveryData();
-    schedulePoll();
-  } catch (err) {
-    setText("manualError", `Upload failed: ${err.message}`);
-  }
-}
-
-async function startDiscovery(event) {
-  event.preventDefault();
-  setText("discoveryError", "");
-  setText("createSessionState", "");
-  try {
-    const rawSeeds = el("startDiscoverySeeds").value;
-    const seedQueries = rawSeeds.split(",").map((s) => s.trim()).filter(Boolean);
-    if (!seedQueries.length) throw new Error("provide at least one seed query");
-    const maxIterations = Number(el("startDiscoveryMaxIterations").value);
-    const aiMode = el("startDiscoveryAiMode").value;
-    const aiFilterEnabled = aiMode === "default" ? null : aiMode === "on";
-    const result = await apiPost("/v1/discovery/runs", {
-      seed_queries: seedQueries,
-      max_iterations: maxIterations,
-      ai_filter_enabled: aiFilterEnabled,
-    });
-    syncDiscoveryRunInputs(result.run_id);
-    setLatestId("discovery", result.run_id);
-    state.view.discovery.createdRunId = result.run_id;
-    setText("createSessionState", `Created discovery session: ${result.run_id}`);
-    window.location.hash = "#discovery";
-    el("discoveryRunId").focus();
-    upsertRunRow("discovery", result.run_id, {
-      status: result.status,
-      current_iteration: 0,
-      accepted_total: 0,
-      expanded_candidates_total: 0,
-    });
-    renderRunsTable();
-    await loadDiscoveryData();
-    schedulePoll();
-  } catch (err) {
-    setText("discoveryError", `Start failed: ${err.message}`);
-  }
-}
-
-async function startAcquisition(event) {
-  event.preventDefault();
-  setText("acqError", "");
-  try {
-    const runId = el("startAcqRunId").value.trim();
-    if (!runId) throw new Error("discovery run id is required");
-    const retryFailedOnly = el("startAcqRetry").value === "true";
-    const result = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: retryFailedOnly });
-    el("acqRunId").value = result.acq_run_id;
-    setLatestId("acquisition", result.acq_run_id);
-    upsertRunRow("acquisition", result.acq_run_id, { status: result.status, downloaded_total: 0, partial_total: 0, failed_total: 0 });
-    renderRunsTable();
-    await loadAcquisitionData();
-    schedulePoll();
-  } catch (err) {
-    setText("acqError", `Start failed: ${err.message}`);
-  }
-}
-
-async function startParse(event) {
-  event.preventDefault();
-  setText("parseError", "");
-  try {
-    const acqRunId = el("startParseAcqRunId").value.trim();
-    if (!acqRunId) throw new Error("acquisition run id is required");
-    const retryFailedOnly = el("startParseRetry").value === "true";
-    const result = await apiPost("/v1/parse/runs", { acq_run_id: acqRunId, retry_failed_only: retryFailedOnly });
-    el("parseRunId").value = result.parse_run_id;
-    setLatestId("parse", result.parse_run_id);
-    upsertRunRow("parse", result.parse_run_id, { status: result.status, parsed_total: 0, failed_total: 0, chunked_total: 0 });
-    renderRunsTable();
-    await loadParseData();
-    schedulePoll();
-  } catch (err) {
-    setText("parseError", `Start failed: ${err.message}`);
-  }
-}
-
-async function handleDiscoveryTableAction(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) return;
-
-  const action = target.dataset.action || "";
-  const sourceId = target.dataset.sourceId || "";
-  if (!sourceId) return;
-
-  if (action === "toggle-abstract") {
-    if (state.view.discovery.expandedAbstractIds.has(sourceId)) state.view.discovery.expandedAbstractIds.delete(sourceId);
-    else state.view.discovery.expandedAbstractIds.add(sourceId);
-    try {
-      await loadDiscoveryData();
-    } catch (err) {
-      setText("discoveryError", `Load failed: ${err.message}`);
-    }
-    return;
-  }
-  if (action === "use-context") {
-    setText("discoveryState", `Selected source context: ${sourceId}`);
-    setContext({ source_id: sourceId, discovery_run_id: el("discoveryRunId").value.trim() });
-    return;
-  }
-
-  if (action === "") {
-    const row = target.closest("tr[data-source-id]");
-    if (row) {
-      const sid = row.getAttribute("data-source-id") || "";
-      if (sid) {
-        setText("discoveryState", `Selected source context: ${sid}`);
-        setContext({ source_id: sid, discovery_run_id: el("discoveryRunId").value.trim() });
-      }
-    }
-    return;
-  }
-
-  if (!target.classList.contains("discovery-review-action")) return;
-  if (action !== "approve" && action !== "reject") return;
-
-  const decision = action === "approve" ? "accept" : "reject";
-  const row = target.closest("tr");
-  const statusCell = row ? row.querySelector(".discovery-status-cell") : null;
-  const prevStatus = statusCell ? statusCell.textContent : "";
-  setText("discoveryError", "");
-  setText("discoveryState", "");
-  target.setAttribute("disabled", "true");
-  if (statusCell) statusCell.textContent = decision === "accept" ? "human_accept" : "human_reject";
-
-  try {
-    await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision });
-    setText("discoveryState", `Reviewed ${sourceId}: ${decision}`);
-    await loadDiscoveryData();
-    schedulePoll();
-  } catch (err) {
-    setText("discoveryError", `Review failed: ${err.message}`);
-    if (statusCell) statusCell.textContent = prevStatus;
-  } finally {
-    target.removeAttribute("disabled");
-  }
-}
-
-async function handleAcquisitionTableAction(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) return;
-  if (!target.classList.contains("acq-row-action")) return;
-  const action = target.dataset.action || "";
-  const sourceId = target.dataset.sourceId || "";
-  const acqRunId = el("acqRunId").value.trim();
-  if (!sourceId || !acqRunId) return;
-
-  el("manualAcqRunId").value = acqRunId;
-  el("manualUploadSourceId").value = sourceId;
-  setContext({ acq_run_id: acqRunId, source_id: sourceId });
-  if (action === "open-manual") {
-    window.location.hash = "#manual-recovery";
-    try {
-      state.view.manual.offset = 0;
-      await loadManualRecoveryData();
-      schedulePoll();
-    } catch (err) {
-      setText("manualError", `Load failed: ${err.message}`);
-    }
-  } else if (action === "prefill-upload") {
-    window.location.hash = "#manual-recovery";
-    el("manualUploadFile").focus();
-  }
-}
-
-async function showParseDocumentDetail(documentId) {
-  setText("parseError", "");
-  try {
-    setContext({ parse_run_id: el("parseRunId").value.trim(), document_id: documentId });
-    const detail = await apiGet(`/v1/parse/documents/${encodeURIComponent(documentId)}`);
-    el("parseDocDetail").textContent = JSON.stringify(detail, null, 2);
-  } catch (err) {
-    setText("parseError", `Doc detail failed: ${err.message}`);
-  }
-}
-
-async function showParseDocumentText(documentId) {
-  setText("parseError", "");
-  try {
-    setContext({ parse_run_id: el("parseRunId").value.trim(), document_id: documentId });
-    const body = await apiGet(`/v1/parse/documents/${encodeURIComponent(documentId)}/text`);
-    el("parseDocText").textContent = body.text || "";
-  } catch (err) {
-    setText("parseError", `Doc text failed: ${err.message}`);
-  }
-}
-
-async function handleParseDocumentAction(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) return;
-  if (!target.classList.contains("parse-doc-action")) return;
-  const action = target.dataset.action || "";
-  const documentId = target.dataset.documentId || "";
-  if (!documentId) return;
-  if (action === "detail") await showParseDocumentDetail(documentId);
-  else if (action === "text") await showParseDocumentText(documentId);
-}
-
-function handleManualQueueAction(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) return;
-  if (!target.classList.contains("manual-row-action")) return;
-  const sourceId = target.dataset.sourceId || "";
-  if (!sourceId) return;
-  el("manualUploadSourceId").value = sourceId;
-  setContext({ acq_run_id: el("manualAcqRunId").value.trim(), source_id: sourceId });
-  el("manualUploadFile").focus();
-  setText("manualState", `Prefilled source for upload: ${sourceId}`);
-}
-
-async function exportSourcesRaw() {
-  setText("discoveryError", "");
-  try {
-    const runId = el("discoveryRunId").value.trim();
-    if (!runId) throw new Error("discovery run id is required");
-    await apiDownload(`/v1/exports/sources_raw?run_id=${encodeURIComponent(runId)}`, `sources_raw_${runId}.json`);
-  } catch (err) {
-    setText("discoveryError", `Export failed: ${err.message}`);
-  }
-}
-
-async function exportManifest() {
-  setText("acqError", "");
-  try {
-    const acqRunId = el("acqRunId").value.trim();
-    if (!acqRunId) throw new Error("acquisition run id is required");
-    await apiDownload(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manifest`, `manifest_${acqRunId}.json`);
-  } catch (err) {
-    setText("acqError", `Export failed: ${err.message}`);
-  }
+  setText("documentsPage", `offset=${offset}, limit=${limit}, total=${queue.total}`);
+  setText("documentsState", `Loaded ${queue.total} items for ${acqRunId}`);
+  state.documents.loaded = true;
+  return true;
 }
 
 async function runSearchData(payload) {
   setText("searchError", "");
   const result = await apiPost("/v1/search", payload);
-  state.view.search.latestItems = result.items || [];
+  state.search.items = result.items || [];
   renderTable(
     "searchRows",
-    state.view.search.latestItems.map(
-      (item, idx) =>
-        `<tr><td>${escapeHtml(item.source_id)}</td><td>${escapeHtml(item.document_id)}</td><td>${escapeHtml(item.chunk_id)}</td><td>${escapeHtml(String(item.score))}</td><td>${escapeHtml(item.snippet || "")}</td><td><button type="button" class="search-action" data-action="doc" data-index="${idx}">Doc</button> <button type="button" class="search-action" data-action="text" data-index="${idx}">Text</button> <button type="button" class="search-action" data-action="source" data-index="${idx}">Source</button></td></tr>`,
-    ),
-    6,
+    state.search.items.map((item, idx) => {
+      const snippet = item.snippet || "";
+      return `<tr><td>${escapeHtml(snippet)}</td><td><button type="button" class="search-action" data-action="doc" data-index="${idx}">Doc</button> <button type="button" class="search-action" data-action="text" data-index="${idx}">Text</button> <button type="button" class="search-action" data-action="source" data-index="${idx}">Source</button></td></tr>`;
+    }),
+    2,
   );
   setText("searchState", `Results: ${result.total}`);
-  state.view.search.loaded = true;
-  return result;
+  state.search.loaded = true;
 }
 
 async function runSearch(event) {
   event.preventDefault();
   setText("searchError", "");
   try {
+    const parseRunId = getParseRunId();
+    if (!parseRunId) throw new Error("parse run id is required");
     const payload = {
-      parse_run_id: el("searchParseRunId").value.trim(),
+      parse_run_id: parseRunId,
       query: el("searchQuery").value.trim(),
       limit: Number(el("searchLimit").value),
     };
-    if (!payload.parse_run_id) throw new Error("parse run id is required");
     if (!payload.query) throw new Error("query is required");
-    state.view.search.payload = payload;
+    state.search.payload = payload;
     await runSearchData(payload);
-    schedulePoll();
   } catch (err) {
     setText("searchError", `Search failed: ${err.message}`);
   }
 }
 
-async function showSearchDocumentDetail(index) {
-  setText("searchError", "");
-  const item = state.view.search.latestItems[index];
+async function showSearchDoc(index) {
+  const item = state.search.items[index];
   if (!item) return;
-  try {
-    const detail = await apiGet(`/v1/parse/documents/${encodeURIComponent(item.document_id)}`);
-    el("searchDocDetail").textContent = JSON.stringify(detail, null, 2);
-  } catch (err) {
-    setText("searchError", `Doc detail failed: ${err.message}`);
-  }
+  const detail = await apiGet(`/v1/parse/documents/${encodeURIComponent(item.document_id)}`);
+  el("searchDocDetail").textContent = JSON.stringify(detail, null, 2);
 }
 
-async function showSearchDocumentText(index) {
-  setText("searchError", "");
-  const item = state.view.search.latestItems[index];
+async function showSearchText(index) {
+  const item = state.search.items[index];
   if (!item) return;
-  try {
-    const body = await apiGet(`/v1/parse/documents/${encodeURIComponent(item.document_id)}/text`);
-    el("searchDocText").textContent = body.text || "";
-  } catch (err) {
-    setText("searchError", `Doc text failed: ${err.message}`);
-  }
+  const body = await apiGet(`/v1/parse/documents/${encodeURIComponent(item.document_id)}/text`);
+  el("searchDocText").textContent = body.text || "";
 }
 
-async function showSearchSourceContext(index) {
-  setText("searchError", "");
-  const item = state.view.search.latestItems[index];
+async function showSearchSource(index) {
+  const item = state.search.items[index];
   if (!item) return;
+  const parseRunId = getParseRunId();
+  if (!parseRunId) throw new Error("parse run id is required");
+  const parseRun = await apiGet(`/v1/parse/runs/${encodeURIComponent(parseRunId)}`);
+  const acqRun = await apiGet(`/v1/acquisition/runs/${encodeURIComponent(parseRun.acq_run_id)}`);
+  setLatestId("acquisition", parseRun.acq_run_id);
+  setLatestId("discovery", acqRun.discovery_run_id);
+  setContext({ parse_run_id: parseRunId, acq_run_id: parseRun.acq_run_id, discovery_run_id: acqRun.discovery_run_id, source_id: item.source_id });
+  el("searchSourceContext").textContent = JSON.stringify(state.context, null, 2);
+  window.location.hash = "#review";
+}
+
+async function loadAiSettings() {
+  setText("aiSettingsState", "");
   try {
-    const parseRunId = el("searchParseRunId").value.trim();
-    if (!parseRunId) throw new Error("parse run id is required");
-    const parseRun = await apiGet(`/v1/parse/runs/${encodeURIComponent(parseRunId)}`);
-    const acqRun = await apiGet(`/v1/acquisition/runs/${encodeURIComponent(parseRun.acq_run_id)}`);
-    const discoveryRunId = acqRun.discovery_run_id;
-
-    let found = null;
-    const limit = 100;
-    for (let offset = 0; offset < 500; offset += limit) {
-      const page = await apiGet(
-        `/v1/discovery/runs/${encodeURIComponent(discoveryRunId)}/sources?status=all&limit=${limit}&offset=${offset}`,
-      );
-      found = (page.items || []).find((s) => s.id === item.source_id) || null;
-      if (found || (page.items || []).length < limit) break;
-    }
-
-    el("searchSourceContext").textContent = JSON.stringify(
-      {
-        source_id: item.source_id,
-        discovery_run_id: discoveryRunId,
-        acq_run_id: parseRun.acq_run_id,
-        parse_run_id: parseRunId,
-        source: found,
-      },
-      null,
-      2,
-    );
-
-    syncDiscoveryRunInputs(discoveryRunId);
-    el("discoveryStatusFilter").value = "all";
-    if (!state.view.discovery.loaded) {
-      state.view.discovery.offset = 0;
-      await loadDiscoveryData();
-    }
+    const p = await apiGet("/v1/settings/ai-filter");
+    el("aiEnabledSelect").value = p.use_ai_filter ? "true" : "false";
+    el("aiModelInput").value = p.ai_model || "";
+    el("aiBaseUrlInput").value = p.ai_base_url || "";
+    el("aiApiKeyInput").value = "";
+    setText("aiSettingsState", `AI filter ${p.ai_filter_active ? "active" : "disabled/warning"}; key=${p.has_api_key ? "present" : "missing"}`);
   } catch (err) {
-    setText("searchError", `Source context failed: ${err.message}`);
+    setText("aiSettingsState", `Load failed: ${err.message}`);
   }
 }
 
-async function handleSearchAction(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) return;
-  if (!target.classList.contains("search-action")) return;
-  const action = target.dataset.action || "";
-  const index = Number(target.dataset.index || "-1");
-  if (index < 0) return;
-  if (action === "doc") await showSearchDocumentDetail(index);
-  else if (action === "text") await showSearchDocumentText(index);
-  else if (action === "source") await showSearchSourceContext(index);
-}
-
-async function runPollCycle() {
-  const section = activeSection();
-  const interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
-
+async function saveAiSettings() {
+  setText("aiSettingsState", "");
   try {
-    await loadSystemStatus();
-    let keepPolling = true;
-    if (section === "work-queue" && state.view.queue.loaded) keepPolling = await loadWorkQueueData();
-    else if (section === "runs") keepPolling = await refreshRunsData();
-    else if (section === "discovery" && state.view.discovery.loaded) keepPolling = await loadDiscoveryData();
-    else if (section === "acquisition" && state.view.acq.loaded) keepPolling = await loadAcquisitionData();
-    else if (section === "parse" && state.view.parse.loaded) keepPolling = await loadParseData();
-    else if (section === "manual-recovery" && state.view.manual.loaded) keepPolling = await loadManualRecoveryData();
-    else if (section === "search" && state.view.search.loaded && state.view.search.payload) {
-      await runSearchData(state.view.search.payload);
-      const run = await apiGet(`/v1/parse/runs/${encodeURIComponent(state.view.search.payload.parse_run_id)}`);
-      keepPolling = !isTerminalStatus(run.status);
-    }
-
-    if (!keepPolling) {
-      setPollState(`Stopped polling on #${section}: terminal status reached.`);
-      return;
-    }
-    setPollState(`Auto-refreshing #${section} every ${Math.round(interval / 1000)}s.`);
+    const payload = {
+      use_ai_filter: el("aiEnabledSelect").value === "true",
+      ai_model: el("aiModelInput").value.trim(),
+      ai_base_url: el("aiBaseUrlInput").value.trim(),
+    };
+    const key = el("aiApiKeyInput").value.trim();
+    if (key) payload.ai_api_key = key;
+    const p = await apiPost("/v1/settings/ai-filter", payload);
+    setText("aiSettingsState", `Saved. AI filter ${p.ai_filter_active ? "active" : "disabled/warning"}; key=${p.has_api_key ? "present" : "missing"}`);
+    el("aiApiKeyInput").value = "";
   } catch (err) {
-    setPollState(`Stale data in #${section}: ${err.message}`, true);
+    setText("aiSettingsState", `Save failed: ${err.message}`);
   }
-  schedulePoll();
 }
 
 function setApiStateText() {
@@ -1082,158 +476,310 @@ function setApiStateText() {
   setText("authModeHint", "Manual override mode");
 }
 
-function aiSettingsSummary(payload) {
-  if (!payload.use_ai_filter) return "disabled";
-  if (payload.ai_filter_active) return "active";
-  return payload.ai_filter_warning || "configured_with_warning";
+function getCopyId(kind) {
+  if (kind === "discovery") return (el("latestDiscoveryId").textContent || "").trim();
+  if (kind === "acquisition") return (el("latestAcqId").textContent || "").trim();
+  return (el("latestParseId").textContent || "").trim();
 }
 
-async function loadAiSettings() {
-  setText("aiSettingsState", "");
+async function copyLatestId(kind) {
+  const id = getCopyId(kind);
+  if (!id || id === "-") {
+    setText("idCopyState", "No ID to copy.");
+    return;
+  }
   try {
-    const settingsPayload = await apiGet("/v1/settings/ai-filter");
-    el("aiEnabledSelect").value = settingsPayload.use_ai_filter ? "true" : "false";
-    el("aiModelInput").value = settingsPayload.ai_model || "";
-    el("aiBaseUrlInput").value = settingsPayload.ai_base_url || "";
-    el("aiApiKeyInput").value = "";
-    setText(
-      "aiSettingsState",
-      `AI filter ${aiSettingsSummary(settingsPayload)}; key=${settingsPayload.has_api_key ? "present" : "missing"}`,
-    );
-  } catch (err) {
-    setText("aiSettingsState", `Load failed: ${err.message}`);
+    await navigator.clipboard.writeText(id);
+    setText("idCopyState", `Copied ${kind} ID: ${id}`);
+  } catch (_err) {
+    setText("idCopyState", "Copy failed.");
   }
 }
 
-async function saveAiSettings() {
-  setText("aiSettingsState", "");
+async function lookupRun(event) {
+  event.preventDefault();
+  setText("runsError", "");
   try {
-    const key = el("aiApiKeyInput").value.trim();
-    const payload = {
-      use_ai_filter: el("aiEnabledSelect").value === "true",
-      ai_model: el("aiModelInput").value.trim(),
-      ai_base_url: el("aiBaseUrlInput").value.trim(),
+    const phase = el("runPhaseSelect").value;
+    const runId = el("runIdInput").value.trim();
+    if (!runId) throw new Error("run id is required");
+    const endpoint =
+      phase === "discovery"
+        ? `/v1/discovery/runs/${encodeURIComponent(runId)}`
+        : phase === "acquisition"
+          ? `/v1/acquisition/runs/${encodeURIComponent(runId)}`
+          : `/v1/parse/runs/${encodeURIComponent(runId)}`;
+    const payload = await apiGet(endpoint);
+    upsertRunRow(phase, runId, payload);
+    setLatestId(phase, runId);
+    renderRunsTable();
+  } catch (err) {
+    setText("runsError", `Lookup failed: ${err.message}`);
+  }
+}
+
+async function startDiscovery(event) {
+  event.preventDefault();
+  setText("dashboardError", "");
+  try {
+    const raw = el("startDiscoverySeeds").value;
+    const seedQueries = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!seedQueries.length) throw new Error("provide at least one seed query");
+    const aiMode = el("startDiscoveryAiMode").value;
+    const aiFilterEnabled = aiMode === "default" ? null : aiMode === "on";
+    const result = await apiPost("/v1/discovery/runs", {
+      seed_queries: seedQueries,
+      max_iterations: Number(el("startDiscoveryMaxIterations").value),
+      ai_filter_enabled: aiFilterEnabled,
+    });
+    setLatestId("discovery", result.run_id);
+    el("discoverRunIdInput").value = result.run_id;
+    el("reviewRunIdInput").value = result.run_id;
+    setText("dashboardState", `Run created: ${result.run_id}`);
+    await loadDashboard();
+    await loadDiscover();
+    window.location.hash = "#discover";
+  } catch (err) {
+    setText("dashboardError", `Start failed: ${err.message}`);
+  }
+}
+
+async function loadReviewClick(event) {
+  event.preventDefault();
+  state.review.offset = 0;
+  try {
+    await loadReview();
+  } catch (err) {
+    setText("reviewError", `Load failed: ${err.message}`);
+  }
+}
+
+async function handleReviewAction(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.classList.contains("review-action")) return;
+  const action = target.dataset.action || "";
+  const sourceId = target.dataset.sourceId || "";
+
+  if (action === "toggle") {
+    if (!sourceId) return;
+    if (state.review.expanded.has(sourceId)) state.review.expanded.delete(sourceId);
+    else state.review.expanded.add(sourceId);
+    try {
+      await loadReview();
+    } catch (err) {
+      setText("reviewError", `Load failed: ${err.message}`);
+    }
+    return;
+  }
+
+  if (action !== "accept" && action !== "reject") return;
+  if (!sourceId) return;
+  try {
+    await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision: action === "accept" ? "accept" : "reject" });
+    setText("reviewState", `Reviewed ${sourceId}: ${action}`);
+    await loadReview();
+    await loadDashboard();
+  } catch (err) {
+    setText("reviewError", `Review failed: ${err.message}`);
+  }
+}
+
+async function startAcquisition(event) {
+  event.preventDefault();
+  setText("acqError", "");
+  try {
+    const runId = el("startAcqRunId").value.trim();
+    if (!runId) throw new Error("discovery run id is required");
+    const retryFailedOnly = el("startAcqRetry").value === "true";
+    const result = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: retryFailedOnly });
+    setLatestId("acquisition", result.acq_run_id);
+    el("documentsAcqRunIdInput").value = result.acq_run_id;
+    setText("acqError", `Started acquisition: ${result.acq_run_id}`);
+  } catch (err) {
+    setText("acqError", `Start failed: ${err.message}`);
+  }
+}
+
+async function startParse(event) {
+  event.preventDefault();
+  setText("parseError", "");
+  try {
+    const acqRunId = el("startParseAcqRunId").value.trim();
+    if (!acqRunId) throw new Error("acquisition run id is required");
+    const retryFailedOnly = el("startParseRetry").value === "true";
+    const result = await apiPost("/v1/parse/runs", { acq_run_id: acqRunId, retry_failed_only: retryFailedOnly });
+    setLatestId("parse", result.parse_run_id);
+    el("searchParseRunIdInput").value = result.parse_run_id;
+    setText("parseError", `Started parse: ${result.parse_run_id}`);
+  } catch (err) {
+    setText("parseError", `Start failed: ${err.message}`);
+  }
+}
+
+async function handleDocumentsAction(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || !target.classList.contains("documents-action")) return;
+  const action = target.dataset.action || "";
+  const sourceId = target.dataset.sourceId || "";
+  const discoveryRunId = target.dataset.discoveryRunId || "";
+
+  if (action === "upload") {
+    state.documents.selectedSourceId = sourceId;
+    el("manualUploadSourceId").value = sourceId;
+    setText("documentsState", `Upload target selected: ${sourceId}`);
+    el("manualUploadFile").focus();
+    return;
+  }
+
+  if (action === "retry") {
+    try {
+      await apiPost("/v1/acquisition/runs", { run_id: discoveryRunId, retry_failed_only: true });
+      setText("documentsState", "Retry acquisition started.");
+      await loadDocuments();
+      await loadDashboard();
+    } catch (err) {
+      setText("documentsError", `Retry failed: ${err.message}`);
+    }
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const comma = result.indexOf(",");
+      if (comma < 0) {
+        reject(new Error("file_read_failed"));
+        return;
+      }
+      resolve(result.slice(comma + 1));
     };
-    if (key) payload.ai_api_key = key;
-    const settingsPayload = await apiPost("/v1/settings/ai-filter", payload);
-    el("aiApiKeyInput").value = "";
-    setText(
-      "aiSettingsState",
-      `Saved. AI filter ${aiSettingsSummary(settingsPayload)}; key=${settingsPayload.has_api_key ? "present" : "missing"}`,
-    );
+    reader.onerror = () => reject(new Error("file_read_failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function registerManualUpload(event) {
+  event.preventDefault();
+  setText("documentsError", "");
+  try {
+    const acqRunId = getAcqRunId();
+    const sourceId = (el("manualUploadSourceId").value || "").trim() || state.documents.selectedSourceId;
+    const fileInput = el("manualUploadFile");
+    const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+    if (!acqRunId) throw new Error("acquisition run id is required");
+    if (!sourceId) throw new Error("source id is required");
+    if (!file) throw new Error("file is required");
+    const contentBase64 = await fileToBase64(file);
+    const res = await apiPost(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-upload`, {
+      source_id: sourceId,
+      filename: file.name,
+      content_base64: contentBase64,
+      content_type: file.type || null,
+    });
+    setText("documentsState", `Registered artifact: ${res.artifact_id}`);
+    await loadDocuments();
   } catch (err) {
-    setText("aiSettingsState", `Save failed: ${err.message}`);
+    setText("documentsError", `Upload failed: ${err.message}`);
   }
 }
 
-function attachPaginationHandlers() {
-  el("discoveryPrev").addEventListener("click", async () => {
-    const limit = Number(el("discoveryLimit").value);
-    state.view.discovery.offset = Math.max(0, state.view.discovery.offset - limit);
-    try {
-      await loadDiscoveryData();
-      schedulePoll();
-    } catch (err) {
-      setText("discoveryError", `Load failed: ${err.message}`);
-    }
-  });
-  el("discoveryNext").addEventListener("click", async () => {
-    const limit = Number(el("discoveryLimit").value);
-    state.view.discovery.offset += limit;
-    try {
-      await loadDiscoveryData();
-      schedulePoll();
-    } catch (err) {
-      setText("discoveryError", `Load failed: ${err.message}`);
-    }
-  });
-
-  el("acqPrev").addEventListener("click", async () => {
-    const limit = Number(el("acqLimit").value);
-    state.view.acq.offset = Math.max(0, state.view.acq.offset - limit);
-    try {
-      await loadAcquisitionData();
-      schedulePoll();
-    } catch (err) {
-      setText("acqError", `Load failed: ${err.message}`);
-    }
-  });
-  el("acqNext").addEventListener("click", async () => {
-    const limit = Number(el("acqLimit").value);
-    state.view.acq.offset += limit;
-    try {
-      await loadAcquisitionData();
-      schedulePoll();
-    } catch (err) {
-      setText("acqError", `Load failed: ${err.message}`);
-    }
-  });
-
-  el("parseDocsPrev").addEventListener("click", async () => {
-    const limit = Number(el("parseDocsLimit").value);
-    state.view.parse.docsOffset = Math.max(0, state.view.parse.docsOffset - limit);
-    try {
-      await loadParseData();
-      schedulePoll();
-    } catch (err) {
-      setText("parseError", `Load failed: ${err.message}`);
-    }
-  });
-  el("parseDocsNext").addEventListener("click", async () => {
-    const limit = Number(el("parseDocsLimit").value);
-    state.view.parse.docsOffset += limit;
-    try {
-      await loadParseData();
-      schedulePoll();
-    } catch (err) {
-      setText("parseError", `Load failed: ${err.message}`);
-    }
-  });
-
-  el("parseChunksPrev").addEventListener("click", async () => {
-    const limit = Number(el("parseChunksLimit").value);
-    state.view.parse.chunksOffset = Math.max(0, state.view.parse.chunksOffset - limit);
-    try {
-      await loadParseData();
-      schedulePoll();
-    } catch (err) {
-      setText("parseError", `Load failed: ${err.message}`);
-    }
-  });
-  el("parseChunksNext").addEventListener("click", async () => {
-    const limit = Number(el("parseChunksLimit").value);
-    state.view.parse.chunksOffset += limit;
-    try {
-      await loadParseData();
-      schedulePoll();
-    } catch (err) {
-      setText("parseError", `Load failed: ${err.message}`);
-    }
-  });
-
-  el("manualPrev").addEventListener("click", async () => {
-    const limit = Number(el("manualLimit").value);
-    state.view.manual.offset = Math.max(0, state.view.manual.offset - limit);
-    try {
-      await loadManualRecoveryData();
-      schedulePoll();
-    } catch (err) {
-      setText("manualError", `Load failed: ${err.message}`);
-    }
-  });
-  el("manualNext").addEventListener("click", async () => {
-    const limit = Number(el("manualLimit").value);
-    state.view.manual.offset += limit;
-    try {
-      await loadManualRecoveryData();
-      schedulePoll();
-    } catch (err) {
-      setText("manualError", `Load failed: ${err.message}`);
-    }
-  });
+async function exportManualCsv() {
+  setText("documentsError", "");
+  try {
+    const acqRunId = getAcqRunId();
+    if (!acqRunId) throw new Error("acquisition run id is required");
+    await apiDownload(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads.csv`, `manual_downloads_${acqRunId}.csv`);
+  } catch (err) {
+    setText("documentsError", `Export failed: ${err.message}`);
+  }
 }
 
-function init() {
+async function exportSourcesRaw() {
+  setText("discoverError", "");
+  try {
+    const runId = getDiscoveryRunId();
+    if (!runId) throw new Error("discovery run id is required");
+    await apiDownload(`/v1/exports/sources_raw?run_id=${encodeURIComponent(runId)}`, `sources_raw_${runId}.json`);
+  } catch (err) {
+    setText("discoverError", `Export failed: ${err.message}`);
+  }
+}
+
+async function exportManifest() {
+  setText("acqError", "");
+  try {
+    const acqRunId = getAcqRunId();
+    if (!acqRunId) throw new Error("acquisition run id is required");
+    await apiDownload(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manifest`, `manifest_${acqRunId}.json`);
+  } catch (err) {
+    setText("acqError", `Export failed: ${err.message}`);
+  }
+}
+
+async function runGlobalSearch(event) {
+  event.preventDefault();
+  setText("globalSearchState", "");
+  try {
+    const query = el("globalSearchQuery").value.trim();
+    if (!query) return;
+    const limit = Number(el("globalSearchLimit").value);
+    const payload = await apiGet(`/v1/search/global?q=${encodeURIComponent(query)}&limit=${limit}`);
+    setText("globalSearchState", `results=${payload.total}`);
+    if (payload.items && payload.items.length) {
+      setContext(payload.items[0].context || {});
+    }
+  } catch (err) {
+    setText("globalSearchState", `Search failed: ${err.message}`);
+  }
+}
+
+async function handleSearchAction(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || !target.classList.contains("search-action")) return;
+  const action = target.dataset.action || "";
+  const index = Number(target.dataset.index || "-1");
+  if (index < 0) return;
+  try {
+    if (action === "doc") await showSearchDoc(index);
+    else if (action === "text") await showSearchText(index);
+    else if (action === "source") await showSearchSource(index);
+  } catch (err) {
+    setText("searchError", `Action failed: ${err.message}`);
+  }
+}
+
+async function refreshCurrentSection() {
+  const section = activeSection();
+  if (section === "dashboard") return loadDashboard();
+  if (section === "discover") return loadDiscover();
+  if (section === "review" && state.review.loaded) return loadReview();
+  if (section === "documents" && state.documents.loaded) return loadDocuments();
+  if (section === "search" && state.search.loaded && state.search.payload) return runSearchData(state.search.payload);
+  return true;
+}
+
+async function runPollCycle() {
+  const section = activeSection();
+  const interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
+  try {
+    await loadSystemStatus();
+    await refreshCurrentSection();
+    setPollState(`Auto-refreshing #${section} every ${Math.round(interval / 1000)}s.`);
+  } catch (err) {
+    setPollState(`Stale data in #${section}: ${err.message}`, true);
+  }
+  schedulePoll();
+}
+
+function addListener(id, event, handler) {
+  const node = el(id);
+  if (node) node.addEventListener(event, handler);
+}
+
+function initAuth() {
   const keyInput = el("apiKeyInput");
   const saveKeyBtn = el("saveApiKeyBtn");
   if (!AUTH_ENABLED) {
@@ -1241,7 +787,10 @@ function init() {
     if (saveKeyBtn) saveKeyBtn.style.display = "none";
     state.apiKey = "";
     state.tokenSource = "none";
-  } else {
+    setApiStateText();
+    return;
+  }
+
   const manualToken = localStorage.getItem("km_api_key");
   if (manualToken) {
     state.apiKey = manualToken;
@@ -1249,78 +798,138 @@ function init() {
   } else if (SYSTEM_TOKEN) {
     state.apiKey = SYSTEM_TOKEN;
     state.tokenSource = "system";
-  } else {
-    state.apiKey = "";
-    state.tokenSource = "none";
   }
-  }
+  if (keyInput) keyInput.value = state.apiKey;
 
-  keyInput.value = state.apiKey;
-  setApiStateText();
-
-  if (AUTH_ENABLED) {
-    el("saveApiKeyBtn").addEventListener("click", () => {
-      state.apiKey = keyInput.value.trim();
-      if (state.apiKey) {
-        localStorage.setItem("km_api_key", state.apiKey);
-        state.tokenSource = "manual";
+  addListener("saveApiKeyBtn", "click", () => {
+    state.apiKey = (keyInput.value || "").trim();
+    if (state.apiKey) {
+      localStorage.setItem("km_api_key", state.apiKey);
+      state.tokenSource = "manual";
+    } else {
+      localStorage.removeItem("km_api_key");
+      if (SYSTEM_TOKEN) {
+        state.apiKey = SYSTEM_TOKEN;
+        state.tokenSource = "system";
+        keyInput.value = state.apiKey;
       } else {
-        localStorage.removeItem("km_api_key");
-        if (SYSTEM_TOKEN) {
-          state.apiKey = SYSTEM_TOKEN;
-          state.tokenSource = "system";
-          keyInput.value = state.apiKey;
-        } else {
-          state.tokenSource = "none";
-        }
+        state.tokenSource = "none";
       }
-      setApiStateText();
-    });
-  }
-  el("loadAiSettingsBtn").addEventListener("click", loadAiSettings);
-  el("saveAiSettingsBtn").addEventListener("click", saveAiSettings);
+    }
+    setApiStateText();
+  });
+  setApiStateText();
+}
 
-  el("runLookupForm").addEventListener("submit", lookupRun);
-  el("runFilterPhase").addEventListener("change", renderRunsTable);
-  el("runFilterStatus").addEventListener("change", renderRunsTable);
+function initPagination() {
+  addListener("reviewPrev", "click", async () => {
+    const limit = Number(el("reviewLimit").value);
+    state.review.offset = Math.max(0, state.review.offset - limit);
+    try {
+      await loadReview();
+    } catch (err) {
+      setText("reviewError", `Load failed: ${err.message}`);
+    }
+  });
+  addListener("reviewNext", "click", async () => {
+    const limit = Number(el("reviewLimit").value);
+    state.review.offset += limit;
+    try {
+      await loadReview();
+    } catch (err) {
+      setText("reviewError", `Load failed: ${err.message}`);
+    }
+  });
 
-  el("startDiscoveryForm").addEventListener("submit", startDiscovery);
-  el("downloadSourcesRawBtn").addEventListener("click", exportSourcesRaw);
-  el("discoveryForm").addEventListener("submit", loadDiscovery);
-  el("discoverySources").addEventListener("click", handleDiscoveryTableAction);
+  addListener("documentsPrev", "click", async () => {
+    const limit = Number(el("documentsLimit").value);
+    state.documents.offset = Math.max(0, state.documents.offset - limit);
+    try {
+      await loadDocuments();
+    } catch (err) {
+      setText("documentsError", `Load failed: ${err.message}`);
+    }
+  });
+  addListener("documentsNext", "click", async () => {
+    const limit = Number(el("documentsLimit").value);
+    state.documents.offset += limit;
+    try {
+      await loadDocuments();
+    } catch (err) {
+      setText("documentsError", `Load failed: ${err.message}`);
+    }
+  });
+}
 
-  el("startAcqForm").addEventListener("submit", startAcquisition);
-  el("downloadManifestBtn").addEventListener("click", exportManifest);
-  el("acqForm").addEventListener("submit", loadAcquisition);
-  el("acqItems").addEventListener("click", handleAcquisitionTableAction);
+function init() {
+  initAuth();
+  updateSectionVisibility();
 
-  el("startParseForm").addEventListener("submit", startParse);
-  el("parseForm").addEventListener("submit", loadParse);
-  el("parseDocuments").addEventListener("click", handleParseDocumentAction);
-  el("searchForm").addEventListener("submit", runSearch);
-  el("searchRows").addEventListener("click", handleSearchAction);
-  el("manualRecoveryForm").addEventListener("submit", loadManualRecovery);
-  el("manualExportCsvBtn").addEventListener("click", exportManualCsv);
-  el("manualUploadForm").addEventListener("submit", registerManualUpload);
-  el("manualQueueRows").addEventListener("click", handleManualQueueAction);
+  addListener("startDiscoveryForm", "submit", startDiscovery);
+  addListener("loadDiscoverBtn", "click", async () => {
+    try {
+      await loadDiscover();
+    } catch (err) {
+      setText("discoverError", `Load failed: ${err.message}`);
+    }
+  });
+  addListener("discoverTechnicalForm", "submit", async (event) => {
+    event.preventDefault();
+    try {
+      await loadDiscover();
+      setText("discoverTechState", "Technical listing settings saved.");
+    } catch (err) {
+      setText("discoverError", `Load failed: ${err.message}`);
+    }
+  });
+  addListener("downloadSourcesRawBtn", "click", exportSourcesRaw);
 
-  el("copyDiscoveryIdBtn").addEventListener("click", () => copyLatestId("discovery"));
-  el("copyAcqIdBtn").addEventListener("click", () => copyLatestId("acquisition"));
-  el("copyParseIdBtn").addEventListener("click", () => copyLatestId("parse"));
+  addListener("reviewForm", "submit", loadReviewClick);
+  addListener("reviewRows", "click", handleReviewAction);
 
-  attachPaginationHandlers();
+  addListener("documentsForm", "submit", async (event) => {
+    event.preventDefault();
+    state.documents.offset = 0;
+    try {
+      await loadDocuments();
+    } catch (err) {
+      setText("documentsError", `Load failed: ${err.message}`);
+    }
+  });
+  addListener("documentsRows", "click", handleDocumentsAction);
+  addListener("manualUploadForm", "submit", registerManualUpload);
+  addListener("manualExportCsvBtn", "click", exportManualCsv);
+
+  addListener("searchForm", "submit", runSearch);
+  addListener("searchRows", "click", handleSearchAction);
+
+  addListener("loadAiSettingsBtn", "click", loadAiSettings);
+  addListener("saveAiSettingsBtn", "click", saveAiSettings);
+  addListener("globalSearchForm", "submit", runGlobalSearch);
+  addListener("runLookupForm", "submit", lookupRun);
+  addListener("runFilterPhase", "change", renderRunsTable);
+  addListener("runFilterStatus", "change", renderRunsTable);
+  addListener("startAcqForm", "submit", startAcquisition);
+  addListener("startParseForm", "submit", startParse);
+  addListener("downloadManifestBtn", "click", exportManifest);
+
+  addListener("copyDiscoveryIdBtn", "click", () => copyLatestId("discovery"));
+  addListener("copyAcqIdBtn", "click", () => copyLatestId("acquisition"));
+  addListener("copyParseIdBtn", "click", () => copyLatestId("parse"));
+
+  initPagination();
 
   document.addEventListener("visibilitychange", schedulePoll);
-  window.addEventListener("hashchange", schedulePoll);
+  window.addEventListener("hashchange", () => {
+    updateSectionVisibility();
+    schedulePoll();
+  });
 
   renderRunsTable();
   loadSystemStatus();
-  loadWorkQueueData();
+  loadDashboard();
   loadAiSettings();
   schedulePoll();
 }
 
 document.addEventListener("DOMContentLoaded", init);
-  el("refreshQueueBtn").addEventListener("click", refreshWorkQueue);
-  el("workQueueRows").addEventListener("click", handleQueueAction);
-  el("globalSearchForm").addEventListener("submit", runGlobalSearch);

@@ -35,11 +35,10 @@ Status:
 
 ## Post-v1 Backlog (Out of Scope for v1)
 
-1. Full-text parsing
-2. Entity and relationship extraction
-3. Knowledge graph
-4. Topic clustering
-5. Manual generation tooling
+1. Entity and relationship extraction
+2. Knowledge graph
+3. Topic clustering
+4. Manual generation tooling
 
 ## Phase 2 - Document Acquisition (Implemented)
 
@@ -82,3 +81,33 @@ Implemented guarantees:
 2. Checksums and size for all saved files.
 3. Manifest consistency with DB state.
 4. Structured acquisition observability logs and counters.
+
+## Phase 4.2 - Task-First HMI (Implemented)
+
+Goal:
+- Provide a first-time-user UI where core work is task-based, not pipeline-based.
+
+Task navigation milestone:
+1. `Dashboard`
+2. `Discover`
+3. `Review`
+4. `Documents`
+5. `Search`
+6. `Advanced`
+
+Scope:
+1. Dashboard with clear next actions and recent activity.
+2. Simplified Discover page for starting runs.
+3. Simplified Review page with row-level accept/reject actions.
+4. Documents page for retry/upload recovery workflow.
+5. Search page with simple query/results UX.
+6. Advanced page containing technical IDs, runs, logs, and diagnostics.
+
+Status:
+1. Completed (implemented and tested).
+
+Exit criteria:
+1. First-time user can complete `Discover -> Review -> Documents -> Search` without reading docs.
+2. No manual ID entry required in primary task flow.
+3. Technical internals remain available in `Advanced`.
+4. Statuses in primary pages follow three-state model (green/yellow/red).

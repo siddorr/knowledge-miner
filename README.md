@@ -15,11 +15,12 @@ In scope:
 Implemented extension beyond v1 baseline:
 1. Phase 2 document acquisition (PDF-first, HTML fallback)
 2. Acquisition API and manifest artifact generation
+3. Phase 3 full-text parsing and chunk search APIs
+4. Phase 4.2 task-first HMI (`Dashboard -> Discover -> Review -> Documents -> Search`)
 
 Still out of scope:
-1. Full-text parsing
-2. Knowledge graph and clustering
-3. UI for manual report generation
+1. Knowledge graph and clustering
+2. Automated manual-report generation
 
 ## v1 Targets
 
@@ -40,15 +41,25 @@ Supporting docs:
 6. `DATA_SCHEMA.md`
 7. `DEVELOPMENT_PLAN.md`
 8. `HMI_PLAN.md`
+9. `UI_UX_DETAILED_SPEC.md`
 
-## HMI UX Rebuild Direction
+## HMI Task-First UX
 
-HMI is being rebuilt as an operator-first interface with search-first workflow:
-1. Primary landing: `Work Queue` with row-level actions.
-2. IDs are hidden by default in normal operations.
-3. Global search drives context across Discovery/Acquisition/Parse/Recovery.
-4. Technical IDs remain available in advanced diagnostics views.
+HMI is implemented with a first-time-user task-oriented model:
+1. `Dashboard`
+2. `Discover`
+3. `Review`
+4. `Documents`
+5. `Search`
+6. `Advanced` (technical operations only)
 
+First-use path:
+1. Run discovery
+2. Review sources
+3. Fix document download issues
+4. Search the knowledge library
+
+Complex pipeline internals and raw IDs are hidden from task pages and kept in `Advanced`.
 Decision and implementation details are defined in `HMI_PLAN.md`.
 
 ## Quick Start

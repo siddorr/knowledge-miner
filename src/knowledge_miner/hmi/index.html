@@ -8,153 +8,32 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>Knowledge Miner Ops Dashboard</h1>
-    <p>Operator-first workflow for discovery review, acquisition recovery, and parse triage.</p>
+    <h1>Knowledge Miner Task Dashboard</h1>
+    <p>First-time-user flow: Discover -> Review -> Documents -> Search.</p>
   </header>
-
-  <section id="apiAuthBar" class="authbar">
-    <label for="apiKeyInput">API Key</label>
-    <input id="apiKeyInput" type="password" placeholder="Bearer token (e.g. dev-token)">
-    <button id="saveApiKeyBtn" type="button">Save Key</button>
-    <span id="authState" class="muted">Key not set</span>
-    <span id="authModeHint" class="muted"></span>
-  </section>
-
-  <nav class="nav" aria-label="Primary">
-    <a href="#work-queue">Work Queue</a>
-    <a href="#discovery">Discovery</a>
-    <a href="#acquisition">Acquisition</a>
-    <a href="#parse">Parse</a>
-    <a href="#search">Search</a>
-    <a href="#manual-recovery">Manual Recovery</a>
-    <a href="#runs">Runs &amp; Logs</a>
-  </nav>
 
   <section class="pollbar">
     <strong>Polling:</strong>
-    <span id="pollState" class="poll-ok">Idle (set API key, load a section).</span>
+    <span id="pollState" class="poll-ok">Idle.</span>
     <span id="systemBadges" class="muted">System status not loaded.</span>
   </section>
 
-  <section class="authbar">
-    <strong>AI Filter Settings</strong>
-    <label for="aiEnabledSelect">Enabled</label>
-    <select id="aiEnabledSelect">
-      <option value="true">true</option>
-      <option value="false">false</option>
-    </select>
-    <label for="aiModelInput">Model</label>
-    <input id="aiModelInput" type="text" placeholder="gpt-4o-mini">
-    <label for="aiBaseUrlInput">Base URL</label>
-    <input id="aiBaseUrlInput" type="text" placeholder="https://api.openai.com/v1">
-    <label for="aiApiKeyInput">API Key</label>
-    <input id="aiApiKeyInput" type="password" placeholder="Set/update key">
-    <button id="loadAiSettingsBtn" type="button">Load AI Settings</button>
-    <button id="saveAiSettingsBtn" type="button">Save AI Settings</button>
-    <span id="aiSettingsState" class="muted">Not loaded</span>
-  </section>
-
-  <section class="idbar">
-    <strong>Latest IDs:</strong>
-    <span class="idrow">Discovery: <code id="latestDiscoveryId">-</code> <button id="copyDiscoveryIdBtn" type="button">Copy ID</button></span>
-    <span class="idrow">Acquisition: <code id="latestAcqId">-</code> <button id="copyAcqIdBtn" type="button">Copy ID</button></span>
-    <span class="idrow">Parse: <code id="latestParseId">-</code> <button id="copyParseIdBtn" type="button">Copy ID</button></span>
-    <span id="idCopyState" class="muted"></span>
-  </section>
-
-  <section class="pollbar">
-    <form id="globalSearchForm" class="row compact">
-      <label>
-        Global Search
-        <input id="globalSearchQuery" type="text" placeholder="run id, DOI, source title, chunk text">
-      </label>
-      <label>
-        Limit
-        <select id="globalSearchLimit">
-          <option value="10">10</option>
-          <option value="25" selected>25</option>
-          <option value="50">50</option>
-        </select>
-      </label>
-      <button id="globalSearchBtn" type="submit">Search</button>
-      <span id="globalSearchState" class="muted"></span>
-    </form>
-  </section>
-
-  <section class="idbar">
-    <strong>Context:</strong>
-    <pre id="globalContext" class="metrics">No context selected.</pre>
-  </section>
+  <nav class="nav" aria-label="Primary">
+    <a href="#dashboard">Dashboard</a>
+    <a href="#discover">Discover</a>
+    <a href="#review">Review</a>
+    <a href="#documents">Documents</a>
+    <a href="#search">Search</a>
+    <a href="#advanced">Advanced</a>
+  </nav>
 
   <main class="stack">
-    <section id="work-queue" class="panel">
-      <h2>Work Queue</h2>
-      <p class="muted">Actionable queue across discovery, acquisition, and parse.</p>
-      <div class="row compact">
-        <button id="refreshQueueBtn" type="button">Refresh Queue</button>
-        <span id="workQueueState" class="muted"></span>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Phase</th><th>Status</th><th>Title</th><th>Reason</th><th>Actions</th></tr></thead>
-          <tbody id="workQueueRows"></tbody>
-        </table>
-      </div>
-      <p id="workQueueError" class="error"></p>
-    </section>
-
-    <section id="runs" class="panel">
-      <h2>Runs &amp; Logs (Advanced)</h2>
-      <form id="runLookupForm" class="row">
-        <label>
-          Phase
-          <select id="runPhaseSelect">
-            <option value="discovery">Discovery</option>
-            <option value="acquisition">Acquisition</option>
-            <option value="parse">Parse</option>
-          </select>
-        </label>
-        <label>
-          Run ID
-          <input id="runIdInput" type="text" placeholder="run_... / acq_... / parse_..." required>
-        </label>
-        <button type="submit">Lookup</button>
-      </form>
-      <div class="row">
-        <label>
-          Filter Phase
-          <select id="runFilterPhase">
-            <option value="all">All</option>
-            <option value="discovery">Discovery</option>
-            <option value="acquisition">Acquisition</option>
-            <option value="parse">Parse</option>
-          </select>
-        </label>
-        <label>
-          Filter Status
-          <select id="runFilterStatus">
-            <option value="all">All</option>
-            <option value="queued">queued</option>
-            <option value="running">running</option>
-            <option value="completed">completed</option>
-            <option value="failed">failed</option>
-          </select>
-        </label>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Phase</th><th>Run ID</th><th>Status</th><th>Summary</th></tr></thead>
-          <tbody id="runsTable"></tbody>
-        </table>
-      </div>
-      <p id="runsError" class="error"></p>
-    </section>
-
-    <section id="discovery" class="panel">
-      <h2>Discovery Detail</h2>
+    <section id="dashboard" class="panel">
+      <h2>Dashboard</h2>
+      <p class="muted">Start discovery and handle the next actionable task.</p>
       <form id="startDiscoveryForm" class="row">
         <label>
-          Seed queries (comma-separated)
+          Search queries (comma-separated)
           <input id="startDiscoverySeeds" type="text" placeholder="upw, semiconductor, toc" required>
         </label>
         <label>
@@ -176,183 +55,158 @@
             <option value="off">off</option>
           </select>
         </label>
-        <button id="createSessionBtn" type="submit">Create New Session</button>
+        <button id="createSessionBtn" type="submit">Run Discovery</button>
       </form>
-      <p id="createSessionState" class="muted"></p>
-      <p id="postCreateGuidance" class="muted"></p>
+      <p id="dashboardState" class="muted"></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Needs Review</th><th>Download Issues</th><th>Parse Errors</th><th>Recent Discovery</th></tr></thead>
+          <tbody id="dashboardCards"></tbody>
+        </table>
+      </div>
+      <p id="dashboardError" class="error"></p>
+    </section>
+
+    <section id="discover" class="panel">
+      <h2>Discover</h2>
+      <p class="muted">Latest run summary and export only.</p>
       <div class="row compact">
+        <button id="loadDiscoverBtn" type="button">Load Latest Run</button>
         <button id="downloadSourcesRawBtn" type="button">Export sources_raw</button>
       </div>
-      <p id="discoveryState" class="muted"></p>
-      <form id="discoveryForm" class="row">
+      <p id="discoverState" class="muted"></p>
+      <pre id="discoverSummary" class="metrics">No discovery run selected.</pre>
+      <details>
+        <summary>Technical details</summary>
+        <form id="discoverTechnicalForm" class="row">
+          <label>
+            Discovery Run ID
+            <input id="discoverRunIdInput" type="text" placeholder="run_...">
+          </label>
+          <label>
+            Status filter
+            <select id="discoverStatusFilter">
+              <option value="accepted">accepted</option>
+              <option value="rejected">rejected</option>
+              <option value="needs_review">needs_review</option>
+              <option value="all" selected>all</option>
+            </select>
+          </label>
+          <label>
+            Limit
+            <select id="discoverLimit">
+              <option value="25">25</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <button type="submit">Load Technical Listing</button>
+        </form>
+        <p id="discoverTechState" class="muted"></p>
+      </details>
+      <p id="discoverError" class="error"></p>
+    </section>
+
+    <section id="review" class="panel">
+      <h2>Review</h2>
+      <p class="muted">Review sources with one-click Accept/Reject.</p>
+      <form id="reviewForm" class="row compact">
         <label>
-          Run ID
-          <input id="discoveryRunId" type="text" placeholder="run_..." required>
-        </label>
-        <label>
-          Source Status
-          <select id="discoveryStatusFilter">
+          Status
+          <select id="reviewStatusFilter">
+            <option value="needs_review" selected>needs_review</option>
+            <option value="all">all</option>
             <option value="accepted">accepted</option>
             <option value="rejected">rejected</option>
-            <option value="needs_review">needs_review</option>
-            <option value="all">all</option>
           </select>
         </label>
         <label>
           Limit
-          <select id="discoveryLimit">
+          <select id="reviewLimit">
             <option value="25">25</option>
             <option value="50" selected>50</option>
             <option value="100">100</option>
           </select>
         </label>
-        <button type="submit">Load</button>
+        <button type="submit">Load Review Queue</button>
       </form>
       <div class="row compact">
-        <button id="discoveryPrev" type="button">Prev</button>
-        <button id="discoveryNext" type="button">Next</button>
-        <span id="discoveryPage" class="muted">offset=0</span>
+        <button id="reviewPrev" type="button">Prev</button>
+        <button id="reviewNext" type="button">Next</button>
+        <span id="reviewPage" class="muted">offset=0</span>
       </div>
-      <pre id="discoveryMetrics" class="metrics">No data loaded.</pre>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>Title</th><th>Abstract</th><th>Status</th><th>Score</th><th>Type</th><th>Source</th><th>Actions</th></tr></thead>
-          <tbody id="discoverySources"></tbody>
+          <thead><tr><th>Title</th><th>Abstract</th><th>Decision</th><th>Why</th></tr></thead>
+          <tbody id="reviewRows"></tbody>
         </table>
       </div>
-      <p id="discoveryError" class="error"></p>
+      <details>
+        <summary>Technical details</summary>
+        <label>
+          Discovery Run ID Override
+          <input id="reviewRunIdInput" type="text" placeholder="run_...">
+        </label>
+      </details>
+      <p id="reviewState" class="muted"></p>
+      <p id="reviewError" class="error"></p>
     </section>
 
-    <section id="acquisition" class="panel">
-      <h2>Acquisition Detail</h2>
-      <form id="startAcqForm" class="row">
-        <label>
-          Discovery Run ID
-          <input id="startAcqRunId" type="text" placeholder="run_..." required>
-        </label>
-        <label>
-          Retry failed only
-          <select id="startAcqRetry">
-            <option value="false" selected>false</option>
-            <option value="true">true</option>
-          </select>
-        </label>
-        <button type="submit">Start Acquisition</button>
-      </form>
-      <div class="row compact">
-        <button id="downloadManifestBtn" type="button">Export acquisition manifest</button>
-      </div>
-      <form id="acqForm" class="row">
-        <label>
-          Acquisition Run ID
-          <input id="acqRunId" type="text" placeholder="acq_..." required>
-        </label>
+    <section id="documents" class="panel">
+      <h2>Documents</h2>
+      <p class="muted">Fix failed or partial downloads from acquisition runs.</p>
+      <form id="documentsForm" class="row compact">
         <label>
           Limit
-          <select id="acqLimit">
+          <select id="documentsLimit">
             <option value="25">25</option>
             <option value="50" selected>50</option>
             <option value="100">100</option>
           </select>
         </label>
-        <button type="submit">Load</button>
+        <button type="submit">Load Download Issues</button>
+        <button id="manualExportCsvBtn" type="button">Export CSV</button>
       </form>
       <div class="row compact">
-        <button id="acqPrev" type="button">Prev</button>
-        <button id="acqNext" type="button">Next</button>
-        <span id="acqPage" class="muted">offset=0</span>
-      </div>
-      <pre id="acqMetrics" class="metrics">No data loaded.</pre>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Item ID</th><th>Source ID</th><th>Status</th><th>Attempts</th><th>Selected URL</th><th>Error</th><th>Actions</th></tr></thead>
-          <tbody id="acqItems"></tbody>
-        </table>
-      </div>
-      <p id="acqError" class="error"></p>
-    </section>
-
-    <section id="parse" class="panel">
-      <h2>Parse Detail</h2>
-      <form id="startParseForm" class="row">
-        <label>
-          Acquisition Run ID
-          <input id="startParseAcqRunId" type="text" placeholder="acq_..." required>
-        </label>
-        <label>
-          Retry failed only
-          <select id="startParseRetry">
-            <option value="false" selected>false</option>
-            <option value="true">true</option>
-          </select>
-        </label>
-        <button type="submit">Start Parse</button>
-      </form>
-      <form id="parseForm" class="row">
-        <label>
-          Parse Run ID
-          <input id="parseRunId" type="text" placeholder="parse_..." required>
-        </label>
-        <label>
-          Docs limit
-          <select id="parseDocsLimit">
-            <option value="25">25</option>
-            <option value="50" selected>50</option>
-            <option value="100">100</option>
-          </select>
-        </label>
-        <label>
-          Chunks limit
-          <select id="parseChunksLimit">
-            <option value="25">25</option>
-            <option value="50" selected>50</option>
-            <option value="100">100</option>
-          </select>
-        </label>
-        <button type="submit">Load</button>
-      </form>
-      <pre id="parseMetrics" class="metrics">No data loaded.</pre>
-      <h3>Documents</h3>
-      <div class="row compact">
-        <button id="parseDocsPrev" type="button">Prev</button>
-        <button id="parseDocsNext" type="button">Next</button>
-        <span id="parseDocsPage" class="muted">offset=0</span>
+        <button id="documentsPrev" type="button">Prev</button>
+        <button id="documentsNext" type="button">Next</button>
+        <span id="documentsPage" class="muted">offset=0</span>
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Document ID</th><th>Status</th><th>Decision</th><th>Confidence</th><th>Parser</th><th>Chars</th><th>Actions</th></tr></thead>
-          <tbody id="parseDocuments"></tbody>
+          <thead><tr><th>Title</th><th>Problem</th><th>Actions</th></tr></thead>
+          <tbody id="documentsRows"></tbody>
         </table>
       </div>
-      <h3>Selected Document Detail</h3>
-      <pre id="parseDocDetail" class="metrics">No document selected.</pre>
-      <h3>Selected Document Full Text</h3>
-      <pre id="parseDocText" class="metrics">No document selected.</pre>
-      <h3>Chunks</h3>
-      <div class="row compact">
-        <button id="parseChunksPrev" type="button">Prev</button>
-        <button id="parseChunksNext" type="button">Next</button>
-        <span id="parseChunksPage" class="muted">offset=0</span>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Chunk ID</th><th>Document</th><th>Idx</th><th>Decision</th><th>Confidence</th><th>Range</th></tr></thead>
-          <tbody id="parseChunks"></tbody>
-        </table>
-      </div>
-      <p id="parseError" class="error"></p>
+      <form id="manualUploadForm" class="row">
+        <label>
+          PDF File
+          <input id="manualUploadFile" type="file" required>
+        </label>
+        <button type="submit">Upload PDF</button>
+      </form>
+      <p id="documentsState" class="muted"></p>
+      <details>
+        <summary>Technical details</summary>
+        <label>
+          Acquisition Run ID Override
+          <input id="documentsAcqRunIdInput" type="text" placeholder="acq_...">
+        </label>
+        <label>
+          Source ID for manual upload
+          <input id="manualUploadSourceId" type="text" placeholder="source_id">
+        </label>
+      </details>
+      <p id="documentsError" class="error"></p>
     </section>
 
     <section id="search" class="panel">
       <h2>Search</h2>
+      <p class="muted">Single query search over parsed chunks.</p>
       <form id="searchForm" class="row">
         <label>
-          Parse Run ID
-          <input id="searchParseRunId" type="text" placeholder="parse_..." required>
-        </label>
-        <label>
           Query
-          <input id="searchQuery" type="text" placeholder="UPW" required>
+          <input id="searchQuery" type="text" placeholder="UPW membrane" required>
         </label>
         <label>
           Limit
@@ -365,78 +219,170 @@
         </label>
         <button type="submit">Search</button>
       </form>
-      <p id="searchState" class="muted"></p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Source ID</th><th>Document</th><th>Chunk</th><th>Score</th><th>Snippet</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Title/Snippet</th><th>Actions</th></tr></thead>
           <tbody id="searchRows"></tbody>
         </table>
       </div>
-      <h3>Parsed Document Detail</h3>
-      <pre id="searchDocDetail" class="metrics">No document selected.</pre>
-      <h3>Parsed Document Full Text</h3>
-      <pre id="searchDocText" class="metrics">No document selected.</pre>
-      <h3>Related Source Context</h3>
-      <pre id="searchSourceContext" class="metrics">No source selected.</pre>
+      <p id="searchState" class="muted"></p>
+      <details>
+        <summary>Technical details</summary>
+        <label>
+          Parse Run ID Override
+          <input id="searchParseRunIdInput" type="text" placeholder="parse_...">
+        </label>
+        <h3>Parsed Document Detail</h3>
+        <pre id="searchDocDetail" class="metrics">No document selected.</pre>
+        <h3>Parsed Document Full Text</h3>
+        <pre id="searchDocText" class="metrics">No document selected.</pre>
+        <h3>Related Source Context</h3>
+        <pre id="searchSourceContext" class="metrics">No source selected.</pre>
+      </details>
       <p id="searchError" class="error"></p>
     </section>
 
-    <section id="manual-recovery" class="panel">
-      <h2>Manual Recovery</h2>
-      <form id="manualRecoveryForm" class="row">
-        <label>
-          Acquisition Run ID
-          <input id="manualAcqRunId" type="text" placeholder="acq_..." required>
-        </label>
-        <label>
-          Limit
-          <select id="manualLimit">
-            <option value="25">25</option>
-            <option value="50" selected>50</option>
-            <option value="100">100</option>
-          </select>
-        </label>
-        <button type="submit">Load Queue</button>
-        <button id="manualExportCsvBtn" type="button">Export CSV</button>
-      </form>
-      <div class="row compact">
-        <button id="manualPrev" type="button">Prev</button>
-        <button id="manualNext" type="button">Next</button>
-        <span id="manualPage" class="muted">offset=0</span>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Item ID</th>
-              <th>Source ID</th>
-              <th>Status</th>
-              <th>Attempts</th>
-              <th>Title</th>
-              <th>DOI</th>
-              <th>Source URL</th>
-              <th>Selected URL</th>
-              <th>Candidates</th>
-              <th>Error</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="manualQueueRows"></tbody>
-        </table>
-      </div>
-      <form id="manualUploadForm" class="row">
-        <label>
-          Source ID
-          <input id="manualUploadSourceId" type="text" placeholder="source_id" required>
-        </label>
-        <label>
-          File
-          <input id="manualUploadFile" type="file" required>
-        </label>
-        <button type="submit">Register Manual Upload</button>
-      </form>
-      <p id="manualState" class="muted"></p>
-      <p id="manualError" class="error"></p>
+    <section id="advanced" class="panel">
+      <h2>Advanced</h2>
+      <p class="muted">Technical operations, IDs, logs, and diagnostics.</p>
+
+      <section id="apiAuthBar" class="authbar">
+        <label for="apiKeyInput">API Key</label>
+        <input id="apiKeyInput" type="password" placeholder="Bearer token (e.g. dev-token)">
+        <button id="saveApiKeyBtn" type="button">Save Key</button>
+        <span id="authState" class="muted">Key not set</span>
+        <span id="authModeHint" class="muted"></span>
+      </section>
+
+      <section class="authbar">
+        <strong>AI Filter Settings</strong>
+        <label for="aiEnabledSelect">Enabled</label>
+        <select id="aiEnabledSelect">
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+        <label for="aiModelInput">Model</label>
+        <input id="aiModelInput" type="text" placeholder="gpt-4o-mini">
+        <label for="aiBaseUrlInput">Base URL</label>
+        <input id="aiBaseUrlInput" type="text" placeholder="https://api.openai.com/v1">
+        <label for="aiApiKeyInput">API Key</label>
+        <input id="aiApiKeyInput" type="password" placeholder="Set/update key">
+        <button id="loadAiSettingsBtn" type="button">Load AI Settings</button>
+        <button id="saveAiSettingsBtn" type="button">Save AI Settings</button>
+        <span id="aiSettingsState" class="muted">Not loaded</span>
+      </section>
+
+      <section class="idbar">
+        <strong>Latest IDs:</strong>
+        <span class="idrow">Discovery: <code id="latestDiscoveryId">-</code> <button id="copyDiscoveryIdBtn" type="button">Copy ID</button></span>
+        <span class="idrow">Acquisition: <code id="latestAcqId">-</code> <button id="copyAcqIdBtn" type="button">Copy ID</button></span>
+        <span class="idrow">Parse: <code id="latestParseId">-</code> <button id="copyParseIdBtn" type="button">Copy ID</button></span>
+        <span id="idCopyState" class="muted"></span>
+      </section>
+
+      <section class="pollbar">
+        <form id="globalSearchForm" class="row compact">
+          <label>
+            Global Search
+            <input id="globalSearchQuery" type="text" placeholder="run id, DOI, source title, chunk text">
+          </label>
+          <label>
+            Limit
+            <select id="globalSearchLimit">
+              <option value="10">10</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+            </select>
+          </label>
+          <button id="globalSearchBtn" type="submit">Search</button>
+          <span id="globalSearchState" class="muted"></span>
+        </form>
+      </section>
+
+      <section class="idbar">
+        <strong>Context:</strong>
+        <pre id="globalContext" class="metrics">No context selected.</pre>
+      </section>
+
+      <details>
+        <summary>Run lookup and stage controls</summary>
+        <form id="runLookupForm" class="row">
+          <label>
+            Phase
+            <select id="runPhaseSelect">
+              <option value="discovery">Discovery</option>
+              <option value="acquisition">Acquisition</option>
+              <option value="parse">Parse</option>
+            </select>
+          </label>
+          <label>
+            Run ID
+            <input id="runIdInput" type="text" placeholder="run_... / acq_... / parse_..." required>
+          </label>
+          <button type="submit">Lookup</button>
+        </form>
+        <div class="row">
+          <label>
+            Filter Phase
+            <select id="runFilterPhase">
+              <option value="all">All</option>
+              <option value="discovery">Discovery</option>
+              <option value="acquisition">Acquisition</option>
+              <option value="parse">Parse</option>
+            </select>
+          </label>
+          <label>
+            Filter Status
+            <select id="runFilterStatus">
+              <option value="all">All</option>
+              <option value="queued">queued</option>
+              <option value="running">running</option>
+              <option value="completed">completed</option>
+              <option value="failed">failed</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Phase</th><th>Run ID</th><th>Status</th><th>Summary</th></tr></thead>
+            <tbody id="runsTable"></tbody>
+          </table>
+        </div>
+        <p id="runsError" class="error"></p>
+
+        <form id="startAcqForm" class="row">
+          <label>
+            Discovery Run ID
+            <input id="startAcqRunId" type="text" placeholder="run_..." required>
+          </label>
+          <label>
+            Retry failed only
+            <select id="startAcqRetry">
+              <option value="false" selected>false</option>
+              <option value="true">true</option>
+            </select>
+          </label>
+          <button type="submit">Start Acquisition</button>
+          <button id="downloadManifestBtn" type="button">Export acquisition manifest</button>
+        </form>
+        <p id="acqError" class="error"></p>
+
+        <form id="startParseForm" class="row">
+          <label>
+            Acquisition Run ID
+            <input id="startParseAcqRunId" type="text" placeholder="acq_..." required>
+          </label>
+          <label>
+            Retry failed only
+            <select id="startParseRetry">
+              <option value="false" selected>false</option>
+              <option value="true">true</option>
+            </select>
+          </label>
+          <button type="submit">Start Parse</button>
+        </form>
+        <p id="parseError" class="error"></p>
+      </details>
     </section>
   </main>
 

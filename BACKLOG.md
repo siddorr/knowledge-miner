@@ -1,7 +1,7 @@
 # Backlog
 
 Status:
-- In progress: next priorities are post-Phase-4.1 enhancements and deployment hardening (updated on 2026-03-11).
+- Updated on 2026-03-11: Phase 4.2 task-first HMI rebuild checklist is complete; next priorities are post-HMI hardening and deployment readiness.
 
 ## High Priority
 
@@ -571,73 +571,77 @@ Definition of done for Phase 4.1:
 ## Phase 4.2 Implementation Tasks (HMI UX Rebuild - Operator First)
 
 Reference:
-- `HMI_PLAN.md` (UX Rebuild)
+- `HMI_PLAN.md` (Task-First UX)
 
-1. [x] P0 - Add aggregated work queue endpoint
-- `GET /v1/work-queue`
-- Return actionable rows across phases (`needs_review`, `failed`, `partial`) with reason fields and quick-action context.
+1. [x] P0 - Hard replace HMI with task-first navigation
+- Set top-level nav to:
+  - `Dashboard`
+  - `Discover`
+  - `Review`
+  - `Documents`
+  - `Search`
+  - `Advanced`
+- Remove stage-first navigation from primary UI paths.
 
-2. [x] P0 - Add global search endpoint for HMI
-- `GET /v1/search/global`
-- Search across runs, sources, acquisition items, parsed docs, and chunks.
-- Return typed results with target context for one-click navigation.
+2. [x] P0 - Build Dashboard as default landing page
+- Add "Run Discovery" primary CTA.
+- Add attention cards:
+  - sources to review
+  - failed document downloads
+  - processing errors
+- Add recent activity summary with discovered/accepted/rejected counters.
 
-3. [x] P0 - Add system status endpoint for operator clarity
-- `GET /v1/system/status`
-- Include auth mode, AI filter readiness/warnings, and provider readiness summary.
+3. [x] P0 - Implement simplified Discover page
+- Query list input + `Run Discovery` action.
+- Show last-run summary only (found/accepted/rejected).
+- Exclude technical IDs from default view.
 
-4. [x] P0 - Replace ID-first HMI forms with row-first operator actions
-- Core workflows must not require manual copy/paste of run/source IDs.
-- Keep IDs available only in technical details / copy controls.
+4. [x] P0 - Implement simplified Review page
+- Primary table columns:
+  - title
+  - decision controls (`Accept`/`Reject`)
+- Add row expand for abstract and optional context (`reason_code`, `reason_text`, confidence).
+- Ensure no manual source ID entry in primary workflow.
 
-5. [x] P1 - Introduce `Work Queue` as default landing view
-- Unified queue and action loop for discovery review + acquisition/parse failures.
-- Inline `Approve/Reject/Retry/Manual Upload` actions.
+5. [x] P0 - Implement Documents (Fix Downloads) page
+- Show failed/partial download items with:
+  - title
+  - problem classification
+  - actions (`Retry`, `Upload PDF`, `Open source`)
+- Ensure row-context actions (no manual ID copy/paste).
 
-6. [x] P1 - Implement global context synchronization in HMI
-- Selecting an item in one section synchronizes context across related sections.
-- Preserve selected context, filters, and pagination across polling refresh.
+6. [x] P0 - Keep technical complexity in Advanced page
+- Move run IDs, raw statuses, logs, and JSON diagnostics to `Advanced`.
+- Keep task pages free of technical forms and raw ID fields.
 
-7. [x] P1 - Move technical workflows to advanced `Runs & Logs` section
-- Keep explicit ID and diagnostics tools in advanced area.
-- Prevent operator screens from being overloaded with technical fields.
+7. [x] P0 - Implement ID visibility policy
+- Hide `run_id`, `source_id`, `acq_run_id`, `parse_run_id` on task pages by default.
+- Provide optional "Technical details" drawer and copy controls.
 
-8. [x] P1 - Add UX-focused acceptance tests
-- End-to-end operator flow with no manual ID entry.
-- Visibility tests for hidden-by-default IDs.
-- Regression tests for review/upload/retry actions.
+8. [x] P0 - Implement status mapper for primary UI
+- Map backend statuses to 3-state model:
+  - Green = completed/ready
+  - Yellow = needs attention/review/in progress
+  - Red = failed/blocker
+- Use text + color together in all task pages.
 
-9. [x] P0 - Hard replace rollout of HMI route
-- Replace legacy HMI shell with new operator-first shell at `/hmi`.
-- Remove deprecated ID-first UI paths/components from primary route.
-- Keep rollback instructions documented (git/redeploy procedure).
+9. [x] P0 - Align task APIs for Dashboard/Task pages
+- `GET /v1/work-queue` for actionable task groups.
+- `GET /v1/system/status` for auth/AI/provider readiness.
+- `GET /v1/search/global` for cross-entity search.
+- Ensure responses include user-facing reason fields where available.
 
-10. [x] P0 - Implement auth UX parity (system token + optional override)
-- `AUTH_ENABLED=false`:
-  - hide token inputs and show explicit "No app token required" state.
-- `AUTH_ENABLED=true`:
-  - show token mode (`system token` vs `manual override`).
-  - support temporary manual override without exposing plaintext secrets.
-- Add tests for both auth modes in HMI.
+10. [x] P1 - Simplify Search page UX
+- Keep single search field + result cards/snippets.
+- Hide raw technical metadata in default results.
+- Keep deep technical context accessible via Advanced/details.
 
-11. [x] P1 - Add operator "why" messaging in UI
-- Surface `reason_code` + readable `reason_text` on queue/stage rows.
-- Show actionable explanation for `needs_review|failed|partial` states.
-- Add tests verifying reasons render consistently for all major statuses.
+11. [x] P1 - Implement first-time-user flow acceptance tests
+- Validate full flow:
+  - Dashboard -> Discover -> Review -> Documents -> Search
+- Validate no manual ID entry required in primary flow.
 
-12. [x] P1 - Implement polling behavior contract in rebuilt HMI
-- Poll every 5s when active/visible, 15s when tab is hidden.
-- Stop polling for terminal run states unless user explicitly refreshes.
-- Preserve selected context/filters/pagination during polling updates.
-- Add UI tests for polling state transitions.
-
-13. [x] P1 - Build global shell/navigation layer for operator workflow
-- Add top-level global search bar and `Create New Session` CTA.
-- Add health/readiness badges (API/auth/AI/provider readiness).
-- Add default landing section (`Work Queue`) and persistent cross-section context panel.
-
-14. [x] P1 - Add accessibility baseline for new HMI
-- Ensure keyboard navigability for primary triage actions.
-- Ensure status signaling uses text + color (not color-only).
-- Ensure critical actions use explicit text labels (no icon-only controls).
-- Add focused accessibility regression checks for core operator flow.
+12. [x] P1 - Add accessibility and clarity checks
+- Keyboard navigation for core task flow.
+- Explicit text labels on primary actions.
+- Status readability without relying on color only.

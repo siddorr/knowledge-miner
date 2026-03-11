@@ -11,18 +11,17 @@ def test_hmi_shell_route_and_navigation():
     response = client.get("/hmi")
     assert response.status_code == 200
     body = response.text
-    assert "Knowledge Miner Ops Dashboard" in body
-    assert "Runs" in body
-    assert "Discovery" in body
-    assert "Acquisition" in body
+    assert "Knowledge Miner Task Dashboard" in body
+    assert "Dashboard" in body
+    assert "Discover" in body
+    assert "Review" in body
+    assert "Documents" in body
     assert "Parse" in body
     assert "Search" in body
-    assert "Manual Recovery" in body
-    assert "Work Queue" in body
-    assert "Runs &amp; Logs (Advanced)" in body
+    assert "Advanced" in body
     assert "/hmi/static/hmi.js" in body
-    assert "Create New Session" in body
-    assert "postCreateGuidance" in body
+    assert "Run Discovery" in body
+    assert "Load Review Queue" in body
     assert "Start Acquisition" in body
     assert "Start Parse" in body
     assert "Abstract" in body
@@ -31,17 +30,15 @@ def test_hmi_shell_route_and_navigation():
     assert "Copy ID" in body
     assert "Context:" in body
     assert "__KM_HMI_DEFAULT_TOKEN__" in body
-    assert "Load Queue" in body
+    assert "Load Download Issues" in body
     assert "Export CSV" in body
-    assert "Register Manual Upload" in body
+    assert "Upload PDF" in body
     assert "AI Filter Settings" in body
     assert "Load AI Settings" in body
     assert "Save AI Settings" in body
     assert "AI Filter" in body
     assert "Global Search" in body
-    assert "Parse Run ID" in body
-    assert "Selected Document Detail" in body
-    assert "Selected Document Full Text" in body
+    assert "Parse Run ID Override" in body
     assert "Parsed Document Detail" in body
     assert "Parsed Document Full Text" in body
     assert "Related Source Context" in body
@@ -51,7 +48,11 @@ def test_hmi_static_css_served():
     client = TestClient(app)
     response = client.get("/hmi/static/hmi.css")
     assert response.status_code == 200
+    body = response.text
     assert "text/css" in response.headers.get("content-type", "")
+    assert ".status-badge" in body
+    assert ".status-ready" in body
+    assert ".status-alert" in body
 
 
 def test_hmi_static_js_served():
@@ -62,24 +63,17 @@ def test_hmi_static_js_served():
     assert "Stale data in #" in body
     assert "pollState" in body
     assert "Load failed:" in body
-    assert "discovery-review-action" in body
-    assert "toggle-abstract" in body
-    assert "Approve" in body
+    assert "review-action" in body
+    assert "documents-action" in body
+    assert "Accept" in body
     assert "Reject" in body
-    assert "Use Context" in body
-    assert "acq-row-action" in body
-    assert "parse-doc-action" in body
-    assert "manual-row-action" in body
-    assert "Manual Recovery" in body
-    assert "Prefill Upload" in body
-    assert "syncDiscoveryRunInputs" in body
-    assert "updatePostCreateGuidance" in body
+    assert "updateSectionVisibility" in body
+    assert "statusBadge" in body
     assert "Run created:" in body
-    assert "Switch filter to all or needs_review." in body
     assert "loadAiSettings" in body
     assert "saveAiSettings" in body
     assert "runGlobalSearch" in body
-    assert "loadWorkQueueData" in body
+    assert "loadDashboard" in body
     assert "/v1/work-queue" in body
     assert "/v1/system/status" in body
     assert "/v1/search/global" in body
