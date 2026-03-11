@@ -82,7 +82,7 @@ Decision lock (approved):
 - `retry_failed_only` mode
 - Skip already-successful items on resume
 
-5. [ ] P1 - Add filesystem artifact layout and manifest generation
+5. [x] P1 - Add filesystem artifact layout and manifest generation
 - `acquisition/{acq_run_id}/{source_id}/source.pdf|source.html`
 - Run-level `manifest.json`
 - Artifact metadata parity between DB and filesystem

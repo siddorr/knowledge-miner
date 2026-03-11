@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import hashlib
+import json
 from pathlib import Path
 import threading
 import time
@@ -154,6 +155,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         run.status = "completed"
         run.updated_at = datetime.now(UTC)
         db.commit()
+        _write_manifest_file(db, run.id)
     except Exception as exc:  # pragma: no cover
         db.rollback()
         run.status = "failed"
@@ -429,3 +431,15 @@ def build_manifest_payload(db: Session, acq_run_id: str) -> dict:
             for a in artifacts
         ],
     }
+
+
+def _manifest_file_path(acq_run_id: str) -> Path:
+    return Path(settings.artifacts_dir) / "acquisition" / acq_run_id / "manifest.json"
+
+
+def _write_manifest_file(db: Session, acq_run_id: str) -> Path:
+    payload = build_manifest_payload(db, acq_run_id)
+    path = _manifest_file_path(acq_run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path

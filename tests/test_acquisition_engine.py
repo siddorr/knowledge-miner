@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from sqlalchemy import select
 
@@ -126,7 +127,7 @@ def test_execute_acquisition_run_downloads_pdf(monkeypatch, tmp_path):
             assert artifact is not None
             assert artifact.kind == "pdf"
             assert artifact.source_id == source_id
-            assert artifact.path.endswith("source.pdf")
+            assert artifact.path == f"acquisition/{run.id}/{source_id}/source.pdf"
             assert (Path(tmp_path) / artifact.path).exists()
     finally:
         object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
@@ -169,6 +170,15 @@ def test_execute_acquisition_run_falls_back_to_html(monkeypatch, tmp_path):
             assert run.downloaded_total == 0
             assert run.partial_total == 1
             assert run.failed_total == 0
+
+            manifest_path = Path(tmp_path) / "acquisition" / run.id / "manifest.json"
+            assert manifest_path.exists()
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            assert manifest["acq_run_id"] == run.id
+            assert manifest["totals"]["partial_total"] == 1
+            assert len(manifest["items"]) == 1
+            assert len(manifest["artifacts"]) == 1
+            assert manifest["artifacts"][0]["path"] == f"acquisition/{run.id}/doi:10.1000/acq-engine/source.html"
     finally:
         object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
 
