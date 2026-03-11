@@ -30,6 +30,10 @@ def test_hmi_shell_route_and_navigation():
     assert "Load Queue" in body
     assert "Export CSV" in body
     assert "Register Manual Upload" in body
+    assert "Parse Run ID" in body
+    assert "Parsed Document Detail" in body
+    assert "Parsed Document Full Text" in body
+    assert "Related Source Context" in body
 
 
 def test_hmi_static_css_served():

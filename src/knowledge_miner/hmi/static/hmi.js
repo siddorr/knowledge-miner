@@ -12,6 +12,7 @@ const state = {
     acq: { loaded: false, offset: 0 },
     parse: { loaded: false, docsOffset: 0, chunksOffset: 0 },
     manual: { loaded: false, offset: 0 },
+    search: { loaded: false, payload: null, latestItems: [] },
   },
 };
 
@@ -633,6 +634,122 @@ async function exportManifest() {
   }
 }
 
+async function runSearchData(payload) {
+  setText("searchError", "");
+  const result = await apiPost("/v1/search", payload);
+  state.view.search.latestItems = result.items || [];
+  renderTable(
+    "searchRows",
+    state.view.search.latestItems.map(
+      (item, idx) =>
+        `<tr><td>${escapeHtml(item.source_id)}</td><td>${escapeHtml(item.document_id)}</td><td>${escapeHtml(item.chunk_id)}</td><td>${escapeHtml(String(item.score))}</td><td>${escapeHtml(item.snippet || "")}</td><td><button type="button" class="search-action" data-action="doc" data-index="${idx}">Doc</button> <button type="button" class="search-action" data-action="text" data-index="${idx}">Text</button> <button type="button" class="search-action" data-action="source" data-index="${idx}">Source</button></td></tr>`,
+    ),
+    6,
+  );
+  setText("searchState", `Results: ${result.total}`);
+  state.view.search.loaded = true;
+  return result;
+}
+
+async function runSearch(event) {
+  event.preventDefault();
+  setText("searchError", "");
+  try {
+    const payload = {
+      parse_run_id: el("searchParseRunId").value.trim(),
+      query: el("searchQuery").value.trim(),
+      limit: Number(el("searchLimit").value),
+    };
+    if (!payload.parse_run_id) throw new Error("parse run id is required");
+    if (!payload.query) throw new Error("query is required");
+    state.view.search.payload = payload;
+    await runSearchData(payload);
+    schedulePoll();
+  } catch (err) {
+    setText("searchError", `Search failed: ${err.message}`);
+  }
+}
+
+async function showSearchDocumentDetail(index) {
+  setText("searchError", "");
+  const item = state.view.search.latestItems[index];
+  if (!item) return;
+  try {
+    const detail = await apiGet(`/v1/parse/documents/${encodeURIComponent(item.document_id)}`);
+    el("searchDocDetail").textContent = JSON.stringify(detail, null, 2);
+  } catch (err) {
+    setText("searchError", `Doc detail failed: ${err.message}`);
+  }
+}
+
+async function showSearchDocumentText(index) {
+  setText("searchError", "");
+  const item = state.view.search.latestItems[index];
+  if (!item) return;
+  try {
+    const body = await apiGet(`/v1/parse/documents/${encodeURIComponent(item.document_id)}/text`);
+    el("searchDocText").textContent = body.text || "";
+  } catch (err) {
+    setText("searchError", `Doc text failed: ${err.message}`);
+  }
+}
+
+async function showSearchSourceContext(index) {
+  setText("searchError", "");
+  const item = state.view.search.latestItems[index];
+  if (!item) return;
+  try {
+    const parseRunId = el("searchParseRunId").value.trim();
+    if (!parseRunId) throw new Error("parse run id is required");
+    const parseRun = await apiGet(`/v1/parse/runs/${encodeURIComponent(parseRunId)}`);
+    const acqRun = await apiGet(`/v1/acquisition/runs/${encodeURIComponent(parseRun.acq_run_id)}`);
+    const discoveryRunId = acqRun.discovery_run_id;
+
+    let found = null;
+    const limit = 100;
+    for (let offset = 0; offset < 500; offset += limit) {
+      const page = await apiGet(
+        `/v1/discovery/runs/${encodeURIComponent(discoveryRunId)}/sources?status=all&limit=${limit}&offset=${offset}`,
+      );
+      found = (page.items || []).find((s) => s.id === item.source_id) || null;
+      if (found || (page.items || []).length < limit) break;
+    }
+
+    el("searchSourceContext").textContent = JSON.stringify(
+      {
+        source_id: item.source_id,
+        discovery_run_id: discoveryRunId,
+        acq_run_id: parseRun.acq_run_id,
+        parse_run_id: parseRunId,
+        source: found,
+      },
+      null,
+      2,
+    );
+
+    el("discoveryRunId").value = discoveryRunId;
+    el("discoveryStatusFilter").value = "all";
+    if (!state.view.discovery.loaded) {
+      state.view.discovery.offset = 0;
+      await loadDiscoveryData();
+    }
+  } catch (err) {
+    setText("searchError", `Source context failed: ${err.message}`);
+  }
+}
+
+async function handleSearchAction(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.classList.contains("search-action")) return;
+  const action = target.dataset.action || "";
+  const index = Number(target.dataset.index || "-1");
+  if (index < 0) return;
+  if (action === "doc") await showSearchDocumentDetail(index);
+  else if (action === "text") await showSearchDocumentText(index);
+  else if (action === "source") await showSearchSourceContext(index);
+}
+
 async function runPollCycle() {
   const section = activeSection();
   const interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
@@ -644,6 +761,11 @@ async function runPollCycle() {
     else if (section === "acquisition" && state.view.acq.loaded) keepPolling = await loadAcquisitionData();
     else if (section === "parse" && state.view.parse.loaded) keepPolling = await loadParseData();
     else if (section === "manual-recovery" && state.view.manual.loaded) keepPolling = await loadManualRecoveryData();
+    else if (section === "search" && state.view.search.loaded && state.view.search.payload) {
+      await runSearchData(state.view.search.payload);
+      const run = await apiGet(`/v1/parse/runs/${encodeURIComponent(state.view.search.payload.parse_run_id)}`);
+      keepPolling = !isTerminalStatus(run.status);
+    }
 
     if (!keepPolling) {
       setPollState(`Stopped polling on #${section}: terminal status reached.`);
@@ -825,6 +947,8 @@ function init() {
 
   el("startParseForm").addEventListener("submit", startParse);
   el("parseForm").addEventListener("submit", loadParse);
+  el("searchForm").addEventListener("submit", runSearch);
+  el("searchRows").addEventListener("click", handleSearchAction);
   el("manualRecoveryForm").addEventListener("submit", loadManualRecovery);
   el("manualExportCsvBtn").addEventListener("click", exportManualCsv);
   el("manualUploadForm").addEventListener("submit", registerManualUpload);

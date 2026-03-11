@@ -284,7 +284,40 @@
 
     <section id="search" class="panel">
       <h2>Search</h2>
-      <p class="muted">Search explorer is implemented in the next task.</p>
+      <form id="searchForm" class="row">
+        <label>
+          Parse Run ID
+          <input id="searchParseRunId" type="text" placeholder="parse_..." required>
+        </label>
+        <label>
+          Query
+          <input id="searchQuery" type="text" placeholder="UPW" required>
+        </label>
+        <label>
+          Limit
+          <select id="searchLimit">
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <button type="submit">Search</button>
+      </form>
+      <p id="searchState" class="muted"></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Source ID</th><th>Document</th><th>Chunk</th><th>Score</th><th>Snippet</th><th>Actions</th></tr></thead>
+          <tbody id="searchRows"></tbody>
+        </table>
+      </div>
+      <h3>Parsed Document Detail</h3>
+      <pre id="searchDocDetail" class="metrics">No document selected.</pre>
+      <h3>Parsed Document Full Text</h3>
+      <pre id="searchDocText" class="metrics">No document selected.</pre>
+      <h3>Related Source Context</h3>
+      <pre id="searchSourceContext" class="metrics">No source selected.</pre>
+      <p id="searchError" class="error"></p>
     </section>
 
     <section id="manual-recovery" class="panel">

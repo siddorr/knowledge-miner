@@ -290,7 +290,7 @@ Decision lock (approved):
 - CSV export action.
 - Manual upload registration form and result feedback.
 
-7. [ ] P1 - Implement search explorer UI
+7. [x] P1 - Implement search explorer UI
 - Query interface for `POST /v1/search`.
 - Results with score/snippet and links to:
   - parsed document details
