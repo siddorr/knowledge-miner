@@ -1,7 +1,7 @@
 # Backlog
 
 Status:
-- All listed items are completed (updated on 2026-03-11).
+- In progress: remaining items exist in Phase 2.1, Phase 3, and HMI plan (updated on 2026-03-11).
 
 ## Must-Fix (Spec Compliance)
 
@@ -181,7 +181,7 @@ Decision lock (proposed baseline):
   - parse quality metrics (char_count, section_count, parser_used)
 - Persist parse errors per document without failing whole run.
 
-4. [ ] P0 - Implement deterministic chunking + corpus indexing
+4. [x] P0 - Implement deterministic chunking + corpus indexing
 - Chunk policy:
   - fixed target size (chars/tokens), overlap, sentence-aware boundary when possible
   - stable `chunk_id` generation from `(document_id, chunk_index, content_hash)`
@@ -226,3 +226,86 @@ Definition of done for Phase 3:
 3. Chunking is deterministic and queryable with positional metadata.
 4. Search endpoint returns ranked results with document/chunk provenance.
 5. Findings and report artifacts are generated and consistent with database state.
+
+## Phase 4 Implementation Tasks (HMI Ops Dashboard)
+
+Reference:
+- `HMI_PLAN.md`
+
+Decision lock (approved):
+- Surface: FastAPI-hosted web UI
+- Primary mode: Ops dashboard (mixed audience)
+- Live updates: auto-refresh polling
+- Actions: retry + export + review + manual upload registration
+
+1. [ ] P0 - Add FastAPI-hosted HMI shell
+- Serve static assets and base dashboard route.
+- Keep one deployable app (API + UI).
+- Add basic navigation:
+  - Runs
+  - Discovery
+  - Acquisition
+  - Parse
+  - Search
+  - Manual Recovery
+
+2. [ ] P0 - Implement read-only operations screens
+- Runs dashboard with phase/status filters and run lookup.
+- Discovery detail view:
+  - run metrics
+  - accepted sources list
+  - AI heuristic warning visibility
+- Acquisition detail view:
+  - counters and item statuses
+  - error context and selected URL
+- Parse detail view:
+  - counters
+  - parsed document list
+  - chunks list
+
+3. [ ] P0 - Implement polling and runtime UX behaviors
+- Auto-refresh every 5s on active tab; 15s in background.
+- Stop polling when run status is terminal (`completed`, `failed`).
+- Show stale-data indicator on polling failures.
+- Preserve user filter/pagination state across refreshes.
+
+4. [ ] P0 - Implement core user actions in UI
+- Start Discovery run.
+- Start Acquisition run (`retry_failed_only` supported).
+- Start Parse run (`retry_failed_only` supported).
+- Submit source review decision (`accept`/`reject`).
+- Trigger existing exports (`sources_raw`, acquisition manifest).
+
+5. [ ] P0 - Implement manual recovery APIs (Phase 2.1 dependency)
+- `GET /v1/acquisition/runs/{acq_run_id}/manual-downloads`
+- `GET /v1/acquisition/runs/{acq_run_id}/manual-downloads.csv`
+- `POST /v1/acquisition/runs/{acq_run_id}/manual-upload`
+- Ensure UI consumes these endpoints directly with API-parity behavior.
+
+6. [ ] P1 - Implement Manual Recovery UI workflow
+- Queue view for `failed|partial|skipped` acquisition items.
+- Show:
+  - `title`, `doi`, `status`, `last_error`, `attempt_count`
+  - `source_url`, `selected_url`, `manual_url_candidates[]`
+- CSV export action.
+- Manual upload registration form and result feedback.
+
+7. [ ] P1 - Implement search explorer UI
+- Query interface for `POST /v1/search`.
+- Results with score/snippet and links to:
+  - parsed document details
+  - parsed document full text
+  - related source context
+
+8. [ ] P1 - Add HMI tests and acceptance checks
+- UI/unit tests for polling state and error mapping.
+- API integration tests for manual recovery contracts and upload validation.
+- End-to-end tests:
+  - Discovery -> Acquisition -> Parse -> Search
+  - failed acquisition -> manual recovery queue -> CSV export -> manual upload registration
+
+Definition of done for Phase 4:
+1. A user can execute the core operational flow from browser without curl.
+2. All HMI actions map to API results without hidden client-only state.
+3. Manual recovery is operational: queue visibility, CSV export, manual upload registration.
+4. Polling/status/error UX is stable and understandable for mixed technical/non-technical users.

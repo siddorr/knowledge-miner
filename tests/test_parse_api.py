@@ -3,12 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 import knowledge_miner.main as main_module
 from knowledge_miner.config import settings
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.main import app
-from knowledge_miner.models import AcquisitionRun, Artifact, Run, Source
+from knowledge_miner.models import AcquisitionRun, Artifact, DocumentChunk, ParsedDocument, Run, Source
 from knowledge_miner.parse import execute_parse_run
 
 
@@ -139,3 +140,35 @@ def test_parse_endpoints_basic(monkeypatch, tmp_path):
     )
     assert search.status_code == 200
     assert search.json()["total"] >= 1
+
+
+def test_parse_incremental_reuses_chunks_for_unchanged_document(monkeypatch, tmp_path):
+    acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
+    object.__setattr__(settings, "artifacts_dir", artifacts_dir)
+    monkeypatch.setattr(main_module, "enqueue_parse_run", lambda parse_run_id: None)
+    client = TestClient(app)
+
+    first = client.post("/v1/parse/runs", json={"acq_run_id": acq_run_id}, headers=_auth_headers())
+    assert first.status_code == 202
+    first_id = first.json()["parse_run_id"]
+    with SessionLocal() as db:
+        first_run = db.get(main_module.ParseRun, first_id)  # type: ignore[attr-defined]
+        assert first_run is not None
+        execute_parse_run(db, first_run)
+        first_doc = db.scalars(select(ParsedDocument).where(ParsedDocument.parse_run_id == first_id)).first()
+        assert first_doc is not None
+        first_chunks = db.scalars(select(DocumentChunk).where(DocumentChunk.parsed_document_id == first_doc.id)).all()
+        assert first_chunks
+
+    second = client.post("/v1/parse/runs", json={"acq_run_id": acq_run_id}, headers=_auth_headers())
+    assert second.status_code == 202
+    second_id = second.json()["parse_run_id"]
+    with SessionLocal() as db:
+        second_run = db.get(main_module.ParseRun, second_id)  # type: ignore[attr-defined]
+        assert second_run is not None
+        execute_parse_run(db, second_run)
+        second_doc = db.scalars(select(ParsedDocument).where(ParsedDocument.parse_run_id == second_id)).first()
+        assert second_doc is not None
+        assert second_doc.parser_used == "cached_chunks"
+        second_chunks = db.scalars(select(DocumentChunk).where(DocumentChunk.parsed_document_id == second_doc.id)).all()
+        assert len(second_chunks) == len(first_chunks)

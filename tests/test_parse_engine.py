@@ -31,3 +31,23 @@ def test_extract_pdf_text_falls_back_to_naive(tmp_path: Path):
     text, parser_used = parse._extract_pdf_text(pdf_path)  # noqa: SLF001
     assert "UPW PDF fallback test" in text
     assert parser_used in {"pdf_naive", "pdf_naive_latin1"}
+
+
+def test_deterministic_chunk_id_is_stable():
+    c1 = parse._deterministic_chunk_id(  # noqa: SLF001
+        parsed_document_id="doc_1",
+        chunk_index=0,
+        chunk_content_hash="abc",
+    )
+    c2 = parse._deterministic_chunk_id(  # noqa: SLF001
+        parsed_document_id="doc_1",
+        chunk_index=0,
+        chunk_content_hash="abc",
+    )
+    c3 = parse._deterministic_chunk_id(  # noqa: SLF001
+        parsed_document_id="doc_1",
+        chunk_index=1,
+        chunk_content_hash="abc",
+    )
+    assert c1 == c2
+    assert c1 != c3

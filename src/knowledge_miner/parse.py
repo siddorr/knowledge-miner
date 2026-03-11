@@ -106,30 +106,28 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
                 continue
             try:
                 text, parser_used, section_count = _extract_artifact_text(artifact)
+                content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                cached_doc = _find_cached_parsed_document(
+                    db,
+                    acq_run_id=run.acq_run_id,
+                    source_id=doc.source_id,
+                    content_hash=content_hash,
+                    exclude_parse_run_id=run_id,
+                )
                 chunks = _chunk_text(text)
                 doc.status = "parsed"
                 doc.body_text = text
                 doc.language = "unknown"
-                doc.parser_used = parser_used
+                doc.parser_used = "cached_chunks" if cached_doc is not None else parser_used
                 doc.char_count = len(text)
                 doc.section_count = section_count
-                doc.content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                doc.content_hash = content_hash
                 doc.last_error = None
                 parsed_total += 1
-                chunked_total += len(chunks)
-                for idx, (chunk_text, start, end) in enumerate(chunks):
-                    db.add(
-                        DocumentChunk(
-                            id=f"chunk_{uuid.uuid4().hex[:12]}",
-                            parse_run_id=run_id,
-                            parsed_document_id=doc.id,
-                            chunk_index=idx,
-                            text=chunk_text,
-                            start_char=start,
-                            end_char=end,
-                            content_hash=hashlib.sha256(chunk_text.encode("utf-8")).hexdigest(),
-                        )
-                    )
+                if cached_doc is not None:
+                    chunked_total += _copy_chunks_from_cached_document(db, run_id=run_id, target_doc_id=doc.id, cached_doc_id=cached_doc.id)
+                else:
+                    chunked_total += _persist_chunks_for_document(db, run_id=run_id, parsed_document_id=doc.id, chunks=chunks)
             except Exception as exc:
                 doc.status = "failed"
                 doc.last_error = str(exc)
@@ -265,3 +263,90 @@ def _chunk_text(text: str, *, target_size: int = 1200, overlap: int = 200) -> li
             break
         start = max(0, end - overlap)
     return chunks
+
+
+def _deterministic_chunk_id(*, parsed_document_id: str, chunk_index: int, chunk_content_hash: str) -> str:
+    base = f"{parsed_document_id}|{chunk_index}|{chunk_content_hash}"
+    return f"chunk_{hashlib.sha1(base.encode('utf-8')).hexdigest()[:20]}"
+
+
+def _persist_chunks_for_document(
+    db: Session,
+    *,
+    run_id: str,
+    parsed_document_id: str,
+    chunks: list[tuple[str, int, int]],
+) -> int:
+    for idx, (chunk_text, start, end) in enumerate(chunks):
+        chunk_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
+        db.add(
+            DocumentChunk(
+                id=_deterministic_chunk_id(
+                    parsed_document_id=parsed_document_id,
+                    chunk_index=idx,
+                    chunk_content_hash=chunk_hash,
+                ),
+                parse_run_id=run_id,
+                parsed_document_id=parsed_document_id,
+                chunk_index=idx,
+                text=chunk_text,
+                start_char=start,
+                end_char=end,
+                content_hash=chunk_hash,
+            )
+        )
+    return len(chunks)
+
+
+def _find_cached_parsed_document(
+    db: Session,
+    *,
+    acq_run_id: str,
+    source_id: str,
+    content_hash: str,
+    exclude_parse_run_id: str,
+) -> ParsedDocument | None:
+    return db.scalars(
+        select(ParsedDocument)
+        .join(ParseRun, ParseRun.id == ParsedDocument.parse_run_id)
+        .where(
+            ParseRun.acq_run_id == acq_run_id,
+            ParsedDocument.source_id == source_id,
+            ParsedDocument.content_hash == content_hash,
+            ParsedDocument.status == "parsed",
+            ParsedDocument.parse_run_id != exclude_parse_run_id,
+        )
+        .order_by(ParsedDocument.updated_at.desc(), ParsedDocument.id.desc())
+    ).first()
+
+
+def _copy_chunks_from_cached_document(
+    db: Session,
+    *,
+    run_id: str,
+    target_doc_id: str,
+    cached_doc_id: str,
+) -> int:
+    cached_chunks = db.scalars(
+        select(DocumentChunk)
+        .where(DocumentChunk.parsed_document_id == cached_doc_id)
+        .order_by(DocumentChunk.chunk_index.asc())
+    ).all()
+    for chunk in cached_chunks:
+        db.add(
+            DocumentChunk(
+                id=_deterministic_chunk_id(
+                    parsed_document_id=target_doc_id,
+                    chunk_index=chunk.chunk_index,
+                    chunk_content_hash=chunk.content_hash,
+                ),
+                parse_run_id=run_id,
+                parsed_document_id=target_doc_id,
+                chunk_index=chunk.chunk_index,
+                text=chunk.text,
+                start_char=chunk.start_char,
+                end_char=chunk.end_char,
+                content_hash=chunk.content_hash,
+            )
+        )
+    return len(cached_chunks)
