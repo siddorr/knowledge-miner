@@ -93,16 +93,22 @@ Status:
 - Problem observed:
   - `2026-03-11 23:55:17` in `logs/knowledge_miner.log`: `sqlite3.OperationalError: no such table: runs`
   - HMI then showed `run_not_found`/`404` and actions failed.
+  - Recheck on `2026-03-12`: same run can return `200` then `404` after reload; review API intermittently returns `source_not_found` for visible rows.
 - Tasks:
-  - Standardize dev SQLite path to an absolute project path (remove CWD-dependent ambiguity).
+  - Standardize dev SQLite path to an absolute project path (remove CWD-dependent ambiguity from `sqlite:///./knowledge_miner.db`).
+  - Persist and enforce one DB target for all reload worker processes (same path in parent/reloader/subprocess).
   - Add startup DB readiness check for required tables (`runs`, `sources`, `acquisition_runs`, `parse_runs`).
+  - Log effective DB target at startup (`database_url`, resolved sqlite file path, cwd, process id) for diagnostics.
   - Add explicit startup error/warning when schema is missing and surface it in `/v1/system/status`.
   - Add optional auto-migrate-on-start flag for local development only.
   - Improve API error mapping so schema-missing state is returned as a clear operator-facing error (not generic 500/404 cascade).
+  - Add guard for review endpoint:
+    - when source is not found, include run/context hint in error detail to distinguish stale UI context vs true missing source.
   - Add tests:
     - missing schema DB -> deterministic not-ready status + clear message
     - migrated DB -> healthy status and run lookup works
     - restart keeps same DB target path
+    - after reload, same run/source IDs remain queryable and review actions do not flap between `200` and `404`
 
 ## Must-Fix (Spec Compliance)
 
@@ -762,7 +768,7 @@ Goal:
 - Add duplicate check + assign-to-topic before save.
 - Add copy buttons for query/source fields.
 
-6. [ ] P0 - Review as dedicated decision workspace
+6. [x] P0 - Review as dedicated decision workspace
 - Queue-focused screen with:
   - filters (`Pending`, `Accepted`, `Rejected`, `Later`)
   - row actions (`Accept`, `Reject`, `Later`)
@@ -770,7 +776,7 @@ Goal:
   - preview panel with title/abstract/DOI/URL/citation + copy buttons
 - Keep manual ID entry out of primary review flow.
 
-7. [ ] P0 - Documents page as acquisition operations center
+7. [x] P0 - Documents page as acquisition operations center
 - Primary actions:
   - `Acquire Pending`
   - `Retry Failed`

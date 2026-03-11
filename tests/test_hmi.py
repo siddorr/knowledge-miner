@@ -22,7 +22,18 @@ def test_hmi_shell_route_and_navigation():
     assert "buildSourcesRows" in body
     assert "Copy" in body
     assert "Review" in body
+    assert "Pending" in body
+    assert "Later" in body
+    assert "Accept Selected" in body
+    assert "Reject Selected" in body
+    assert "Send Accepted to Documents" in body
+    assert "Preview" in body
+    assert "Copy DOI" in body
     assert "Documents" in body
+    assert "Acquire Pending" in body
+    assert "Retry Failed" in body
+    assert "Copy Selected DOI/URL" in body
+    assert "documentsDetails" in body
     assert "Library" in body
     assert "Advanced" in body
     assert "reviewNavBadge" in body
@@ -106,6 +117,11 @@ def test_hmi_static_js_served():
     assert "handleBulkSource" in body
     assert "sourceFingerprint" in body
     assert "handleCopyValueClick" in body
+    assert "applyReviewDecisionToSelected" in body
+    assert "sendAcceptedSelectedToDocuments" in body
+    assert "documentsAcquirePending" in body
+    assert "documentsRetryFailed" in body
+    assert "documentsCopySelected" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

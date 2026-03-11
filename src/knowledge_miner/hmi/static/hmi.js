@@ -18,8 +18,8 @@ const state = {
     stagedSourcesByTopic: { topic_default: [] },
     sourceKeysByTopic: { topic_default: new Set() },
   },
-  review: { offset: 0, loaded: false, expanded: new Set() },
-  documents: { offset: 0, loaded: false, selectedSourceId: "" },
+  review: { offset: 0, loaded: false, expanded: new Set(), selected: new Set(), later: new Set(), items: [] },
+  documents: { offset: 0, loaded: false, selectedSourceId: "", selected: new Set(), items: [], acqRunMeta: null },
   search: { loaded: false, payload: null, items: [] },
   context: {},
   telemetry: {
@@ -539,26 +539,35 @@ async function loadReview() {
   setText("reviewError", "");
   const runId = getDiscoveryRunId();
   if (!runId) throw new Error("discovery run id is required");
-  const status = el("reviewStatusFilter").value;
+  const queueFilter = el("reviewStatusFilter").value;
+  const status = queueFilter === "pending" ? "needs_review" : queueFilter === "later" ? "all" : queueFilter;
   const limit = Number(el("reviewLimit").value);
   const offset = state.review.offset;
-  const page = await apiGet(
+  const pageRaw = await apiGet(
     `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`,
   );
+  let items = pageRaw.items || [];
+  if (queueFilter === "pending") {
+    items = items.filter((s) => !state.review.later.has(s.id));
+  } else if (queueFilter === "later") {
+    items = items.filter((s) => state.review.later.has(s.id));
+  }
+  state.review.items = items;
   setLatestId("discovery", runId);
-  setText("reviewPage", `offset=${offset}, limit=${limit}, total=${page.total}`);
+  setText("reviewPage", `offset=${offset}, limit=${limit}, total=${items.length}`);
   renderTable(
     "reviewRows",
-    page.items.map((s) => {
+    items.map((s) => {
       const expanded = state.review.expanded.has(s.id);
       const view = abstractView(s.abstract || "", expanded);
       const toggle = view.long
         ? `<button type="button" class="review-action" data-action="toggle" data-source-id="${escapeHtml(s.id)}">${expanded ? "Collapse" : "Expand"}</button>`
         : "";
       const why = `${escapeHtml(s.decision_source || "")}${s.heuristic_score != null ? ` | score=${escapeHtml(String(s.heuristic_score))}` : ""}`;
-      return `<tr data-source-id="${escapeHtml(s.id)}"><td>${escapeHtml(s.title || "")}</td><td><span>${escapeHtml(view.text)}</span> ${toggle}</td><td><button type="button" class="review-action" data-action="accept" data-source-id="${escapeHtml(s.id)}">Accept</button> <button type="button" class="review-action" data-action="reject" data-source-id="${escapeHtml(s.id)}">Reject</button> ${statusBadge(s.review_status)}</td><td>${why}</td></tr>`;
+      const checked = state.review.selected.has(s.id) ? " checked" : "";
+      return `<tr data-source-id="${escapeHtml(s.id)}"><td><input type="checkbox" class="review-select" data-source-id="${escapeHtml(s.id)}"${checked}></td><td><button type="button" class="review-action" data-action="preview" data-source-id="${escapeHtml(s.id)}">${escapeHtml(s.title || "")}</button></td><td><span>${escapeHtml(view.text)}</span> ${toggle}</td><td><button type="button" class="review-action" data-action="accept" data-source-id="${escapeHtml(s.id)}">Accept</button> <button type="button" class="review-action" data-action="reject" data-source-id="${escapeHtml(s.id)}">Reject</button> <button type="button" class="review-action" data-action="later" data-source-id="${escapeHtml(s.id)}">Later</button> ${statusBadge(s.review_status)}</td><td>${why}</td></tr>`;
     }),
-    4,
+    5,
   );
   state.review.loaded = true;
   return true;
@@ -570,25 +579,61 @@ async function loadDocuments() {
   if (!acqRunId) throw new Error("acquisition run id is required");
   const limit = Number(el("documentsLimit").value);
   const offset = state.documents.offset;
-  const queue = await apiGet(
-    `/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads?limit=${limit}&offset=${offset}`,
-  );
-  const run = await apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}`);
+  const queueFilter = (el("documentsQueueFilter") || {}).value || "awaiting";
+  const [itemsPayload, queue, run] = await Promise.all([
+    apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/items?limit=${limit}&offset=${offset}`),
+    apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads?limit=${limit}&offset=${offset}`),
+    apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}`),
+  ]);
+  state.documents.acqRunMeta = run;
+  const manualBySourceId = new Map((queue.items || []).map((row) => [row.source_id, row]));
+  const normalized = (itemsPayload.items || []).map((row) => {
+    const manual = manualBySourceId.get(row.source_id);
+    const problem =
+      row.status === "downloaded"
+        ? "Acquired"
+        : row.status === "queued"
+          ? "Awaiting"
+          : reasonText(manual?.reason_code || row.last_error || row.status);
+    return {
+      source_id: row.source_id,
+      status: row.status,
+      title: manual?.title || row.source_id,
+      doi: manual?.doi || "",
+      source_url: manual?.source_url || row.selected_url || "",
+      selected_url: row.selected_url || manual?.selected_url || "",
+      attempt_count: row.attempt_count,
+      last_error: row.last_error || manual?.last_error || "",
+      reason_code: manual?.reason_code || null,
+      problem,
+    };
+  });
+  const filtered = normalized.filter((row) => {
+    if (queueFilter === "awaiting") return row.status === "queued";
+    if (queueFilter === "acquired") return row.status === "downloaded";
+    if (queueFilter === "failed") return row.status === "failed" || row.status === "partial";
+    if (queueFilter === "manual_recovery") return row.status === "failed" || row.status === "partial" || row.status === "skipped";
+    return true;
+  });
+  state.documents.items = filtered;
   setLatestId("acquisition", acqRunId);
   upsertRunRow("acquisition", acqRunId, run);
   renderRunsTable();
 
   renderTable(
     "documentsRows",
-    queue.items.map((item) => {
-      const candidates = item.manual_url_candidates || [];
-      const openUrl = item.selected_url || item.source_url || candidates[0] || "";
-      return `<tr><td>${escapeHtml(item.title || "")}</td><td>${escapeHtml(reasonText(item.reason_code || item.last_error || item.status))}</td><td><button type="button" class="documents-action" data-action="retry" data-source-id="${escapeHtml(item.source_id)}" data-discovery-run-id="${escapeHtml(run.discovery_run_id)}">Retry</button> <button type="button" class="documents-action" data-action="upload" data-source-id="${escapeHtml(item.source_id)}">Upload PDF</button> ${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : ""}</td></tr>`;
+    filtered.map((item) => {
+      const openUrl = item.selected_url || item.source_url || "";
+      const checked = state.documents.selected.has(item.source_id) ? " checked" : "";
+      return `<tr><td><input type="checkbox" class="documents-select" data-source-id="${escapeHtml(item.source_id)}"${checked}></td><td><button type="button" class="documents-action" data-action="select" data-source-id="${escapeHtml(item.source_id)}">${escapeHtml(item.title || "")}</button></td><td>${escapeHtml(item.problem)}</td><td><button type="button" class="documents-action" data-action="retry" data-source-id="${escapeHtml(item.source_id)}" data-discovery-run-id="${escapeHtml(run.discovery_run_id)}">Retry</button> <button type="button" class="documents-action" data-action="upload" data-source-id="${escapeHtml(item.source_id)}">Upload PDF</button> <button type="button" class="documents-action" data-action="manual-complete" data-source-id="${escapeHtml(item.source_id)}">Manual Complete</button> ${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : ""}</td></tr>`;
     }),
-    3,
+    4,
   );
-  setText("documentsPage", `offset=${offset}, limit=${limit}, total=${queue.total}`);
-  setText("documentsState", `Loaded ${queue.total} items for ${acqRunId}`);
+  setText("documentsPage", `offset=${offset}, limit=${limit}, total=${filtered.length}`);
+  setText("documentsState", `Loaded ${filtered.length} items for ${acqRunId}`);
+  if (!filtered.length) {
+    setText("documentsDetails", "No item selected.");
+  }
   state.documents.loaded = true;
   return true;
 }
@@ -890,6 +935,13 @@ async function loadReviewClick(event) {
 async function handleReviewAction(event) {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
+  if (target.classList.contains("review-select")) {
+    const sourceId = target.dataset.sourceId || "";
+    if (!sourceId) return;
+    if (target.checked) state.review.selected.add(sourceId);
+    else state.review.selected.delete(sourceId);
+    return;
+  }
   if (!target.classList.contains("review-action")) return;
   const action = target.dataset.action || "";
   const sourceId = target.dataset.sourceId || "";
@@ -906,6 +958,45 @@ async function handleReviewAction(event) {
     return;
   }
 
+  if (action === "preview") {
+    const row = state.review.items.find((item) => item.id === sourceId);
+    if (!row) return;
+    const citation = `${row.title || ""}${row.year ? ` (${row.year})` : ""}${row.source ? ` - ${row.source}` : ""}`;
+    setText(
+      "reviewPreview",
+      JSON.stringify(
+        {
+          title: row.title || "",
+          abstract: row.abstract || "",
+          doi: row.doi || "",
+          url: row.url || "",
+          citation,
+        },
+        null,
+        2,
+      ),
+    );
+    el("reviewPreviewTitle").value = row.title || "";
+    el("reviewPreviewDoi").value = row.doi || "";
+    el("reviewPreviewUrl").value = row.url || "";
+    el("reviewPreviewCitation").value = citation;
+    return;
+  }
+
+  if (action === "later") {
+    if (!sourceId) return;
+    state.review.later.add(sourceId);
+    state.review.selected.delete(sourceId);
+    setText("reviewState", `Moved to Later: ${sourceId}`);
+    try {
+      await loadReview();
+      await loadDashboard();
+    } catch (err) {
+      setText("reviewError", `Load failed: ${err.message}`);
+    }
+    return;
+  }
+
   if (action !== "accept" && action !== "reject") return;
   if (!sourceId) return;
   try {
@@ -915,6 +1006,58 @@ async function handleReviewAction(event) {
     await loadDashboard();
   } catch (err) {
     setText("reviewError", `Review failed: ${err.message}`);
+  }
+}
+
+async function applyReviewDecisionToSelected(decision) {
+  const selected = Array.from(state.review.selected);
+  if (!selected.length) {
+    setText("reviewError", "Select at least one row.");
+    return;
+  }
+  setText("reviewError", "");
+  let ok = 0;
+  for (const sourceId of selected) {
+    try {
+      await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision });
+      state.review.later.delete(sourceId);
+      ok += 1;
+    } catch (_err) {
+      // continue to apply best-effort for rest
+    }
+  }
+  state.review.selected.clear();
+  setText("reviewState", `${decision} applied to ${ok}/${selected.length} selected rows.`);
+  await loadReview();
+  await loadDashboard();
+}
+
+async function sendAcceptedSelectedToDocuments() {
+  const runId = getDiscoveryRunId();
+  if (!runId) {
+    setText("reviewError", "discovery run id is required");
+    return;
+  }
+  const selected = state.review.items.filter((item) => state.review.selected.has(item.id));
+  if (!selected.length) {
+    setText("reviewError", "Select at least one row.");
+    return;
+  }
+  const accepted = selected.filter((item) => item.review_status === "auto_accept" || item.review_status === "human_accept");
+  if (!accepted.length) {
+    setText("reviewError", "No accepted rows in current selection.");
+    return;
+  }
+  try {
+    const acq = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: false });
+    setLatestId("acquisition", acq.acq_run_id);
+    el("documentsAcqRunIdInput").value = acq.acq_run_id;
+    setText("reviewState", `Sent accepted rows to Documents via ${acq.acq_run_id}.`);
+    window.location.hash = "#documents";
+    await loadDocuments();
+    await loadDashboard();
+  } catch (err) {
+    setText("reviewError", `Send to Documents failed: ${err.message}`);
   }
 }
 
@@ -952,10 +1095,41 @@ async function startParse(event) {
 
 async function handleDocumentsAction(event) {
   const target = event.target;
-  if (!(target instanceof HTMLElement) || !target.classList.contains("documents-action")) return;
+  if (!(target instanceof HTMLElement)) return;
+  if (target.classList.contains("documents-select")) {
+    const sourceId = target.dataset.sourceId || "";
+    if (!sourceId) return;
+    if (target.checked) state.documents.selected.add(sourceId);
+    else state.documents.selected.delete(sourceId);
+    return;
+  }
+  if (!target.classList.contains("documents-action")) return;
   const action = target.dataset.action || "";
   const sourceId = target.dataset.sourceId || "";
   const discoveryRunId = target.dataset.discoveryRunId || "";
+
+  if (action === "select") {
+    const item = state.documents.items.find((row) => row.source_id === sourceId);
+    if (!item) return;
+    setText(
+      "documentsDetails",
+      JSON.stringify(
+        {
+          title: item.title,
+          source_id: item.source_id,
+          doi: item.doi,
+          source_url: item.source_url,
+          selected_url: item.selected_url,
+          attempts: item.attempt_count,
+          error: item.last_error,
+          reason: item.problem,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
 
   if (action === "upload") {
     state.documents.selectedSourceId = sourceId;
@@ -974,6 +1148,10 @@ async function handleDocumentsAction(event) {
     } catch (err) {
       setText("documentsError", `Retry failed: ${err.message}`);
     }
+  }
+
+  if (action === "manual-complete") {
+    setText("documentsState", `Marked manual complete: ${sourceId}`);
   }
 }
 
@@ -1027,6 +1205,62 @@ async function exportManualCsv() {
     await apiDownload(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads.csv`, `manual_downloads_${acqRunId}.csv`);
   } catch (err) {
     setText("documentsError", `Export failed: ${err.message}`);
+  }
+}
+
+async function documentsAcquirePending() {
+  const run = state.documents.acqRunMeta;
+  if (!run || !run.discovery_run_id) {
+    setText("documentsError", "Load documents queue first.");
+    return;
+  }
+  try {
+    const next = await apiPost("/v1/acquisition/runs", { run_id: run.discovery_run_id, retry_failed_only: false });
+    setLatestId("acquisition", next.acq_run_id);
+    el("documentsAcqRunIdInput").value = next.acq_run_id;
+    setText("documentsState", `Started acquisition for pending sources: ${next.acq_run_id}`);
+    await loadDocuments();
+  } catch (err) {
+    setText("documentsError", `Acquire pending failed: ${err.message}`);
+  }
+}
+
+async function documentsRetryFailed() {
+  const run = state.documents.acqRunMeta;
+  if (!run || !run.discovery_run_id) {
+    setText("documentsError", "Load documents queue first.");
+    return;
+  }
+  try {
+    const next = await apiPost("/v1/acquisition/runs", { run_id: run.discovery_run_id, retry_failed_only: true });
+    setLatestId("acquisition", next.acq_run_id);
+    el("documentsAcqRunIdInput").value = next.acq_run_id;
+    setText("documentsState", `Started retry-failed acquisition: ${next.acq_run_id}`);
+    await loadDocuments();
+  } catch (err) {
+    setText("documentsError", `Retry failed failed: ${err.message}`);
+  }
+}
+
+async function documentsCopySelected() {
+  const selected = state.documents.items.filter((row) => state.documents.selected.has(row.source_id));
+  if (!selected.length) {
+    setText("documentsError", "Select at least one row.");
+    return;
+  }
+  const values = selected
+    .map((row) => [row.doi, row.source_url, row.selected_url].filter(Boolean).join(" | "))
+    .filter(Boolean)
+    .join("\n");
+  if (!values) {
+    setText("documentsError", "No DOI/URL values available in selected rows.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(values);
+    setText("documentsState", "Copied");
+  } catch (_err) {
+    setText("documentsError", "Copy failed.");
   }
 }
 
@@ -1253,6 +1487,7 @@ function init() {
   addListener("bulkSourceForm", "submit", handleBulkSource);
   addListener("buildQueryForm", "submit", handleBuildQuery);
   addListener("build", "click", handleCopyValueClick);
+  addListener("review", "click", handleCopyValueClick);
   addListener("loadDiscoverBtn", "click", async () => {
     try {
       await loadDiscover();
@@ -1273,6 +1508,10 @@ function init() {
 
   addListener("reviewForm", "submit", loadReviewClick);
   addListener("reviewRows", "click", handleReviewAction);
+  addListener("reviewRows", "change", handleReviewAction);
+  addListener("reviewBatchAcceptBtn", "click", () => applyReviewDecisionToSelected("accept"));
+  addListener("reviewBatchRejectBtn", "click", () => applyReviewDecisionToSelected("reject"));
+  addListener("reviewBatchSendDocsBtn", "click", sendAcceptedSelectedToDocuments);
 
   addListener("documentsForm", "submit", async (event) => {
     event.preventDefault();
@@ -1284,6 +1523,10 @@ function init() {
     }
   });
   addListener("documentsRows", "click", handleDocumentsAction);
+  addListener("documentsRows", "change", handleDocumentsAction);
+  addListener("documentsAcquirePendingBtn", "click", documentsAcquirePending);
+  addListener("documentsRetryFailedBtn", "click", documentsRetryFailed);
+  addListener("documentsCopySelectedBtn", "click", documentsCopySelected);
   addListener("manualUploadForm", "submit", registerManualUpload);
   addListener("manualExportCsvBtn", "click", exportManualCsv);
 

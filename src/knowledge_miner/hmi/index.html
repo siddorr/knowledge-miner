@@ -191,15 +191,16 @@
 
     <section id="review" class="panel">
       <h2>Review</h2>
-      <p class="muted">Review sources with one-click Accept/Reject.</p>
+      <p class="muted">Dedicated decision workspace for source triage.</p>
       <form id="reviewForm" class="row compact">
         <label>
-          Status
+          Queue
           <select id="reviewStatusFilter">
-            <option value="needs_review" selected>needs_review</option>
+            <option value="pending" selected>Pending</option>
+            <option value="accepted">Accepted</option>
+            <option value="rejected">Rejected</option>
+            <option value="later">Later</option>
             <option value="all">all</option>
-            <option value="accepted">accepted</option>
-            <option value="rejected">rejected</option>
           </select>
         </label>
         <label>
@@ -213,16 +214,33 @@
         <button type="submit">Load Review Queue</button>
       </form>
       <div class="row compact">
+        <button id="reviewBatchAcceptBtn" type="button">Accept Selected</button>
+        <button id="reviewBatchRejectBtn" type="button">Reject Selected</button>
+        <button id="reviewBatchSendDocsBtn" type="button">Send Accepted to Documents</button>
+      </div>
+      <div class="row compact">
         <button id="reviewPrev" type="button">Prev</button>
         <button id="reviewNext" type="button">Next</button>
         <span id="reviewPage" class="muted">offset=0</span>
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Title</th><th>Abstract</th><th>Decision</th><th>Why</th></tr></thead>
+          <thead><tr><th>Select</th><th>Title</th><th>Abstract</th><th>Decision</th><th>Why</th></tr></thead>
           <tbody id="reviewRows"></tbody>
         </table>
       </div>
+      <h3>Preview</h3>
+      <div class="row compact">
+        <button type="button" class="copy-value-btn" data-target-id="reviewPreviewTitle">Copy Title</button>
+        <button type="button" class="copy-value-btn" data-target-id="reviewPreviewDoi">Copy DOI</button>
+        <button type="button" class="copy-value-btn" data-target-id="reviewPreviewUrl">Copy URL</button>
+        <button type="button" class="copy-value-btn" data-target-id="reviewPreviewCitation">Copy Citation</button>
+      </div>
+      <pre id="reviewPreview" class="metrics">No source selected.</pre>
+      <input id="reviewPreviewTitle" type="hidden">
+      <input id="reviewPreviewDoi" type="hidden">
+      <input id="reviewPreviewUrl" type="hidden">
+      <input id="reviewPreviewCitation" type="hidden">
       <details>
         <summary>Technical details</summary>
         <label>
@@ -236,8 +254,18 @@
 
     <section id="documents" class="panel">
       <h2>Documents</h2>
-      <p class="muted">Fix failed or partial downloads from acquisition runs.</p>
+      <p class="muted">Acquisition operations center for awaiting/failed/manual recovery workflows.</p>
       <form id="documentsForm" class="row compact">
+        <label>
+          Queue
+          <select id="documentsQueueFilter">
+            <option value="awaiting" selected>Awaiting</option>
+            <option value="acquired">Acquired</option>
+            <option value="failed">Failed</option>
+            <option value="manual_recovery">Manual Recovery</option>
+            <option value="all">all</option>
+          </select>
+        </label>
         <label>
           Limit
           <select id="documentsLimit">
@@ -247,6 +275,9 @@
           </select>
         </label>
         <button type="submit">Load Download Issues</button>
+        <button id="documentsAcquirePendingBtn" type="button">Acquire Pending</button>
+        <button id="documentsRetryFailedBtn" type="button">Retry Failed</button>
+        <button id="documentsCopySelectedBtn" type="button">Copy Selected DOI/URL</button>
         <button id="manualExportCsvBtn" type="button">Export CSV</button>
       </form>
       <div class="row compact">
@@ -256,10 +287,12 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Title</th><th>Problem</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Select</th><th>Title</th><th>Problem</th><th>Actions</th></tr></thead>
           <tbody id="documentsRows"></tbody>
         </table>
       </div>
+      <h3>Details</h3>
+      <pre id="documentsDetails" class="metrics">No item selected.</pre>
       <form id="manualUploadForm" class="row">
         <label>
           PDF File
