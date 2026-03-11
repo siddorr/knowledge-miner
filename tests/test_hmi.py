@@ -47,6 +47,10 @@ def test_hmi_static_js_served():
     client = TestClient(app)
     response = client.get("/hmi/static/hmi.js")
     assert response.status_code == 200
+    body = response.text
+    assert "Stale data in #" in body
+    assert "pollState" in body
+    assert "Load failed:" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

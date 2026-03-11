@@ -3,6 +3,22 @@
 Status:
 - In progress: remaining items exist in Phase 4+ HMI and AI-first rollout plans (updated on 2026-03-11).
 
+## High Priority
+
+1. [ ] P0 - Remove required app access token for local/internal usage
+- Goal: API/HMI should work without mandatory `Authorization: Bearer ...` token.
+- Tasks:
+  - Make API auth optional via config switch (default: auth disabled).
+  - Keep ability to enable auth explicitly for secured deployments.
+  - Update HMI auth bar behavior:
+    - hide/disable token controls when auth is disabled.
+    - keep manual/system token mode only when auth is enabled.
+  - Update API dependency wiring so endpoints do not return `401` when auth is disabled.
+  - Update docs (`README.md`, `HMI_PLAN.md`) with new auth-mode behavior.
+  - Add tests for both modes:
+    - auth disabled -> no token required.
+    - auth enabled -> token required and validated.
+
 ## Must-Fix (Spec Compliance)
 
 1. [x] Align default runtime database with v1 spec
@@ -297,7 +313,7 @@ Decision lock (approved):
   - parsed document full text
   - related source context
 
-8. [ ] P1 - Add HMI tests and acceptance checks
+8. [x] P1 - Add HMI tests and acceptance checks
 - UI/unit tests for polling state and error mapping.
 - API integration tests for manual recovery contracts and upload validation.
 - End-to-end tests:
