@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -45,9 +47,11 @@ from .schemas import (
 
 app = FastAPI(title="UPW Literature Discovery Engine", version="0.1.0")
 logger = logging.getLogger("knowledge_miner")
+HMI_DIR = Path(__file__).resolve().parent / "hmi"
 
 # Create tables on module load for v1 local/dev simplicity.
 Base.metadata.create_all(bind=engine)
+app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_static")
 
 
 @app.on_event("startup")
@@ -61,6 +65,11 @@ def validate_runtime_config() -> None:
 @app.get("/healthz")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/hmi")
+def hmi_shell() -> FileResponse:
+    return FileResponse(HMI_DIR / "index.html")
 
 
 @app.post("/v1/discovery/runs", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Knowledge Miner HMI</title>
+  <link rel="stylesheet" href="/hmi/static/hmi.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Knowledge Miner Ops Dashboard</h1>
+    <p>Single-pane operations shell for discovery, acquisition, parse, and search.</p>
+  </header>
+
+  <nav class="nav" aria-label="Primary">
+    <a href="#runs">Runs</a>
+    <a href="#discovery">Discovery</a>
+    <a href="#acquisition">Acquisition</a>
+    <a href="#parse">Parse</a>
+    <a href="#search">Search</a>
+    <a href="#manual-recovery">Manual Recovery</a>
+  </nav>
+
+  <main class="grid">
+    <section id="runs" class="panel">
+      <h2>Runs</h2>
+      <p>Track run status by phase and open run details.</p>
+    </section>
+    <section id="discovery" class="panel">
+      <h2>Discovery</h2>
+      <p>Inspect discovered sources and acceptance decisions.</p>
+    </section>
+    <section id="acquisition" class="panel">
+      <h2>Acquisition</h2>
+      <p>Review download results, partials, and failures.</p>
+    </section>
+    <section id="parse" class="panel">
+      <h2>Parse</h2>
+      <p>Monitor parsed documents, chunk counts, and parse artifacts.</p>
+    </section>
+    <section id="search" class="panel">
+      <h2>Search</h2>
+      <p>Query parsed corpus and inspect evidence snippets.</p>
+    </section>
+    <section id="manual-recovery" class="panel">
+      <h2>Manual Recovery</h2>
+      <p>Queue and track manual ingestion recovery actions.</p>
+    </section>
+  </main>
+</body>
+</html>
