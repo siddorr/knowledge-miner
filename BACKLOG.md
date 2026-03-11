@@ -282,7 +282,7 @@ Decision lock (approved):
 - `POST /v1/acquisition/runs/{acq_run_id}/manual-upload`
 - Ensure UI consumes these endpoints directly with API-parity behavior.
 
-6. [ ] P1 - Implement Manual Recovery UI workflow
+6. [x] P1 - Implement Manual Recovery UI workflow
 - Queue view for `failed|partial|skipped` acquisition items.
 - Show:
   - `title`, `doi`, `status`, `last_error`, `attempt_count`

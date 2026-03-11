@@ -11,6 +11,7 @@ const state = {
     discovery: { loaded: false, offset: 0 },
     acq: { loaded: false, offset: 0 },
     parse: { loaded: false, docsOffset: 0, chunksOffset: 0 },
+    manual: { loaded: false, offset: 0 },
   },
 };
 
@@ -317,6 +318,9 @@ async function loadAcquisitionData() {
 
   upsertRunRow("acquisition", runId, run);
   setLatestId("acquisition", runId);
+  if (!el("manualAcqRunId").value.trim()) {
+    el("manualAcqRunId").value = runId;
+  }
   renderRunsTable();
 
   el("acqMetrics").textContent = JSON.stringify(
@@ -425,6 +429,105 @@ async function loadParse(event) {
     schedulePoll();
   } catch (err) {
     setText("parseError", `Load failed: ${err.message}`);
+  }
+}
+
+async function loadManualRecoveryData() {
+  setText("manualError", "");
+  const acqRunId = el("manualAcqRunId").value.trim();
+  const limit = Number(el("manualLimit").value);
+  const offset = state.view.manual.offset;
+  if (!acqRunId) return true;
+
+  const queue = await apiGet(
+    `/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads?limit=${limit}&offset=${offset}`,
+  );
+
+  renderTable(
+    "manualQueueRows",
+    queue.items.map(
+      (item) =>
+        `<tr><td>${escapeHtml(item.item_id)}</td><td>${escapeHtml(item.source_id)}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(String(item.attempt_count))}</td><td>${escapeHtml(item.title)}</td><td>${escapeHtml(item.doi || "")}</td><td>${escapeHtml(item.source_url || "")}</td><td>${escapeHtml(item.selected_url || "")}</td><td>${escapeHtml((item.manual_url_candidates || []).join(" | "))}</td><td>${escapeHtml(item.last_error || "")}</td></tr>`,
+    ),
+    10,
+  );
+  setText("manualPage", `offset=${offset}, limit=${limit}, total=${queue.total}`);
+  state.view.manual.loaded = true;
+
+  const run = await apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}`);
+  upsertRunRow("acquisition", acqRunId, run);
+  setLatestId("acquisition", acqRunId);
+  renderRunsTable();
+  return !isTerminalStatus(run.status);
+}
+
+async function loadManualRecovery(event) {
+  event.preventDefault();
+  state.view.manual.offset = 0;
+  setText("manualState", "");
+  try {
+    await loadManualRecoveryData();
+    schedulePoll();
+  } catch (err) {
+    setText("manualError", `Load failed: ${err.message}`);
+  }
+}
+
+async function exportManualCsv() {
+  setText("manualError", "");
+  try {
+    const acqRunId = el("manualAcqRunId").value.trim();
+    if (!acqRunId) throw new Error("acquisition run id is required");
+    await apiDownload(
+      `/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads.csv`,
+      `manual_downloads_${acqRunId}.csv`,
+    );
+  } catch (err) {
+    setText("manualError", `Export failed: ${err.message}`);
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const comma = result.indexOf(",");
+      if (comma < 0) {
+        reject(new Error("file_read_failed"));
+        return;
+      }
+      resolve(result.slice(comma + 1));
+    };
+    reader.onerror = () => reject(new Error("file_read_failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function registerManualUpload(event) {
+  event.preventDefault();
+  setText("manualError", "");
+  setText("manualState", "");
+  try {
+    const acqRunId = el("manualAcqRunId").value.trim();
+    const sourceId = el("manualUploadSourceId").value.trim();
+    const fileInput = el("manualUploadFile");
+    const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+    if (!acqRunId) throw new Error("acquisition run id is required");
+    if (!sourceId) throw new Error("source id is required");
+    if (!file) throw new Error("file is required");
+    const contentBase64 = await fileToBase64(file);
+    const result = await apiPost(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-upload`, {
+      source_id: sourceId,
+      filename: file.name,
+      content_base64: contentBase64,
+      content_type: file.type || null,
+    });
+    setText("manualState", `Registered artifact: ${result.artifact_id}`);
+    await loadManualRecoveryData();
+    schedulePoll();
+  } catch (err) {
+    setText("manualError", `Upload failed: ${err.message}`);
   }
 }
 
@@ -540,6 +643,7 @@ async function runPollCycle() {
     else if (section === "discovery" && state.view.discovery.loaded) keepPolling = await loadDiscoveryData();
     else if (section === "acquisition" && state.view.acq.loaded) keepPolling = await loadAcquisitionData();
     else if (section === "parse" && state.view.parse.loaded) keepPolling = await loadParseData();
+    else if (section === "manual-recovery" && state.view.manual.loaded) keepPolling = await loadManualRecoveryData();
 
     if (!keepPolling) {
       setPollState(`Stopped polling on #${section}: terminal status reached.`);
@@ -648,6 +752,27 @@ function attachPaginationHandlers() {
       setText("parseError", `Load failed: ${err.message}`);
     }
   });
+
+  el("manualPrev").addEventListener("click", async () => {
+    const limit = Number(el("manualLimit").value);
+    state.view.manual.offset = Math.max(0, state.view.manual.offset - limit);
+    try {
+      await loadManualRecoveryData();
+      schedulePoll();
+    } catch (err) {
+      setText("manualError", `Load failed: ${err.message}`);
+    }
+  });
+  el("manualNext").addEventListener("click", async () => {
+    const limit = Number(el("manualLimit").value);
+    state.view.manual.offset += limit;
+    try {
+      await loadManualRecoveryData();
+      schedulePoll();
+    } catch (err) {
+      setText("manualError", `Load failed: ${err.message}`);
+    }
+  });
 }
 
 function init() {
@@ -700,6 +825,9 @@ function init() {
 
   el("startParseForm").addEventListener("submit", startParse);
   el("parseForm").addEventListener("submit", loadParse);
+  el("manualRecoveryForm").addEventListener("submit", loadManualRecovery);
+  el("manualExportCsvBtn").addEventListener("click", exportManualCsv);
+  el("manualUploadForm").addEventListener("submit", registerManualUpload);
 
   el("copyDiscoveryIdBtn").addEventListener("click", () => copyLatestId("discovery"));
   el("copyAcqIdBtn").addEventListener("click", () => copyLatestId("acquisition"));

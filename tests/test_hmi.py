@@ -27,6 +27,9 @@ def test_hmi_shell_route_and_navigation():
     assert "Latest IDs:" in body
     assert "Copy ID" in body
     assert "__KM_HMI_DEFAULT_TOKEN__" in body
+    assert "Load Queue" in body
+    assert "Export CSV" in body
+    assert "Register Manual Upload" in body
 
 
 def test_hmi_static_css_served():

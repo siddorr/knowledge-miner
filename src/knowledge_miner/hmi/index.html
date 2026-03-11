@@ -289,7 +289,59 @@
 
     <section id="manual-recovery" class="panel">
       <h2>Manual Recovery</h2>
-      <p class="muted">Manual recovery UI is implemented in a later task.</p>
+      <form id="manualRecoveryForm" class="row">
+        <label>
+          Acquisition Run ID
+          <input id="manualAcqRunId" type="text" placeholder="acq_..." required>
+        </label>
+        <label>
+          Limit
+          <select id="manualLimit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <button type="submit">Load Queue</button>
+        <button id="manualExportCsvBtn" type="button">Export CSV</button>
+      </form>
+      <div class="row compact">
+        <button id="manualPrev" type="button">Prev</button>
+        <button id="manualNext" type="button">Next</button>
+        <span id="manualPage" class="muted">offset=0</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Item ID</th>
+              <th>Source ID</th>
+              <th>Status</th>
+              <th>Attempts</th>
+              <th>Title</th>
+              <th>DOI</th>
+              <th>Source URL</th>
+              <th>Selected URL</th>
+              <th>Candidates</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="manualQueueRows"></tbody>
+        </table>
+      </div>
+      <form id="manualUploadForm" class="row">
+        <label>
+          Source ID
+          <input id="manualUploadSourceId" type="text" placeholder="source_id" required>
+        </label>
+        <label>
+          File
+          <input id="manualUploadFile" type="file" required>
+        </label>
+        <button type="submit">Register Manual Upload</button>
+      </form>
+      <p id="manualState" class="muted"></p>
+      <p id="manualError" class="error"></p>
     </section>
   </main>
 
