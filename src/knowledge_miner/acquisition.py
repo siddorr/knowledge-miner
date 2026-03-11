@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import SessionLocal
 from .models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
+from .observability import AcquisitionObservability
 
 
 def create_acquisition_run(db: Session, discovery_run_id: str, *, retry_failed_only: bool) -> AcquisitionRun:
@@ -94,6 +95,7 @@ def execute_acquisition_run_by_id(acq_run_id: str) -> None:
 
 
 def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
+    observability = AcquisitionObservability()
     try:
         run.status = "running"
         run.updated_at = datetime.now(UTC)
@@ -107,6 +109,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         for item in items:
             if run.retry_failed_only and item.status in {"downloaded", "partial", "skipped"}:
                 skipped_total += 1
+                observability.inc("skipped")
                 continue
 
             source = db.get(Source, item.source_id)
@@ -114,19 +117,34 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
                 item.status = "failed"
                 item.last_error = "source_not_found"
                 failed_total += 1
+                observability.inc("failed")
                 continue
 
+            started = time.perf_counter()
             outcome = _acquire_source_content(source)
+            latency_ms = (time.perf_counter() - started) * 1000.0
             item.attempt_count += outcome.attempts
             item.selected_url = outcome.url
             item.last_error = outcome.error
+            observability.inc("attempted")
+            if outcome.attempts > 1:
+                observability.inc("retries", outcome.attempts - 1)
+            domain = _domain_from_url(outcome.url or source.url)
 
             if outcome.kind == "pdf":
                 artifact = _persist_artifact(db, run.id, item, source.id, kind="pdf", mime_type=outcome.mime_type, content=outcome.content)
                 item.status = "downloaded"
                 item.last_error = None
                 downloaded_total += 1
+                observability.inc("downloaded")
                 db.add(artifact)
+                observability.record_download(
+                    acq_run_id=run.id,
+                    source_id=source.id,
+                    domain=domain,
+                    latency_ms=latency_ms,
+                    status="downloaded",
+                )
             elif outcome.kind == "html":
                 artifact = _persist_artifact(
                     db,
@@ -139,13 +157,41 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
                 )
                 item.status = "partial"
                 partial_total += 1
+                observability.inc("partial")
                 db.add(artifact)
+                observability.record_download(
+                    acq_run_id=run.id,
+                    source_id=source.id,
+                    domain=domain,
+                    latency_ms=latency_ms,
+                    status="partial",
+                    error=outcome.error,
+                )
             elif outcome.error == "no_candidate_urls":
                 item.status = "skipped"
                 skipped_total += 1
+                observability.inc("skipped")
+                observability.record_download(
+                    acq_run_id=run.id,
+                    source_id=source.id,
+                    domain=domain,
+                    latency_ms=latency_ms,
+                    status="skipped",
+                    error=outcome.error,
+                )
             else:
                 item.status = "failed"
                 failed_total += 1
+                observability.inc("failed")
+                observability.inc("api_errors")
+                observability.record_download(
+                    acq_run_id=run.id,
+                    source_id=source.id,
+                    domain=domain,
+                    latency_ms=latency_ms,
+                    status="failed",
+                    error=outcome.error,
+                )
             item.updated_at = datetime.now(UTC)
 
         run.downloaded_total = downloaded_total
@@ -156,12 +202,15 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         run.updated_at = datetime.now(UTC)
         db.commit()
         _write_manifest_file(db, run.id)
+        observability.emit_summary(acq_run_id=run.id, status=run.status)
     except Exception as exc:  # pragma: no cover
         db.rollback()
         run.status = "failed"
         run.error_message = str(exc)
         run.updated_at = datetime.now(UTC)
         db.commit()
+        observability.inc("api_errors")
+        observability.emit_summary(acq_run_id=run.id, status=run.status)
         raise
 
 
@@ -276,6 +325,12 @@ def _resolve_candidate_urls(source: Source) -> list[str]:
 def _looks_pdf_url(url: str) -> bool:
     normalized = url.lower()
     return normalized.endswith(".pdf") or "/pdf" in normalized
+
+
+def _domain_from_url(url: str | None) -> str:
+    if not url:
+        return "unknown"
+    return (urlparse(url).netloc or "unknown").lower()
 
 
 def _persist_artifact(

@@ -92,7 +92,7 @@ Decision lock (approved):
 - Integration: mixed success/failure run, resume behavior
 - API: endpoint semantics, auth/rate-limit/error consistency
 
-7. [ ] P1 - Add observability for acquisition stage
+7. [x] P1 - Add observability for acquisition stage
 - Structured logs (`acq_run_id`, `source_id`, `domain`, `latency_ms`, `status`)
 - Metrics counters and latency histogram
 

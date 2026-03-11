@@ -62,6 +62,50 @@ class RunObservability:
         self._histograms[key][bucket] += 1
 
 
+class AcquisitionObservability:
+    def __init__(self) -> None:
+        self._counters: Counter[str] = Counter()
+        self._histograms: dict[str, Counter[str]] = defaultdict(Counter)
+        self._log = logging.getLogger("knowledge_miner")
+
+    def inc(self, name: str, value: int = 1) -> None:
+        self._counters[name] += value
+
+    def record_download(
+        self,
+        *,
+        acq_run_id: str,
+        source_id: str,
+        domain: str,
+        latency_ms: float,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        key = f"{domain}:download"
+        self._histograms[key][_latency_bucket_label(latency_ms)] += 1
+        payload = {
+            "event": "acquisition_download",
+            "acq_run_id": acq_run_id,
+            "source_id": source_id,
+            "domain": domain,
+            "latency_ms": round(latency_ms, 3),
+            "status": status,
+        }
+        if error:
+            payload["error"] = error
+        self._log.info(json.dumps(payload, sort_keys=True))
+
+    def emit_summary(self, *, acq_run_id: str, status: str) -> None:
+        payload = {
+            "event": "acquisition_summary",
+            "acq_run_id": acq_run_id,
+            "status": status,
+            "counters": dict(self._counters),
+            "latency_histograms": {k: dict(v) for k, v in self._histograms.items()},
+        }
+        self._log.info(json.dumps(payload, sort_keys=True))
+
+
 def _latency_bucket_label(latency_ms: float) -> str:
     if latency_ms <= 100:
         return "le_100ms"

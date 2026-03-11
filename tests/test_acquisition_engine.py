@@ -370,3 +370,59 @@ def test_pdf_artifact_checksum_and_size(monkeypatch, tmp_path):
             assert artifact.checksum_sha256 == hashlib.sha256(payload).hexdigest()
     finally:
         object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
+def test_acquisition_observability_logs_and_counters(monkeypatch, tmp_path, caplog):
+    run_id, source_id = _seed_completed_run("https://publisher.example/paper.pdf")
+    original_artifacts_dir = settings.artifacts_dir
+    try:
+        object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+        with SessionLocal() as db:
+            acq_run = acquisition.create_acquisition_run(db, run_id, retry_failed_only=False)
+
+        def fake_download(url: str, *, timeout_seconds: float, max_bytes: int):  # noqa: ANN001
+            del timeout_seconds, max_bytes
+            return acquisition.DownloadResult(
+                kind="pdf",
+                mime_type="application/pdf",
+                content=b"%PDF-observe",
+                url=url,
+                error=None,
+                retryable=False,
+            )
+
+        monkeypatch.setattr(acquisition, "_download_url", fake_download)
+        caplog.set_level("INFO", logger="knowledge_miner")
+        with SessionLocal() as db:
+            run = db.get(AcquisitionRun, acq_run.id)
+            assert run is not None
+            acquisition.execute_acquisition_run(db, run)
+
+        download_events = []
+        summary_events = []
+        for record in caplog.records:
+            if record.name != "knowledge_miner":
+                continue
+            payload = json.loads(record.message)
+            if payload.get("event") == "acquisition_download":
+                download_events.append(payload)
+            if payload.get("event") == "acquisition_summary":
+                summary_events.append(payload)
+
+        assert download_events
+        evt = download_events[-1]
+        assert evt["acq_run_id"] == acq_run.id
+        assert evt["source_id"] == source_id
+        assert evt["domain"] == "publisher.example"
+        assert evt["status"] == "downloaded"
+        assert isinstance(evt["latency_ms"], float)
+
+        assert summary_events
+        summary = summary_events[-1]
+        assert summary["acq_run_id"] == acq_run.id
+        assert summary["status"] == "completed"
+        assert summary["counters"]["attempted"] == 1
+        assert summary["counters"]["downloaded"] == 1
+        assert summary["latency_histograms"]
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
