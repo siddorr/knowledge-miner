@@ -746,14 +746,14 @@ Goal:
   - otherwise -> `Build`
 - Add deterministic precedence and tests.
 
-4. [ ] P0 - Build screen restructuring (topic workspace only)
+4. [x] P0 - Build screen restructuring (topic workspace only)
 - Build page must contain:
   - topic list (`+ New Topic`)
   - tabs: `Add Sources`, `Queries`, `Runs`
   - right details panel for selected topic/run
 - Keep review actions out of Build.
 
-5. [ ] P0 - Promote manual source addition to first-class Build flow
+5. [x] P0 - Promote manual source addition to first-class Build flow
 - Add source input paths:
   - DOI
   - URL

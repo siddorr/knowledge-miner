@@ -11,6 +11,13 @@ const state = {
   pollTimer: null,
   runRows: [],
   latest: { discovery: "", acquisition: "", parse: "" },
+  build: {
+    topics: [{ id: "topic_default", name: "Default Topic" }],
+    activeTopicId: "topic_default",
+    activeTab: "runs",
+    stagedSourcesByTopic: { topic_default: [] },
+    sourceKeysByTopic: { topic_default: new Set() },
+  },
   review: { offset: 0, loaded: false, expanded: new Set() },
   documents: { offset: 0, loaded: false, selectedSourceId: "" },
   search: { loaded: false, payload: null, items: [] },
@@ -333,6 +340,91 @@ function renderTable(tbodyId, rows, cols) {
     return;
   }
   tbody.innerHTML = rows.join("");
+}
+
+function activeTopic() {
+  return state.build.topics.find((t) => t.id === state.build.activeTopicId) || state.build.topics[0];
+}
+
+function renderBuildDetails() {
+  const topic = activeTopic();
+  if (!topic) {
+    setText("buildDetails", "No topic selected.");
+    return;
+  }
+  setText(
+    "buildDetails",
+    JSON.stringify(
+      {
+        topic_id: topic.id,
+        topic_name: topic.name,
+        selected_tab: state.build.activeTab,
+        latest_discovery_run: state.latest.discovery || null,
+      },
+      null,
+      2,
+    ),
+  );
+  setText("statusActiveTopic", topic.name);
+}
+
+function renderBuildSources() {
+  const topic = activeTopic();
+  const topicId = topic?.id || "";
+  const rows = state.build.stagedSourcesByTopic[topicId] || [];
+  renderTable(
+    "buildSourcesRows",
+    rows.map((value) => `<tr><td>${escapeHtml(topic?.name || "")}</td><td>${escapeHtml(value)}</td></tr>`),
+    2,
+  );
+}
+
+function renderBuildTopics() {
+  const host = el("buildTopicList");
+  if (!host) return;
+  host.innerHTML = state.build.topics
+    .map((topic) => {
+      const active = topic.id === state.build.activeTopicId ? " active" : "";
+      return `<button type="button" class="topic-btn${active}" data-topic-id="${escapeHtml(topic.id)}">${escapeHtml(topic.name)}</button>`;
+    })
+    .join("");
+  renderBuildDetails();
+  renderBuildSources();
+}
+
+function setBuildTab(tab) {
+  state.build.activeTab = tab;
+  const tabs = ["add-sources", "queries", "runs"];
+  const tabMap = {
+    "add-sources": ["buildTabAddSources", "buildTabPanelAddSources"],
+    queries: ["buildTabQueries", "buildTabPanelQueries"],
+    runs: ["buildTabRuns", "buildTabPanelRuns"],
+  };
+  for (const id of tabs) {
+    const [btnId, panelId] = tabMap[id];
+    const btn = el(btnId);
+    const panel = el(panelId);
+    if (btn) btn.classList.toggle("active", id === tab);
+    if (panel) panel.hidden = id !== tab;
+  }
+  renderBuildDetails();
+}
+
+function sourceFingerprint(value) {
+  return value.trim().toLowerCase();
+}
+
+async function copyFieldValue(targetId) {
+  const node = el(targetId);
+  if (!node) return;
+  const value = String(node.value || "").trim();
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    setText("addSourceState", "Copied");
+  } catch (_err) {
+    setText("addSourceState", "Copy failed.");
+  }
 }
 
 function updateStatusStrip({
@@ -682,6 +774,107 @@ async function startDiscovery(event) {
   } catch (err) {
     setText("dashboardError", `Start failed: ${err.message}`);
   }
+}
+
+function handleBuildTopicClick(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || !target.classList.contains("topic-btn")) return;
+  const topicId = target.dataset.topicId || "";
+  if (!topicId) return;
+  state.build.activeTopicId = topicId;
+  renderBuildTopics();
+}
+
+function createNewTopic() {
+  const name = window.prompt("New topic name");
+  if (!name) return;
+  const normalized = name.trim();
+  if (!normalized) return;
+  const id = `topic_${Date.now().toString(36)}`;
+  state.build.topics.push({ id, name: normalized });
+  state.build.stagedSourcesByTopic[id] = [];
+  state.build.sourceKeysByTopic[id] = new Set();
+  state.build.activeTopicId = id;
+  renderBuildTopics();
+}
+
+function handleAddSource(event) {
+  event.preventDefault();
+  const topic = activeTopic();
+  if (!topic) {
+    setText("addSourceState", "Create/select topic first.");
+    return;
+  }
+  const doi = (el("addSourceDoi").value || "").trim();
+  const url = (el("addSourceUrl").value || "").trim();
+  const citation = (el("addSourceCitation").value || "").trim();
+  if (!doi && !url && !citation) {
+    setText("addSourceState", "Provide at least one source input.");
+    return;
+  }
+  const raw = doi || url || citation;
+  const key = sourceFingerprint(raw);
+  const keys = state.build.sourceKeysByTopic[topic.id] || new Set();
+  if (keys.has(key)) {
+    setText("addSourceState", `Duplicate source ignored for ${topic.name}.`);
+    return;
+  }
+  keys.add(key);
+  state.build.sourceKeysByTopic[topic.id] = keys;
+  const bucket = state.build.stagedSourcesByTopic[topic.id] || [];
+  bucket.push(raw);
+  state.build.stagedSourcesByTopic[topic.id] = bucket;
+  setText("addSourceState", `Source staged for ${topic.name}.`);
+  renderBuildSources();
+}
+
+function handleBulkSource(event) {
+  event.preventDefault();
+  const topic = activeTopic();
+  if (!topic) {
+    setText("addSourceState", "Create/select topic first.");
+    return;
+  }
+  const lines = (el("bulkSourceInput").value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    setText("addSourceState", "Provide at least one bulk source line.");
+    return;
+  }
+  const keys = state.build.sourceKeysByTopic[topic.id] || new Set();
+  const bucket = state.build.stagedSourcesByTopic[topic.id] || [];
+  let added = 0;
+  for (const line of lines) {
+    const key = sourceFingerprint(line);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    bucket.push(line);
+    added += 1;
+  }
+  state.build.sourceKeysByTopic[topic.id] = keys;
+  state.build.stagedSourcesByTopic[topic.id] = bucket;
+  setText("addSourceState", `Staged ${added} new source rows for ${topic.name}.`);
+  renderBuildSources();
+}
+
+function handleBuildQuery(event) {
+  event.preventDefault();
+  const query = (el("buildTopicQuery").value || "").trim();
+  if (!query) {
+    setText("buildQueryState", "Query is required.");
+    return;
+  }
+  setText("buildQueryState", `Saved topic query for ${activeTopic()?.name || "topic"}.`);
+}
+
+function handleCopyValueClick(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || !target.classList.contains("copy-value-btn")) return;
+  const targetId = target.dataset.targetId || "";
+  if (!targetId) return;
+  copyFieldValue(targetId);
 }
 
 async function loadReviewClick(event) {
@@ -1051,6 +1244,15 @@ function init() {
   updateSectionVisibility();
 
   addListener("startDiscoveryForm", "submit", startDiscovery);
+  addListener("newTopicBtn", "click", createNewTopic);
+  addListener("buildTopicList", "click", handleBuildTopicClick);
+  addListener("buildTabAddSources", "click", () => setBuildTab("add-sources"));
+  addListener("buildTabQueries", "click", () => setBuildTab("queries"));
+  addListener("buildTabRuns", "click", () => setBuildTab("runs"));
+  addListener("addSourceForm", "submit", handleAddSource);
+  addListener("bulkSourceForm", "submit", handleBulkSource);
+  addListener("buildQueryForm", "submit", handleBuildQuery);
+  addListener("build", "click", handleCopyValueClick);
   addListener("loadDiscoverBtn", "click", async () => {
     try {
       await loadDiscover();
@@ -1115,6 +1317,8 @@ function init() {
   });
 
   renderRunsTable();
+  renderBuildTopics();
+  setBuildTab(state.build.activeTab);
   loadSystemStatus();
   loadDashboard();
   loadAiSettings();

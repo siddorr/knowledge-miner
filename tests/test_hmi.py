@@ -13,6 +13,14 @@ def test_hmi_shell_route_and_navigation():
     body = response.text
     assert "Knowledge Miner Task Dashboard" in body
     assert "Build" in body
+    assert "+ New Topic" in body
+    assert "Add Sources" in body
+    assert "Queries" in body
+    assert "Runs" in body
+    assert "Details" in body
+    assert "Bulk paste (one per line)" in body
+    assert "buildSourcesRows" in body
+    assert "Copy" in body
     assert "Review" in body
     assert "Documents" in body
     assert "Library" in body
@@ -91,6 +99,13 @@ def test_hmi_static_js_served():
     assert "initTelemetry" in body
     assert "LAUNCH_SECTION" in body
     assert "updateStatusStrip" in body
+    assert "renderBuildTopics" in body
+    assert "setBuildTab" in body
+    assert "handleAddSource" in body
+    assert "handleBuildQuery" in body
+    assert "handleBulkSource" in body
+    assert "sourceFingerprint" in body
+    assert "handleCopyValueClick" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

@@ -158,6 +158,10 @@ label {
   min-width: 170px;
 }
 
+.copy-value-btn {
+  justify-self: start;
+}
+
 .table-wrap {
   overflow-x: auto;
 }
@@ -215,6 +219,38 @@ th {
   flex-wrap: wrap;
 }
 
+.build-layout {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 220px 1fr 300px;
+}
+
+.panel-sub {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+}
+
+.topic-list {
+  display: grid;
+  gap: 6px;
+}
+
+.topic-btn {
+  text-align: left;
+}
+
+.topic-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.build-tab-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .status-badge {
   display: inline-block;
   margin-left: 6px;
@@ -253,5 +289,9 @@ th {
 
   table {
     min-width: 560px;
+  }
+
+  .build-layout {
+    grid-template-columns: 1fr;
   }
 }

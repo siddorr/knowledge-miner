@@ -39,39 +39,112 @@
   <main class="stack">
     <section id="build" class="panel">
       <h2>Build</h2>
-      <p class="muted">Start discovery and handle the next actionable task.</p>
-      <form id="startDiscoveryForm" class="row">
-        <label>
-          Search queries (comma-separated)
-          <input id="startDiscoverySeeds" type="text" placeholder="upw, semiconductor, toc" required>
-        </label>
-        <label>
-          Max iterations
-          <select id="startDiscoveryMaxIterations">
-            <option value="1">1</option>
-            <option value="2">2</option>
-            <option value="3">3</option>
-            <option value="4">4</option>
-            <option value="5">5</option>
-            <option value="6" selected>6</option>
-          </select>
-        </label>
-        <label>
-          AI Filter
-          <select id="startDiscoveryAiMode">
-            <option value="default" selected>default</option>
-            <option value="on">on</option>
-            <option value="off">off</option>
-          </select>
-        </label>
-        <button id="createSessionBtn" type="submit">Run Discovery</button>
-      </form>
-      <p id="dashboardState" class="muted"></p>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Needs Review</th><th>Download Issues</th><th>Parse Errors</th><th>Recent Discovery</th></tr></thead>
-          <tbody id="dashboardCards"></tbody>
-        </table>
+      <p class="muted">Topic workspace for source building, query planning, and runs.</p>
+      <div class="build-layout">
+        <aside class="build-topics panel-sub">
+          <div class="row compact">
+            <strong>Topics</strong>
+            <button id="newTopicBtn" type="button">+ New Topic</button>
+          </div>
+          <div id="buildTopicList" class="topic-list"></div>
+        </aside>
+
+        <section class="build-main panel-sub">
+          <div class="row compact">
+            <button id="buildTabAddSources" type="button" class="build-tab-btn">Add Sources</button>
+            <button id="buildTabQueries" type="button" class="build-tab-btn">Queries</button>
+            <button id="buildTabRuns" type="button" class="build-tab-btn">Runs</button>
+          </div>
+
+          <section id="buildTabPanelAddSources" class="build-tab-panel">
+            <form id="addSourceForm" class="row">
+              <label>
+                DOI
+                <input id="addSourceDoi" type="text" placeholder="10.xxxx/xxxx">
+                <button type="button" class="copy-value-btn" data-target-id="addSourceDoi">Copy</button>
+              </label>
+              <label>
+                URL
+                <input id="addSourceUrl" type="text" placeholder="https://...">
+                <button type="button" class="copy-value-btn" data-target-id="addSourceUrl">Copy</button>
+              </label>
+              <label>
+                Citation / Free text
+                <input id="addSourceCitation" type="text" placeholder="citation text">
+                <button type="button" class="copy-value-btn" data-target-id="addSourceCitation">Copy</button>
+              </label>
+              <button type="submit">Add Source</button>
+            </form>
+            <form id="bulkSourceForm" class="row">
+              <label>
+                Bulk paste (one per line)
+                <textarea id="bulkSourceInput" rows="4" placeholder="doi/url/citation..."></textarea>
+                <button type="button" class="copy-value-btn" data-target-id="bulkSourceInput">Copy</button>
+              </label>
+              <button type="submit">Add Bulk Sources</button>
+            </form>
+            <p id="addSourceState" class="muted"></p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Topic</th><th>Source</th></tr></thead>
+                <tbody id="buildSourcesRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="buildTabPanelQueries" class="build-tab-panel" hidden>
+            <form id="buildQueryForm" class="row">
+              <label>
+                Topic Query
+                <input id="buildTopicQuery" type="text" placeholder="ultrapure water semiconductor">
+                <button type="button" class="copy-value-btn" data-target-id="buildTopicQuery">Copy</button>
+              </label>
+              <button type="submit">Save Query</button>
+            </form>
+            <p id="buildQueryState" class="muted"></p>
+          </section>
+
+          <section id="buildTabPanelRuns" class="build-tab-panel" hidden>
+            <form id="startDiscoveryForm" class="row">
+              <label>
+                Search queries (comma-separated)
+                <input id="startDiscoverySeeds" type="text" placeholder="upw, semiconductor, toc" required>
+              </label>
+              <label>
+                Max iterations
+                <select id="startDiscoveryMaxIterations">
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6" selected>6</option>
+                </select>
+              </label>
+              <label>
+                AI Filter
+                <select id="startDiscoveryAiMode">
+                  <option value="default" selected>default</option>
+                  <option value="on">on</option>
+                  <option value="off">off</option>
+                </select>
+              </label>
+              <button id="createSessionBtn" type="submit">Run Discovery</button>
+            </form>
+            <p id="dashboardState" class="muted"></p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Needs Review</th><th>Download Issues</th><th>Parse Errors</th><th>Recent Discovery</th></tr></thead>
+                <tbody id="dashboardCards"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <aside class="build-details panel-sub">
+          <h3>Details</h3>
+          <pre id="buildDetails" class="metrics">No topic selected.</pre>
+        </aside>
       </div>
       <p id="dashboardError" class="error"></p>
     </section>
