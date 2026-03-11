@@ -122,6 +122,45 @@ class AcquisitionManifestResponse(BaseModel):
     artifacts: list[dict]
 
 
+class ManualDownloadItemOut(BaseModel):
+    item_id: str
+    source_id: str
+    status: str
+    attempt_count: int
+    last_error: str | None
+    title: str
+    doi: str | None
+    source_url: str | None
+    selected_url: str | None
+    manual_url_candidates: list[str]
+
+
+class ManualDownloadsListResponse(BaseModel):
+    acq_run_id: str
+    items: list[ManualDownloadItemOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class ManualUploadResponse(BaseModel):
+    artifact_id: str
+    acq_run_id: str
+    source_id: str
+    kind: str
+    path: str
+    checksum_sha256: str | None
+    size_bytes: int | None
+    mime_type: str | None
+
+
+class ManualUploadRequest(BaseModel):
+    source_id: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    content_base64: str = Field(min_length=1)
+    content_type: str | None = None
+
+
 class ParseRunCreateRequest(BaseModel):
     acq_run_id: str = Field(min_length=1)
     retry_failed_only: bool = False

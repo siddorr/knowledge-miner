@@ -498,3 +498,154 @@ def _write_manifest_file(db: Session, acq_run_id: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
+
+
+def build_manual_downloads_payload(db: Session, acq_run_id: str, *, limit: int, offset: int) -> dict:
+    run = db.get(AcquisitionRun, acq_run_id)
+    if run is None:
+        raise ValueError("acq_run_not_found")
+
+    rows = db.execute(
+        select(AcquisitionItem, Source)
+        .join(Source, Source.id == AcquisitionItem.source_id)
+        .where(
+            AcquisitionItem.acq_run_id == acq_run_id,
+            AcquisitionItem.status.in_(("failed", "partial", "skipped")),
+        )
+        .order_by(AcquisitionItem.source_id.asc())
+    ).all()
+    page = rows[offset : offset + limit]
+
+    return {
+        "acq_run_id": run.id,
+        "items": [
+            {
+                "item_id": item.id,
+                "source_id": item.source_id,
+                "status": item.status,
+                "attempt_count": item.attempt_count,
+                "last_error": item.last_error,
+                "title": source.title,
+                "doi": source.doi,
+                "source_url": source.url,
+                "selected_url": item.selected_url,
+                "manual_url_candidates": _manual_url_candidates(source=source, item=item),
+            }
+            for item, source in page
+        ],
+        "total": len(rows),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def register_manual_upload(
+    db: Session,
+    *,
+    acq_run_id: str,
+    source_id: str,
+    filename: str,
+    content_type: str | None,
+    content: bytes,
+) -> Artifact:
+    run = db.get(AcquisitionRun, acq_run_id)
+    if run is None:
+        raise ValueError("acq_run_not_found")
+    source = db.get(Source, source_id)
+    if source is None:
+        raise ValueError("source_not_found")
+    item = db.scalars(
+        select(AcquisitionItem).where(AcquisitionItem.acq_run_id == acq_run_id, AcquisitionItem.source_id == source_id)
+    ).first()
+    if item is None:
+        raise ValueError("item_not_found")
+    if not content:
+        raise ValueError("empty_content")
+
+    max_bytes = int(getattr(settings, "acquisition_max_bytes", 25_000_000))
+    if len(content) > max_bytes:
+        raise ValueError("file_too_large")
+
+    kind, mime_type = _detect_manual_upload_kind(filename=filename, content_type=content_type, content=content)
+    if kind is None or mime_type is None:
+        raise ValueError("unsupported_content_type")
+
+    checksum = hashlib.sha256(content).hexdigest()
+    rel_path = Path("acquisition") / acq_run_id / source_id / f"manual_upload.{kind}"
+    abs_path = Path(settings.artifacts_dir) / rel_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    abs_path.write_bytes(content)
+
+    artifact = Artifact(
+        id=f"artifact_{uuid.uuid4().hex[:12]}",
+        acq_run_id=acq_run_id,
+        source_id=source_id,
+        item_id=item.id,
+        kind=kind,
+        path=str(rel_path),
+        checksum_sha256=checksum,
+        size_bytes=len(content),
+        mime_type=mime_type,
+    )
+    db.add(artifact)
+    item.status = "downloaded"
+    item.last_error = None
+    item.updated_at = datetime.now(UTC)
+    _recompute_acquisition_totals(db, run)
+    db.commit()
+    db.refresh(artifact)
+    return artifact
+
+
+def _manual_url_candidates(*, source: Source, item: AcquisitionItem) -> list[str]:
+    urls = [source.url, f"https://doi.org/{source.doi}" if source.doi else None, item.selected_url]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for raw in urls:
+        if not raw:
+            continue
+        normalized = _normalize_url(raw)
+        if normalized is None or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(raw)
+    return deduped
+
+
+def _normalize_url(url: str) -> str | None:
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    path = parsed.path.rstrip("/") or "/"
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}{query}"
+
+
+def _detect_manual_upload_kind(*, filename: str, content_type: str | None, content: bytes) -> tuple[str | None, str | None]:
+    lowered = filename.lower()
+    if lowered.endswith(".pdf"):
+        return "pdf", "application/pdf"
+    if lowered.endswith(".html") or lowered.endswith(".htm"):
+        return "html", "text/html"
+
+    ct = (content_type or "").split(";")[0].strip().lower()
+    if ct == "application/pdf":
+        return "pdf", "application/pdf"
+    if ct in {"text/html", "application/xhtml+xml"}:
+        return "html", "text/html"
+
+    if content.startswith(b"%PDF"):
+        return "pdf", "application/pdf"
+    if content[:1024].lower().find(b"<html") >= 0:
+        return "html", "text/html"
+    return None, None
+
+
+def _recompute_acquisition_totals(db: Session, run: AcquisitionRun) -> None:
+    db.flush()
+    statuses = db.scalars(select(AcquisitionItem.status).where(AcquisitionItem.acq_run_id == run.id)).all()
+    run.downloaded_total = sum(1 for s in statuses if s == "downloaded")
+    run.partial_total = sum(1 for s in statuses if s == "partial")
+    run.failed_total = sum(1 for s in statuses if s == "failed")
+    run.skipped_total = sum(1 for s in statuses if s == "skipped")
+    run.updated_at = datetime.now(UTC)

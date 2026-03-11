@@ -110,32 +110,32 @@ Definition of done for Phase 2:
 Goal:
 - Show documents that failed/partial/skipped in acquisition so end users can download them manually.
 
-1. [ ] P0 - Add manual-recovery API endpoint
+1. [x] P0 - Add manual-recovery API endpoint
 - `GET /v1/acquisition/runs/{acq_run_id}/manual-downloads`
 - Return only items with status in `failed|partial|skipped`.
 
-2. [ ] P0 - Define manual download response schema
+2. [x] P0 - Define manual download response schema
 - Per item include:
   - `item_id`, `source_id`, `status`, `attempt_count`, `last_error`
   - `title`, `doi`, `source_url`, `selected_url`
   - `manual_url_candidates[]` (deduped, ordered)
 
-3. [ ] P0 - Build URL candidate aggregation logic
+3. [x] P0 - Build URL candidate aggregation logic
 - Combine URLs from source metadata:
   - source landing URL
   - DOI URL (`https://doi.org/...`)
   - selected acquisition URL (if any)
 - Deduplicate/canonicalize and preserve deterministic ordering.
 
-4. [ ] P1 - Add export endpoint for user operations
+4. [x] P1 - Add export endpoint for user operations
 - `GET /v1/acquisition/runs/{acq_run_id}/manual-downloads.csv`
 - CSV columns aligned with manual download schema.
 
-5. [ ] P1 - Add manual-upload registration path
+5. [x] P1 - Add manual-upload registration path
 - `POST /v1/acquisition/runs/{acq_run_id}/manual-upload`
 - Allow user-provided file registration for a `source_id` with checksum/MIME/path validation.
 
-6. [ ] P1 - Add tests for manual recovery
+6. [x] P1 - Add tests for manual recovery
 - API tests for filtering, pagination, and schema.
 - Tests for URL candidate ordering/dedup.
 - Tests for CSV export and manual-upload validation.
@@ -276,7 +276,7 @@ Decision lock (approved):
 - Submit source review decision (`accept`/`reject`).
 - Trigger existing exports (`sources_raw`, acquisition manifest).
 
-5. [ ] P0 - Implement manual recovery APIs (Phase 2.1 dependency)
+5. [x] P0 - Implement manual recovery APIs (Phase 2.1 dependency)
 - `GET /v1/acquisition/runs/{acq_run_id}/manual-downloads`
 - `GET /v1/acquisition/runs/{acq_run_id}/manual-downloads.csv`
 - `POST /v1/acquisition/runs/{acq_run_id}/manual-upload`
@@ -328,6 +328,30 @@ Decision lock (approved):
   - all
 - API test verifies `seed_queries` is returned by run status.
 - UI test verifies default view shows `accepted + needs_review`.
+
+12. [ ] P0 - HMI auth via system variable with UI fallback
+- Add server-side config for default HMI token (from environment variable).
+- On HMI load, prefill API key from server-provided value when configured.
+- Keep manual API key input as fallback/override in browser.
+- Add clear UI state: `Using system token` vs `Using manual token`.
+
+13. [ ] P0 - Add "Create New Session" button in HMI (Discovery)
+- Add HMI action to create a discovery run from seed queries/max iterations.
+- Call `POST /v1/discovery/runs` from UI and show request/response feedback.
+- On success:
+  - surface `run_id` prominently
+  - auto-insert created `run_id` into Runs and Discovery panels
+  - append row to Runs table.
+
+14. [ ] P0 - Improve run ID discoverability in HMI
+- Display created run IDs in success toast/panel after create actions.
+- Add "Copy ID" action for run identifiers.
+- Keep latest IDs visible in Runs dashboard state for quick reuse.
+
+15. [ ] P1 - Add tests for session creation and token source UX
+- HMI/API tests for create-session action and run_id propagation in UI state.
+- Test system-token prefill path and manual override path.
+- Test ID visibility and copy action presence.
 
 Definition of done for Phase 4:
 1. A user can execute the core operational flow from browser without curl.

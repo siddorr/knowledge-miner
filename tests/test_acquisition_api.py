@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import base64
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 import knowledge_miner.main as main_module
 import knowledge_miner.rate_limit as rate_limit_module
+from knowledge_miner.config import settings
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.main import app
-from knowledge_miner.models import Artifact, Run, Source
+from knowledge_miner.models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
 
 
 def setup_function():
@@ -59,6 +63,35 @@ def _seed_discovery_run(*, completed: bool) -> tuple[str, str]:
         db.add(src)
         db.commit()
         return run.id, src.id
+
+
+def _seed_manual_recovery_case() -> tuple[str, str]:
+    run_id, source_id = _seed_discovery_run(completed=True)
+    with SessionLocal() as db:
+        acq_run = AcquisitionRun(
+            id="acq_manual_1",
+            discovery_run_id=run_id,
+            retry_failed_only=False,
+            status="completed",
+            total_sources=1,
+            downloaded_total=0,
+            partial_total=0,
+            failed_total=1,
+            skipped_total=0,
+        )
+        db.add(acq_run)
+        item = AcquisitionItem(
+            id="acq_item_manual_1",
+            acq_run_id=acq_run.id,
+            source_id=source_id,
+            status="failed",
+            attempt_count=2,
+            selected_url="https://ieee.org/test",
+            last_error="http_404",
+        )
+        db.add(item)
+        db.commit()
+    return "acq_manual_1", source_id
 
 
 def test_create_acquisition_run_happy_path(monkeypatch):
@@ -189,3 +222,67 @@ def test_acquisition_not_found_endpoints(monkeypatch):
     resp = client.get("/v1/acquisition/artifacts/missing", headers=_auth_headers())
     assert resp.status_code == 404
     assert resp.json()["detail"] == "artifact_not_found"
+
+
+def test_manual_downloads_endpoint(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    acq_run_id, source_id = _seed_manual_recovery_case()
+    client = TestClient(app)
+
+    resp = client.get(f"/v1/acquisition/runs/{acq_run_id}/manual-downloads", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["acq_run_id"] == acq_run_id
+    assert body["total"] == 1
+    item = body["items"][0]
+    assert item["source_id"] == source_id
+    assert item["status"] == "failed"
+    # ordered: source_url, doi_url, selected_url(deduped away when equal to source_url)
+    assert item["manual_url_candidates"] == ["https://ieee.org/test", "https://doi.org/10.1000/test-acq"]
+
+
+def test_manual_downloads_csv_endpoint(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    acq_run_id, _ = _seed_manual_recovery_case()
+    client = TestClient(app)
+
+    resp = client.get(f"/v1/acquisition/runs/{acq_run_id}/manual-downloads.csv", headers=_auth_headers())
+    assert resp.status_code == 200
+    assert "text/csv" in resp.headers.get("content-type", "")
+    body = resp.text
+    assert "item_id,source_id,status,attempt_count,last_error,title,doi,source_url,selected_url,manual_url_candidates" in body
+    assert "acq_item_manual_1" in body
+
+
+def test_manual_upload_registration(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    acq_run_id, source_id = _seed_manual_recovery_case()
+    original_artifacts_dir = settings.artifacts_dir
+    object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+    try:
+        client = TestClient(app)
+        encoded = base64.b64encode(b"%PDF-1.4 manual test").decode("utf-8")
+        resp = client.post(
+            f"/v1/acquisition/runs/{acq_run_id}/manual-upload",
+            json={
+                "source_id": source_id,
+                "filename": "manual.pdf",
+                "content_base64": encoded,
+                "content_type": "application/pdf",
+            },
+            headers=_auth_headers(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["acq_run_id"] == acq_run_id
+        assert body["source_id"] == source_id
+        assert body["kind"] == "pdf"
+        assert (tmp_path / body["path"]).exists()
+
+        status = client.get(f"/v1/acquisition/runs/{acq_run_id}", headers=_auth_headers())
+        assert status.status_code == 200
+        status_body = status.json()
+        assert status_body["downloaded_total"] == 1
+        assert status_body["failed_total"] == 0
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)

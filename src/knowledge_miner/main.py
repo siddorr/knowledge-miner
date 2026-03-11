@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import csv
+import io
+import base64
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .acquisition import build_manifest_payload, create_acquisition_run, enqueue_acquisition_run
+from .acquisition import (
+    build_manifest_payload,
+    build_manual_downloads_payload,
+    create_acquisition_run,
+    enqueue_acquisition_run,
+    register_manual_upload,
+)
 from .auth import require_api_key
 from .config import is_sqlite_url, settings
 from .db import Base, engine, get_db
@@ -25,6 +34,10 @@ from .schemas import (
     AcquisitionRunCreateResponse,
     AcquisitionRunStatusResponse,
     ArtifactOut,
+    ManualDownloadItemOut,
+    ManualDownloadsListResponse,
+    ManualUploadRequest,
+    ManualUploadResponse,
     DocumentChunksListResponse,
     DocumentChunkOut,
     ParsedDocumentOut,
@@ -280,6 +293,122 @@ def list_acq_items(
         total=len(rows),
         limit=limit,
         offset=offset,
+    )
+
+
+@app.get("/v1/acquisition/runs/{acq_run_id}/manual-downloads", response_model=ManualDownloadsListResponse)
+def list_manual_downloads(
+    acq_run_id: str,
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> ManualDownloadsListResponse:
+    try:
+        payload = build_manual_downloads_payload(db, acq_run_id, limit=limit, offset=offset)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found") from exc
+    return ManualDownloadsListResponse(
+        acq_run_id=payload["acq_run_id"],
+        items=[ManualDownloadItemOut(**item) for item in payload["items"]],
+        total=payload["total"],
+        limit=payload["limit"],
+        offset=payload["offset"],
+    )
+
+
+@app.get("/v1/acquisition/runs/{acq_run_id}/manual-downloads.csv")
+def export_manual_downloads_csv(
+    acq_run_id: str,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+):
+    try:
+        payload = build_manual_downloads_payload(db, acq_run_id, limit=100_000, offset=0)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found") from exc
+
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(
+        [
+            "item_id",
+            "source_id",
+            "status",
+            "attempt_count",
+            "last_error",
+            "title",
+            "doi",
+            "source_url",
+            "selected_url",
+            "manual_url_candidates",
+        ]
+    )
+    for item in payload["items"]:
+        writer.writerow(
+            [
+                item["item_id"],
+                item["source_id"],
+                item["status"],
+                item["attempt_count"],
+                item["last_error"] or "",
+                item["title"],
+                item["doi"] or "",
+                item["source_url"] or "",
+                item["selected_url"] or "",
+                " | ".join(item["manual_url_candidates"]),
+            ]
+        )
+
+    return Response(
+        content=out.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="manual_downloads_{acq_run_id}.csv"',
+        },
+    )
+
+
+@app.post("/v1/acquisition/runs/{acq_run_id}/manual-upload", response_model=ManualUploadResponse)
+def manual_upload_registration(
+    acq_run_id: str,
+    payload: ManualUploadRequest,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> ManualUploadResponse:
+    try:
+        content = base64.b64decode(payload.content_base64.encode("utf-8"), validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_base64") from exc
+    try:
+        artifact = register_manual_upload(
+            db,
+            acq_run_id=acq_run_id,
+            source_id=payload.source_id,
+            filename=payload.filename,
+            content_type=payload.content_type,
+            content=content,
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        if reason == "acq_run_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found") from exc
+        if reason in {"source_not_found", "item_not_found"}:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=reason) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason) from exc
+
+    return ManualUploadResponse(
+        artifact_id=artifact.id,
+        acq_run_id=artifact.acq_run_id,
+        source_id=artifact.source_id,
+        kind=artifact.kind,
+        path=artifact.path,
+        checksum_sha256=artifact.checksum_sha256,
+        size_bytes=artifact.size_bytes,
+        mime_type=artifact.mime_type,
     )
 
 
