@@ -21,16 +21,24 @@ def test_hmi_shell_route_and_navigation():
     assert "Runs Dashboard" in body
     assert "/hmi/static/hmi.js" in body
     assert "Create New Session" in body
+    assert "postCreateGuidance" in body
     assert "Start Acquisition" in body
     assert "Start Parse" in body
-    assert "Submit Review" in body
+    assert "Abstract" in body
+    assert "Actions" in body
     assert "Latest IDs:" in body
     assert "Copy ID" in body
     assert "__KM_HMI_DEFAULT_TOKEN__" in body
     assert "Load Queue" in body
     assert "Export CSV" in body
     assert "Register Manual Upload" in body
+    assert "AI Filter Settings" in body
+    assert "Load AI Settings" in body
+    assert "Save AI Settings" in body
+    assert "AI Filter" in body
     assert "Parse Run ID" in body
+    assert "Selected Document Detail" in body
+    assert "Selected Document Full Text" in body
     assert "Parsed Document Detail" in body
     assert "Parsed Document Full Text" in body
     assert "Related Source Context" in body
@@ -51,6 +59,22 @@ def test_hmi_static_js_served():
     assert "Stale data in #" in body
     assert "pollState" in body
     assert "Load failed:" in body
+    assert "discovery-review-action" in body
+    assert "toggle-abstract" in body
+    assert "Approve" in body
+    assert "Reject" in body
+    assert "Use Context" in body
+    assert "acq-row-action" in body
+    assert "parse-doc-action" in body
+    assert "manual-row-action" in body
+    assert "Manual Recovery" in body
+    assert "Prefill Upload" in body
+    assert "syncDiscoveryRunInputs" in body
+    assert "updatePostCreateGuidance" in body
+    assert "Run created:" in body
+    assert "Switch filter to all or needs_review." in body
+    assert "loadAiSettings" in body
+    assert "saveAiSettings" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

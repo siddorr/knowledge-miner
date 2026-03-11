@@ -124,6 +124,8 @@ Discovery visualization API additions:
 5. Discovery table default status view: `accepted + needs_review`.
 6. Quick toggles available in UI: `accepted | rejected | needs_review | all`.
 7. Fallback/policy decisions (`decision_source=fallback_heuristic|policy_no_ai`) are visually marked as review-required.
+8. Runtime AI filter settings are operator-controlled in HMI (`Load AI Settings` / `Save AI Settings`) and apply to new discovery runs.
+9. Review actions must support DOI-style source IDs with `/` (path-safe review routing).
 
 ## Implementation Order
 

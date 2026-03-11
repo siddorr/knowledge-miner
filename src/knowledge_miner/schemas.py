@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class RunCreateRequest(BaseModel):
     seed_queries: list[str] = Field(min_length=1)
     max_iterations: int = Field(default=6, ge=1, le=6)
+    ai_filter_enabled: bool | None = None
 
 
 class RunCreateResponse(BaseModel):
@@ -256,3 +257,20 @@ class SearchResultOut(BaseModel):
 class SearchResponse(BaseModel):
     items: list[SearchResultOut]
     total: int
+
+
+class AISettingsUpdateRequest(BaseModel):
+    use_ai_filter: bool | None = None
+    ai_api_key: str | None = None
+    ai_model: str | None = None
+    ai_base_url: str | None = None
+
+
+class AISettingsResponse(BaseModel):
+    use_ai_filter: bool
+    ai_filter_active: bool
+    ai_filter_warning: str | None
+    has_api_key: bool
+    api_key_masked: str | None
+    ai_model: str
+    ai_base_url: str

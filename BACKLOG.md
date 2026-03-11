@@ -369,6 +369,88 @@ Decision lock (approved):
 - Test system-token prefill path and manual override path.
 - Test ID visibility and copy action presence.
 
+16. [x] P1 - Improve post-create workflow guidance (HMI)
+- After `Create New Session`, auto-focus Discovery run context and show explicit next-step banner:
+  - `Run created: <run_id>`
+  - `Status filter currently: accepted`
+  - CTA: switch to `all` or `needs_review` when accepted count is zero.
+- Ensure `Run ID` remains synchronized in both:
+  - Runs lookup input
+  - Discovery run input
+- Add UX test for zero-accepted run path:
+  - created run is visible
+  - user receives clear guidance why sources table may be empty.
+
+17. [x] P0 - Simplify manual approval workflow for operators
+- Discovery review table must support direct operator review without copying IDs manually.
+- In `needs_review` / `all` view, show at minimum:
+  - `title`
+  - `abstract` (truncated with expand/collapse)
+  - `source` (provider)
+- Add inline one-click actions per row:
+  - `Approve` button
+  - `Reject` button
+- On click:
+  - call review API for that row source id
+  - update row state immediately in UI
+  - show success/error feedback without leaving the table
+- Add tests:
+  - approve button changes state to accepted
+  - reject button changes state to rejected
+  - pagination/filter state is preserved after action
+
+18. [x] P0 - Apply operator-first UX principle consistently across all HMI stages
+- Principle: operator should act from row/context directly, without manual copy-paste of IDs between forms.
+- Discovery:
+  - keep inline approve/reject actions in source table (task 17)
+  - make row click populate detail context when needed
+- Acquisition:
+  - add row actions to start manual recovery from selected acquisition run/item context
+  - prefill manual recovery/upload fields from selected row
+- Parse:
+  - add row actions to open parsed document text/detail without re-entering IDs
+- Search:
+  - preserve one-click doc/text/source actions (already present) and keep context sync with Discovery panel
+- Manual recovery:
+  - add row action to prefill `source_id` in upload form
+  - optional drag-drop upload target per row
+- Global:
+  - remove duplicate manual ID forms where row-level actions can replace them
+  - keep `Latest IDs` as helper, not primary workflow dependency
+- Tests:
+  - end-to-end operator flow without manual ID copy between sections
+  - state synchronization tests for row action -> target form/context population
+
+19. [x] P1 - Add HMI control to enable/disable AI filter
+- Goal: operator can toggle AI filter mode from HMI without manual shell/env edits.
+- Tasks:
+  - Add runtime settings endpoint(s) for AI filter mode:
+    - read current state (`use_ai_filter`, `ai_filter_active`, warning)
+    - update `use_ai_filter` (and optionally model/base URL) safely
+  - Add HMI settings panel:
+    - toggle AI filter on/off
+    - optional key/model/base URL inputs (masked key entry)
+    - clear status feedback (`active`, `disabled`, `token missing`, `error`)
+  - Apply settings to newly created runs (and define behavior for already running runs).
+  - Add guardrails:
+    - never expose full API key back to UI
+    - validate allowed model/base URL format
+  - Update docs with runtime toggle behavior and security notes.
+  - Add tests:
+    - settings read/update API
+  - HMI toggle flow
+  - run status reflects updated AI mode (`ai_filter_active`, `ai_filter_warning`)
+
+20. [x] P0 - Fix review action for source IDs containing "/" (DOI-safe routing)
+- Problem: `Approve/Reject` fails with `404` for DOI-like source IDs because current path parameter does not accept slashes.
+- Required changes:
+  - Update review route to path-safe parameter (accept full source IDs with `/`).
+  - Keep HMI approve/reject actions compatible with encoded IDs.
+  - Optionally add non-path review endpoint fallback for robust ID handling.
+- Tests:
+  - API test: review works for source IDs with slash-containing DOI format.
+  - HMI/API integration test: inline approve/reject succeeds on DOI-style rows.
+
 Definition of done for Phase 4:
 1. A user can execute the core operational flow from browser without curl.
 2. All HMI actions map to API results without hidden client-only state.

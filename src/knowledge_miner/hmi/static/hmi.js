@@ -9,7 +9,7 @@ const state = {
   runRows: [],
   pollTimer: null,
   view: {
-    discovery: { loaded: false, offset: 0 },
+    discovery: { loaded: false, offset: 0, expandedAbstractIds: new Set(), createdRunId: null },
     acq: { loaded: false, offset: 0 },
     parse: { loaded: false, docsOffset: 0, chunksOffset: 0 },
     manual: { loaded: false, offset: 0 },
@@ -33,6 +33,14 @@ function escapeHtml(text) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function truncatedAbstract(text, expanded) {
+  const raw = (text || "").trim();
+  if (!raw) return { body: "", toggle: false, expanded: false };
+  if (raw.length <= 220) return { body: raw, toggle: false, expanded: false };
+  if (expanded) return { body: raw, toggle: true, expanded: true };
+  return { body: `${raw.slice(0, 220)}...`, toggle: true, expanded: false };
 }
 
 function requiredKey() {
@@ -150,6 +158,29 @@ function setLatestId(kind, value) {
   if (kind === "discovery") setText("latestDiscoveryId", id);
   if (kind === "acquisition") setText("latestAcqId", id);
   if (kind === "parse") setText("latestParseId", id);
+}
+
+function syncDiscoveryRunInputs(runId) {
+  const id = (runId || "").trim();
+  if (!id) return;
+  el("discoveryRunId").value = id;
+  el("runPhaseSelect").value = "discovery";
+  el("runIdInput").value = id;
+}
+
+function updatePostCreateGuidance(run, sourcesTotal) {
+  const guidanceNode = el("postCreateGuidance");
+  if (!guidanceNode) return;
+  if (!state.view.discovery.createdRunId || run.run_id !== state.view.discovery.createdRunId) {
+    guidanceNode.textContent = "";
+    return;
+  }
+  const statusFilter = el("discoveryStatusFilter").value;
+  let message = `Run created: ${run.run_id}. Status filter currently: ${statusFilter}.`;
+  if (statusFilter === "accepted" && Number(sourcesTotal || 0) === 0) {
+    message += " No accepted sources yet. Switch filter to all or needs_review.";
+  }
+  guidanceNode.textContent = message;
 }
 
 function getLatestId(kind) {
@@ -293,12 +324,19 @@ async function loadDiscoveryData() {
   renderTable(
     "discoverySources",
     sources.items.map(
-      (s) =>
-        `<tr><td>${escapeHtml(s.id)}</td><td>${escapeHtml(s.title)}</td><td>${escapeHtml(s.review_status)}</td><td>${escapeHtml(String(s.relevance_score))}</td><td>${escapeHtml(s.type)}</td><td>${escapeHtml(s.source)}</td></tr>`,
+      (s) => {
+        const expanded = state.view.discovery.expandedAbstractIds.has(s.id);
+        const abstract = truncatedAbstract(s.abstract || "", expanded);
+        const toggle = abstract.toggle
+          ? `<button type="button" class="abstract-toggle" data-action="toggle-abstract" data-source-id="${escapeHtml(s.id)}">${abstract.expanded ? "Collapse" : "Expand"}</button>`
+          : "";
+        return `<tr data-source-id="${escapeHtml(s.id)}"><td>${escapeHtml(s.id)}</td><td>${escapeHtml(s.title)}</td><td><span class="abstract-text">${escapeHtml(abstract.body)}</span>${toggle}</td><td class="discovery-status-cell">${escapeHtml(s.review_status)}</td><td>${escapeHtml(String(s.relevance_score))}</td><td>${escapeHtml(s.type)}</td><td>${escapeHtml(s.source)}</td><td><div class="review-actions"><button type="button" class="discovery-review-action" data-action="approve" data-source-id="${escapeHtml(s.id)}">Approve</button><button type="button" class="discovery-review-action" data-action="reject" data-source-id="${escapeHtml(s.id)}">Reject</button><button type="button" class="discovery-context-action" data-action="use-context" data-source-id="${escapeHtml(s.id)}">Use Context</button></div></td></tr>`;
+      },
     ),
-    6,
+    8,
   );
   setText("discoveryPage", `offset=${offset}, limit=${limit}, total=${sources.total}`);
+  updatePostCreateGuidance(run, sources.total);
   state.view.discovery.loaded = true;
   return !isTerminalStatus(run.status);
 }
@@ -352,9 +390,9 @@ async function loadAcquisitionData() {
     "acqItems",
     items.items.map(
       (i) =>
-        `<tr><td>${escapeHtml(i.item_id)}</td><td>${escapeHtml(i.source_id)}</td><td>${escapeHtml(i.status)}</td><td>${escapeHtml(String(i.attempt_count))}</td><td>${escapeHtml(i.selected_url || "")}</td><td>${escapeHtml(i.last_error || "")}</td></tr>`,
+        `<tr data-item-id="${escapeHtml(i.item_id)}" data-source-id="${escapeHtml(i.source_id)}"><td>${escapeHtml(i.item_id)}</td><td>${escapeHtml(i.source_id)}</td><td>${escapeHtml(i.status)}</td><td>${escapeHtml(String(i.attempt_count))}</td><td>${escapeHtml(i.selected_url || "")}</td><td>${escapeHtml(i.last_error || "")}</td><td><div class="review-actions"><button type="button" class="acq-row-action" data-action="open-manual" data-source-id="${escapeHtml(i.source_id)}">Manual Recovery</button><button type="button" class="acq-row-action" data-action="prefill-upload" data-source-id="${escapeHtml(i.source_id)}">Prefill Upload</button></div></td></tr>`,
     ),
-    6,
+    7,
   );
   setText("acqPage", `offset=${offset}, limit=${limit}, total=${items.total}`);
   state.view.acq.loaded = true;
@@ -410,9 +448,9 @@ async function loadParseData() {
     "parseDocuments",
     docs.items.map(
       (d) =>
-        `<tr><td>${escapeHtml(d.document_id)}</td><td>${escapeHtml(d.status)}</td><td>${escapeHtml(d.decision || "")}</td><td>${escapeHtml(String(d.confidence || ""))}</td><td>${escapeHtml(d.parser_used || "")}</td><td>${escapeHtml(String(d.char_count))}</td></tr>`,
+        `<tr><td>${escapeHtml(d.document_id)}</td><td>${escapeHtml(d.status)}</td><td>${escapeHtml(d.decision || "")}</td><td>${escapeHtml(String(d.confidence || ""))}</td><td>${escapeHtml(d.parser_used || "")}</td><td>${escapeHtml(String(d.char_count))}</td><td><div class="review-actions"><button type="button" class="parse-doc-action" data-action="detail" data-document-id="${escapeHtml(d.document_id)}">Detail</button><button type="button" class="parse-doc-action" data-action="text" data-document-id="${escapeHtml(d.document_id)}">Text</button></div></td></tr>`,
     ),
-    6,
+    7,
   );
 
   renderTable(
@@ -457,9 +495,9 @@ async function loadManualRecoveryData() {
     "manualQueueRows",
     queue.items.map(
       (item) =>
-        `<tr><td>${escapeHtml(item.item_id)}</td><td>${escapeHtml(item.source_id)}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(String(item.attempt_count))}</td><td>${escapeHtml(item.title)}</td><td>${escapeHtml(item.doi || "")}</td><td>${escapeHtml(item.source_url || "")}</td><td>${escapeHtml(item.selected_url || "")}</td><td>${escapeHtml((item.manual_url_candidates || []).join(" | "))}</td><td>${escapeHtml(item.last_error || "")}</td></tr>`,
+        `<tr><td>${escapeHtml(item.item_id)}</td><td>${escapeHtml(item.source_id)}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(String(item.attempt_count))}</td><td>${escapeHtml(item.title)}</td><td>${escapeHtml(item.doi || "")}</td><td>${escapeHtml(item.source_url || "")}</td><td>${escapeHtml(item.selected_url || "")}</td><td>${escapeHtml((item.manual_url_candidates || []).join(" | "))}</td><td>${escapeHtml(item.last_error || "")}</td><td><button type="button" class="manual-row-action" data-action="prefill-upload" data-source-id="${escapeHtml(item.source_id)}">Prefill Upload</button></td></tr>`,
     ),
-    10,
+    11,
   );
   setText("manualPage", `offset=${offset}, limit=${limit}, total=${queue.total}`);
   state.view.manual.loaded = true;
@@ -550,10 +588,19 @@ async function startDiscovery(event) {
     const seedQueries = rawSeeds.split(",").map((s) => s.trim()).filter(Boolean);
     if (!seedQueries.length) throw new Error("provide at least one seed query");
     const maxIterations = Number(el("startDiscoveryMaxIterations").value);
-    const result = await apiPost("/v1/discovery/runs", { seed_queries: seedQueries, max_iterations: maxIterations });
-    el("discoveryRunId").value = result.run_id;
+    const aiMode = el("startDiscoveryAiMode").value;
+    const aiFilterEnabled = aiMode === "default" ? null : aiMode === "on";
+    const result = await apiPost("/v1/discovery/runs", {
+      seed_queries: seedQueries,
+      max_iterations: maxIterations,
+      ai_filter_enabled: aiFilterEnabled,
+    });
+    syncDiscoveryRunInputs(result.run_id);
     setLatestId("discovery", result.run_id);
+    state.view.discovery.createdRunId = result.run_id;
     setText("createSessionState", `Created discovery session: ${result.run_id}`);
+    window.location.hash = "#discovery";
+    el("discoveryRunId").focus();
     upsertRunRow("discovery", result.run_id, {
       status: result.status,
       current_iteration: 0,
@@ -606,19 +653,129 @@ async function startParse(event) {
   }
 }
 
-async function submitReview(event) {
-  event.preventDefault();
+async function handleDiscoveryTableAction(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+
+  const action = target.dataset.action || "";
+  const sourceId = target.dataset.sourceId || "";
+  if (!sourceId) return;
+
+  if (action === "toggle-abstract") {
+    if (state.view.discovery.expandedAbstractIds.has(sourceId)) state.view.discovery.expandedAbstractIds.delete(sourceId);
+    else state.view.discovery.expandedAbstractIds.add(sourceId);
+    try {
+      await loadDiscoveryData();
+    } catch (err) {
+      setText("discoveryError", `Load failed: ${err.message}`);
+    }
+    return;
+  }
+  if (action === "use-context") {
+    setText("discoveryState", `Selected source context: ${sourceId}`);
+    return;
+  }
+
+  if (action === "") {
+    const row = target.closest("tr[data-source-id]");
+    if (row) {
+      const sid = row.getAttribute("data-source-id") || "";
+      if (sid) setText("discoveryState", `Selected source context: ${sid}`);
+    }
+    return;
+  }
+
+  if (!target.classList.contains("discovery-review-action")) return;
+  if (action !== "approve" && action !== "reject") return;
+
+  const decision = action === "approve" ? "accept" : "reject";
+  const row = target.closest("tr");
+  const statusCell = row ? row.querySelector(".discovery-status-cell") : null;
+  const prevStatus = statusCell ? statusCell.textContent : "";
   setText("discoveryError", "");
+  setText("discoveryState", "");
+  target.setAttribute("disabled", "true");
+  if (statusCell) statusCell.textContent = decision === "accept" ? "human_accept" : "human_reject";
+
   try {
-    const sourceId = el("reviewSourceId").value.trim();
-    const decision = el("reviewDecision").value;
-    if (!sourceId) throw new Error("source id is required");
     await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision });
-    if (state.view.discovery.loaded) await loadDiscoveryData();
+    setText("discoveryState", `Reviewed ${sourceId}: ${decision}`);
+    await loadDiscoveryData();
     schedulePoll();
   } catch (err) {
     setText("discoveryError", `Review failed: ${err.message}`);
+    if (statusCell) statusCell.textContent = prevStatus;
+  } finally {
+    target.removeAttribute("disabled");
   }
+}
+
+async function handleAcquisitionTableAction(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.classList.contains("acq-row-action")) return;
+  const action = target.dataset.action || "";
+  const sourceId = target.dataset.sourceId || "";
+  const acqRunId = el("acqRunId").value.trim();
+  if (!sourceId || !acqRunId) return;
+
+  el("manualAcqRunId").value = acqRunId;
+  el("manualUploadSourceId").value = sourceId;
+  if (action === "open-manual") {
+    window.location.hash = "#manual-recovery";
+    try {
+      state.view.manual.offset = 0;
+      await loadManualRecoveryData();
+      schedulePoll();
+    } catch (err) {
+      setText("manualError", `Load failed: ${err.message}`);
+    }
+  } else if (action === "prefill-upload") {
+    window.location.hash = "#manual-recovery";
+    el("manualUploadFile").focus();
+  }
+}
+
+async function showParseDocumentDetail(documentId) {
+  setText("parseError", "");
+  try {
+    const detail = await apiGet(`/v1/parse/documents/${encodeURIComponent(documentId)}`);
+    el("parseDocDetail").textContent = JSON.stringify(detail, null, 2);
+  } catch (err) {
+    setText("parseError", `Doc detail failed: ${err.message}`);
+  }
+}
+
+async function showParseDocumentText(documentId) {
+  setText("parseError", "");
+  try {
+    const body = await apiGet(`/v1/parse/documents/${encodeURIComponent(documentId)}/text`);
+    el("parseDocText").textContent = body.text || "";
+  } catch (err) {
+    setText("parseError", `Doc text failed: ${err.message}`);
+  }
+}
+
+async function handleParseDocumentAction(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.classList.contains("parse-doc-action")) return;
+  const action = target.dataset.action || "";
+  const documentId = target.dataset.documentId || "";
+  if (!documentId) return;
+  if (action === "detail") await showParseDocumentDetail(documentId);
+  else if (action === "text") await showParseDocumentText(documentId);
+}
+
+function handleManualQueueAction(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.classList.contains("manual-row-action")) return;
+  const sourceId = target.dataset.sourceId || "";
+  if (!sourceId) return;
+  el("manualUploadSourceId").value = sourceId;
+  el("manualUploadFile").focus();
+  setText("manualState", `Prefilled source for upload: ${sourceId}`);
 }
 
 async function exportSourcesRaw() {
@@ -736,7 +893,7 @@ async function showSearchSourceContext(index) {
       2,
     );
 
-    el("discoveryRunId").value = discoveryRunId;
+    syncDiscoveryRunInputs(discoveryRunId);
     el("discoveryStatusFilter").value = "all";
     if (!state.view.discovery.loaded) {
       state.view.discovery.offset = 0;
@@ -801,6 +958,50 @@ function setApiStateText() {
     return;
   }
   setText("authState", "Using manual token");
+}
+
+function aiSettingsSummary(payload) {
+  if (!payload.use_ai_filter) return "disabled";
+  if (payload.ai_filter_active) return "active";
+  return payload.ai_filter_warning || "configured_with_warning";
+}
+
+async function loadAiSettings() {
+  setText("aiSettingsState", "");
+  try {
+    const settingsPayload = await apiGet("/v1/settings/ai-filter");
+    el("aiEnabledSelect").value = settingsPayload.use_ai_filter ? "true" : "false";
+    el("aiModelInput").value = settingsPayload.ai_model || "";
+    el("aiBaseUrlInput").value = settingsPayload.ai_base_url || "";
+    el("aiApiKeyInput").value = "";
+    setText(
+      "aiSettingsState",
+      `AI filter ${aiSettingsSummary(settingsPayload)}; key=${settingsPayload.has_api_key ? "present" : "missing"}`,
+    );
+  } catch (err) {
+    setText("aiSettingsState", `Load failed: ${err.message}`);
+  }
+}
+
+async function saveAiSettings() {
+  setText("aiSettingsState", "");
+  try {
+    const key = el("aiApiKeyInput").value.trim();
+    const payload = {
+      use_ai_filter: el("aiEnabledSelect").value === "true",
+      ai_model: el("aiModelInput").value.trim(),
+      ai_base_url: el("aiBaseUrlInput").value.trim(),
+    };
+    if (key) payload.ai_api_key = key;
+    const settingsPayload = await apiPost("/v1/settings/ai-filter", payload);
+    el("aiApiKeyInput").value = "";
+    setText(
+      "aiSettingsState",
+      `Saved. AI filter ${aiSettingsSummary(settingsPayload)}; key=${settingsPayload.has_api_key ? "present" : "missing"}`,
+    );
+  } catch (err) {
+    setText("aiSettingsState", `Save failed: ${err.message}`);
+  }
 }
 
 function attachPaginationHandlers() {
@@ -953,27 +1154,32 @@ function init() {
       setApiStateText();
     });
   }
+  el("loadAiSettingsBtn").addEventListener("click", loadAiSettings);
+  el("saveAiSettingsBtn").addEventListener("click", saveAiSettings);
 
   el("runLookupForm").addEventListener("submit", lookupRun);
   el("runFilterPhase").addEventListener("change", renderRunsTable);
   el("runFilterStatus").addEventListener("change", renderRunsTable);
 
   el("startDiscoveryForm").addEventListener("submit", startDiscovery);
-  el("sourceReviewForm").addEventListener("submit", submitReview);
   el("downloadSourcesRawBtn").addEventListener("click", exportSourcesRaw);
   el("discoveryForm").addEventListener("submit", loadDiscovery);
+  el("discoverySources").addEventListener("click", handleDiscoveryTableAction);
 
   el("startAcqForm").addEventListener("submit", startAcquisition);
   el("downloadManifestBtn").addEventListener("click", exportManifest);
   el("acqForm").addEventListener("submit", loadAcquisition);
+  el("acqItems").addEventListener("click", handleAcquisitionTableAction);
 
   el("startParseForm").addEventListener("submit", startParse);
   el("parseForm").addEventListener("submit", loadParse);
+  el("parseDocuments").addEventListener("click", handleParseDocumentAction);
   el("searchForm").addEventListener("submit", runSearch);
   el("searchRows").addEventListener("click", handleSearchAction);
   el("manualRecoveryForm").addEventListener("submit", loadManualRecovery);
   el("manualExportCsvBtn").addEventListener("click", exportManualCsv);
   el("manualUploadForm").addEventListener("submit", registerManualUpload);
+  el("manualQueueRows").addEventListener("click", handleManualQueueAction);
 
   el("copyDiscoveryIdBtn").addEventListener("click", () => copyLatestId("discovery"));
   el("copyAcqIdBtn").addEventListener("click", () => copyLatestId("acquisition"));
@@ -985,6 +1191,7 @@ function init() {
   window.addEventListener("hashchange", schedulePoll);
 
   renderRunsTable();
+  loadAiSettings();
   schedulePoll();
 }
 

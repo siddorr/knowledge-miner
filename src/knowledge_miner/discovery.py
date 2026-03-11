@@ -24,9 +24,16 @@ from .retry import retry_call
 from .scoring import decision_from_score, score_text
 
 
-def create_run(db: Session, seed_queries: list[str], max_iterations: int) -> Run:
+def create_run(
+    db: Session,
+    seed_queries: list[str],
+    max_iterations: int,
+    *,
+    ai_filter_enabled: bool | None = None,
+) -> Run:
+    use_ai_filter = settings.use_ai_filter if ai_filter_enabled is None else ai_filter_enabled
     ai_filter_active, ai_filter_warning = describe_ai_filter_runtime(
-        use_ai_filter=settings.use_ai_filter,
+        use_ai_filter=use_ai_filter,
         api_key=settings.ai_api_key,
     )
     run = Run(

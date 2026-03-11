@@ -180,6 +180,20 @@ th {
   min-height: 1.2em;
 }
 
+.abstract-text {
+  display: inline;
+}
+
+.abstract-toggle {
+  margin-left: 6px;
+}
+
+.review-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 @media (max-width: 720px) {
   .stack {
     padding: 12px;

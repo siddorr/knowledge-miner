@@ -111,3 +111,16 @@ For operations dashboard and review workflows, discovery visibility is being ext
 3. If AI call fails for a candidate, final decision is `needs_review` (not auto-accept/reject).
 4. If AI is unavailable at run start (`USE_AI_FILTER=false` or missing `AI_API_KEY`), run is still allowed and candidates default to `needs_review` with heuristic recommendations.
 5. Human review remains the final authority (`POST /v1/sources/{source_id}/review`).
+
+## Runtime AI Filter Control
+
+Operators can control AI filter mode at runtime from HMI (no shell/env edit required).
+
+API endpoints:
+1. `GET /v1/settings/ai-filter`
+2. `POST /v1/settings/ai-filter`
+
+Notes:
+1. Settings apply to newly created discovery runs.
+2. Existing/running runs keep their already-saved `ai_filter_active` mode.
+3. API key is never returned in full; response includes only masked/boolean key state.

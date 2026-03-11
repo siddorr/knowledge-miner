@@ -33,6 +33,24 @@
     <span id="pollState" class="poll-ok">Idle (set API key, load a section).</span>
   </section>
 
+  <section class="authbar">
+    <strong>AI Filter Settings</strong>
+    <label for="aiEnabledSelect">Enabled</label>
+    <select id="aiEnabledSelect">
+      <option value="true">true</option>
+      <option value="false">false</option>
+    </select>
+    <label for="aiModelInput">Model</label>
+    <input id="aiModelInput" type="text" placeholder="gpt-4o-mini">
+    <label for="aiBaseUrlInput">Base URL</label>
+    <input id="aiBaseUrlInput" type="text" placeholder="https://api.openai.com/v1">
+    <label for="aiApiKeyInput">API Key</label>
+    <input id="aiApiKeyInput" type="password" placeholder="Set/update key">
+    <button id="loadAiSettingsBtn" type="button">Load AI Settings</button>
+    <button id="saveAiSettingsBtn" type="button">Save AI Settings</button>
+    <span id="aiSettingsState" class="muted">Not loaded</span>
+  </section>
+
   <section class="idbar">
     <strong>Latest IDs:</strong>
     <span class="idrow">Discovery: <code id="latestDiscoveryId">-</code> <button id="copyDiscoveryIdBtn" type="button">Copy ID</button></span>
@@ -107,26 +125,22 @@
             <option value="6" selected>6</option>
           </select>
         </label>
+        <label>
+          AI Filter
+          <select id="startDiscoveryAiMode">
+            <option value="default" selected>default</option>
+            <option value="on">on</option>
+            <option value="off">off</option>
+          </select>
+        </label>
         <button id="createSessionBtn" type="submit">Create New Session</button>
       </form>
       <p id="createSessionState" class="muted"></p>
+      <p id="postCreateGuidance" class="muted"></p>
       <div class="row compact">
         <button id="downloadSourcesRawBtn" type="button">Export sources_raw</button>
       </div>
-      <form id="sourceReviewForm" class="row">
-        <label>
-          Source ID
-          <input id="reviewSourceId" type="text" placeholder="source id">
-        </label>
-        <label>
-          Decision
-          <select id="reviewDecision">
-            <option value="accept">accept</option>
-            <option value="reject">reject</option>
-          </select>
-        </label>
-        <button type="submit">Submit Review</button>
-      </form>
+      <p id="discoveryState" class="muted"></p>
       <form id="discoveryForm" class="row">
         <label>
           Run ID
@@ -159,7 +173,7 @@
       <pre id="discoveryMetrics" class="metrics">No data loaded.</pre>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Score</th><th>Type</th><th>Source</th></tr></thead>
+          <thead><tr><th>ID</th><th>Title</th><th>Abstract</th><th>Status</th><th>Score</th><th>Type</th><th>Source</th><th>Actions</th></tr></thead>
           <tbody id="discoverySources"></tbody>
         </table>
       </div>
@@ -208,7 +222,7 @@
       <pre id="acqMetrics" class="metrics">No data loaded.</pre>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Item ID</th><th>Source ID</th><th>Status</th><th>Attempts</th><th>Selected URL</th><th>Error</th></tr></thead>
+          <thead><tr><th>Item ID</th><th>Source ID</th><th>Status</th><th>Attempts</th><th>Selected URL</th><th>Error</th><th>Actions</th></tr></thead>
           <tbody id="acqItems"></tbody>
         </table>
       </div>
@@ -263,10 +277,14 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Document ID</th><th>Status</th><th>Decision</th><th>Confidence</th><th>Parser</th><th>Chars</th></tr></thead>
+          <thead><tr><th>Document ID</th><th>Status</th><th>Decision</th><th>Confidence</th><th>Parser</th><th>Chars</th><th>Actions</th></tr></thead>
           <tbody id="parseDocuments"></tbody>
         </table>
       </div>
+      <h3>Selected Document Detail</h3>
+      <pre id="parseDocDetail" class="metrics">No document selected.</pre>
+      <h3>Selected Document Full Text</h3>
+      <pre id="parseDocText" class="metrics">No document selected.</pre>
       <h3>Chunks</h3>
       <div class="row compact">
         <button id="parseChunksPrev" type="button">Prev</button>
@@ -357,6 +375,7 @@
               <th>Selected URL</th>
               <th>Candidates</th>
               <th>Error</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody id="manualQueueRows"></tbody>

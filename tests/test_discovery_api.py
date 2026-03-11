@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from knowledge_miner.config import settings
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.main import app
 from knowledge_miner.models import Run, Source
@@ -149,3 +150,101 @@ def test_discovery_sources_status_filter():
 
     assert invalid.status_code == 400
     assert invalid.json()["detail"] == "invalid_request"
+
+
+def test_source_review_supports_slash_source_id():
+    with SessionLocal() as db:
+        run = Run(
+            id="run_slash_review",
+            status="completed",
+            seed_queries=["upw"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=0,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning="AI filter disabled (USE_AI_FILTER=false); heuristic filtering only.",
+        )
+        db.add(run)
+        db.add(
+            Source(
+                id="doi:10.1000/upw/review-test",
+                run_id=run.id,
+                title="Slash DOI source",
+                year=2024,
+                url="https://example.org/slash-doi",
+                doi="10.1000/upw/review-test",
+                abstract="test",
+                type="academic",
+                source="openalex",
+                source_native_id="slash1",
+                patent_office=None,
+                patent_number=None,
+                iteration=1,
+                discovery_method="seed_search",
+                relevance_score=3.2,
+                accepted=False,
+                review_status="needs_review",
+                ai_decision=None,
+                ai_confidence=None,
+                parent_source_id=None,
+                provenance_history=[],
+            )
+        )
+        db.commit()
+
+    client = TestClient(app)
+    source_id = "doi:10.1000/upw/review-test"
+    response = client.post(f"/v1/sources/{source_id}/review", json={"decision": "accept"}, headers=_auth_headers())
+    assert response.status_code == 200
+    assert response.json()["source_id"] == source_id
+    assert response.json()["accepted"] is True
+
+
+def test_ai_settings_update_applies_to_new_runs():
+    original_use_ai = settings.use_ai_filter
+    original_key = settings.ai_api_key
+    original_model = settings.ai_model
+    original_base = settings.ai_base_url
+    try:
+        client = TestClient(app)
+        update = client.post(
+            "/v1/settings/ai-filter",
+            json={
+                "use_ai_filter": True,
+                "ai_api_key": "test-ai-key-1234",
+                "ai_model": "gpt-4o-mini",
+                "ai_base_url": "https://api.openai.com/v1",
+            },
+            headers=_auth_headers(),
+        )
+        assert update.status_code == 200
+        body = update.json()
+        assert body["use_ai_filter"] is True
+        assert body["has_api_key"] is True
+
+        created = client.post(
+            "/v1/discovery/runs",
+            json={"seed_queries": ["upw"], "max_iterations": 1},
+            headers=_auth_headers(),
+        )
+        assert created.status_code == 202
+        run_id = created.json()["run_id"]
+        status_resp = client.get(f"/v1/discovery/runs/{run_id}", headers=_auth_headers())
+        assert status_resp.status_code == 200
+        assert status_resp.json()["ai_filter_active"] is True
+        assert status_resp.json()["ai_filter_warning"] is None
+
+        update_off = client.post(
+            "/v1/settings/ai-filter",
+            json={"use_ai_filter": False},
+            headers=_auth_headers(),
+        )
+        assert update_off.status_code == 200
+        assert update_off.json()["use_ai_filter"] is False
+    finally:
+        object.__setattr__(settings, "use_ai_filter", original_use_ai)
+        object.__setattr__(settings, "ai_api_key", original_key)
+        object.__setattr__(settings, "ai_model", original_model)
+        object.__setattr__(settings, "ai_base_url", original_base)
