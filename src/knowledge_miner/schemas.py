@@ -138,6 +138,8 @@ class ManualDownloadItemOut(BaseModel):
     source_url: str | None
     selected_url: str | None
     manual_url_candidates: list[str]
+    legal_candidates: list[dict] = Field(default_factory=list)
+    reason_code: str | None = None
 
 
 class ManualDownloadsListResponse(BaseModel):

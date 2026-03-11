@@ -105,6 +105,12 @@ class AcquisitionObservability:
         }
         self._log.info(json.dumps(payload, sort_keys=True))
 
+    def snapshot(self) -> dict:
+        return {
+            "counters": dict(self._counters),
+            "latency_histograms": {k: dict(v) for k, v in self._histograms.items()},
+        }
+
 
 class ParseObservability:
     def __init__(self) -> None:

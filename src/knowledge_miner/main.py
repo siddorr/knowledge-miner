@@ -31,6 +31,7 @@ from .models import AcquisitionItem, AcquisitionRun, Artifact, DocumentChunk, Pa
 from .parse import create_parse_run, enqueue_parse_run
 from .rate_limit import require_rate_limit
 from .logging_setup import configure_logging
+from .runtime_state import acquire_instance_lock, cleanup_runtime_state, log_cleanup_result
 from .schemas import (
     AcquisitionItemsListResponse,
     AcquisitionItemOut,
@@ -78,6 +79,13 @@ app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_st
 def validate_runtime_config() -> None:
     log_path = configure_logging()
     logger.info("Persistent logging initialized at %s", log_path)
+    cleanup_result = cleanup_runtime_state(base_dir=settings.runtime_state_dir, enabled=settings.clean_on_startup)
+    log_cleanup_result(cleanup_result)
+    primary = acquire_instance_lock(base_dir=settings.runtime_state_dir)
+    if primary:
+        logger.info("Primary runtime instance lock acquired.")
+    else:
+        logger.warning("Secondary runtime instance detected; background run workers are disabled in this process.")
     if settings.app_env.lower() in {"production", "prod"} and is_sqlite_url(settings.database_url):
         logger.warning(
             "Production mode is configured with SQLite. Use PostgreSQL DATABASE_URL for v1 production baseline."
@@ -429,6 +437,8 @@ def export_manual_downloads_csv(
             "source_url",
             "selected_url",
             "manual_url_candidates",
+            "reason_code",
+            "legal_candidates",
         ]
     )
     for item in payload["items"]:
@@ -444,6 +454,11 @@ def export_manual_downloads_csv(
                 item["source_url"] or "",
                 item["selected_url"] or "",
                 " | ".join(item["manual_url_candidates"]),
+                item.get("reason_code") or "",
+                " | ".join(
+                    f"{c.get('candidate_rank')}:{c.get('candidate_source')}:{c.get('candidate_url')}"
+                    for c in item.get("legal_candidates", [])
+                ),
             ]
         )
 

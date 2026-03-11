@@ -21,6 +21,7 @@ from .iteration import build_next_queries, extract_keywords
 from .models import CitationEdge, Keyword, Run, Source
 from .observability import RunObservability
 from .retry import retry_call
+from .runtime_state import acquire_run_lock, is_primary_instance, release_run_lock
 from .scoring import decision_from_score, score_text
 
 
@@ -55,8 +56,20 @@ def create_run(
 
 
 def enqueue_run(run_id: str) -> None:
-    worker = threading.Thread(target=execute_run_by_id, args=(run_id,), daemon=True)
+    if not is_primary_instance():
+        return
+    run_lock = acquire_run_lock(base_dir=settings.runtime_state_dir, phase="discovery", run_id=run_id)
+    if run_lock is None:
+        return
+    worker = threading.Thread(target=_execute_run_with_lock, args=(run_id, run_lock), daemon=True)
     worker.start()
+
+
+def _execute_run_with_lock(run_id: str, run_lock: Path) -> None:
+    try:
+        execute_run_by_id(run_id)
+    finally:
+        release_run_lock(run_lock)
 
 
 def execute_run_by_id(run_id: str) -> None:
@@ -462,9 +475,48 @@ def _ingest_candidates(
                 decision_source = "ai"
                 ai_decision = ai_result.decision
                 ai_confidence = ai_result.confidence
+                if observability is not None:
+                    observability.record_provider_call(
+                        run_id=run_id,
+                        iteration=iteration,
+                        provider="ai_filter",
+                        operation="evaluate",
+                        latency_ms=0.0,
+                        ok=True,
+                    )
             else:
                 review_status = "needs_review"
                 decision_source = "fallback_heuristic"
+                error_category = ai_filter.pop_last_error_category() if hasattr(ai_filter, "pop_last_error_category") else None
+                if observability is not None and error_category:
+                    if error_category == "auth_error":
+                        observability.inc("ai_auth_error")
+                    elif error_category == "rate_limited":
+                        observability.inc("ai_rate_limited")
+                    elif error_category == "timeout":
+                        observability.inc("ai_timeout")
+                    elif error_category == "provider_error":
+                        observability.inc("ai_provider_error")
+                    observability.record_provider_call(
+                        run_id=run_id,
+                        iteration=iteration,
+                        provider="ai_filter",
+                        operation="evaluate",
+                        latency_ms=0.0,
+                        ok=False,
+                        error=error_category,
+                    )
+                runtime_warning = ai_filter.consume_runtime_warning() if hasattr(ai_filter, "consume_runtime_warning") else None
+                if observability is not None and runtime_warning:
+                    observability.record_provider_call(
+                        run_id=run_id,
+                        iteration=iteration,
+                        provider="ai_filter",
+                        operation="runtime_warning",
+                        latency_ms=0.0,
+                        ok=False,
+                        error=runtime_warning,
+                    )
         elif not ai_policy_no_ai and ai_filter is None:
             decision_source = "fallback_heuristic"
 

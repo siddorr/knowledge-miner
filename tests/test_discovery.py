@@ -17,6 +17,7 @@ from knowledge_miner.discovery import (
     review_source,
 )
 from knowledge_miner.models import CitationEdge, Run, Source
+from knowledge_miner.observability import RunObservability
 
 
 def setup_function():
@@ -313,6 +314,67 @@ def test_ai_policy_no_ai_sets_needs_review_and_policy_source():
         assert source is not None
         assert source.final_decision == "needs_review"
         assert source.decision_source == "policy_no_ai"
+
+
+def test_ai_auth_error_fallback_increments_observability_counter():
+    class AuthFailAIFilter:
+        def __init__(self) -> None:
+            self._failed = False
+            self._error_category = None
+
+        def evaluate(self, *, title, abstract, base_score, base_decision):  # noqa: ANN001
+            if not self._failed:
+                self._failed = True
+                self._error_category = "auth_error"
+            return None
+
+        def pop_last_error_category(self):  # noqa: ANN201
+            value = self._error_category
+            self._error_category = None
+            return value
+
+        def consume_runtime_warning(self):  # noqa: ANN201
+            if self._failed:
+                self._failed = False
+                return "auth warning"
+            return None
+
+    with SessionLocal() as db:
+        run = create_run(db, ["upw"], max_iterations=1)
+        observability = RunObservability()
+        candidates = [
+            {
+                "title": "UPW process control for semiconductor wafer cleaning",
+                "year": 2021,
+                "url": f"https://example.org/test-ai-auth-fallback/{run.id}",
+                "doi": None,
+                "abstract": "ultrapure water UPW semiconductor RO EDI UV254",
+                "source": "openalex",
+                "source_native_id": f"oa_test_auth_fallback_{run.id}",
+                "openalex_id": f"oa_test_auth_fallback_{run.id}",
+                "semantic_scholar_id": None,
+                "patent_office": None,
+                "patent_number": None,
+                "type": "academic",
+                "discovery_method": "seed_search",
+                "parent_source_id": None,
+            }
+        ]
+        _ingest_candidates(
+            db,
+            run.id,
+            1,
+            candidates,
+            ai_filter=AuthFailAIFilter(),
+            ai_policy_no_ai=False,
+            observability=observability,
+        )
+        source = db.scalars(select(Source).where(Source.run_id == run.id).limit(1)).first()
+        assert source is not None
+        assert source.final_decision == "needs_review"
+        assert source.decision_source == "fallback_heuristic"
+        counters = observability.snapshot()["counters"]
+        assert counters.get("ai_auth_error", 0) == 1
 
 
 def test_citation_ranking_prioritizes_abstract_doi_recency_overlap():

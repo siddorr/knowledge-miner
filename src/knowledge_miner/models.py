@@ -165,6 +165,10 @@ class AcquisitionItem(Base):
             name="ck_acquisition_items_status_values",
         ),
         CheckConstraint("attempt_count >= 0", name="ck_acquisition_items_attempt_count_gte_0"),
+        CheckConstraint(
+            "reason_code IS NULL OR reason_code IN ('paywalled','no_oa_found','rate_limited','robots_blocked','source_error')",
+            name="ck_acquisition_items_reason_code_values",
+        ),
         Index("ix_acquisition_items_acq_run_id_status", "acq_run_id", "status"),
     )
 
@@ -174,6 +178,9 @@ class AcquisitionItem(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     selected_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    selected_url_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution_attempts: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    reason_code: Mapped[str | None] = mapped_column(String, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)

@@ -18,6 +18,7 @@ from .config import settings
 from .db import SessionLocal
 from .models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
 from .observability import AcquisitionObservability
+from .runtime_state import acquire_run_lock, is_primary_instance, release_run_lock
 
 
 def create_acquisition_run(db: Session, discovery_run_id: str, *, retry_failed_only: bool) -> AcquisitionRun:
@@ -72,6 +73,9 @@ def create_acquisition_run(db: Session, discovery_run_id: str, *, retry_failed_o
                 status="queued",
                 attempt_count=0,
                 selected_url=source.url,
+                selected_url_source=None,
+                resolution_attempts=[],
+                reason_code=None,
                 last_error=None,
             )
         )
@@ -82,8 +86,20 @@ def create_acquisition_run(db: Session, discovery_run_id: str, *, retry_failed_o
 
 
 def enqueue_acquisition_run(acq_run_id: str) -> None:
-    worker = threading.Thread(target=execute_acquisition_run_by_id, args=(acq_run_id,), daemon=True)
+    if not is_primary_instance():
+        return
+    run_lock = acquire_run_lock(base_dir=settings.runtime_state_dir, phase="acquisition", run_id=acq_run_id)
+    if run_lock is None:
+        return
+    worker = threading.Thread(target=_execute_acquisition_run_with_lock, args=(acq_run_id, run_lock), daemon=True)
     worker.start()
+
+
+def _execute_acquisition_run_with_lock(acq_run_id: str, run_lock: Path) -> None:
+    try:
+        execute_acquisition_run_by_id(acq_run_id)
+    finally:
+        release_run_lock(run_lock)
 
 
 def execute_acquisition_run_by_id(acq_run_id: str) -> None:
@@ -116,6 +132,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
             if source is None:
                 item.status = "failed"
                 item.last_error = "source_not_found"
+                item.reason_code = "source_error"
                 failed_total += 1
                 observability.inc("failed")
                 continue
@@ -125,11 +142,20 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
             latency_ms = (time.perf_counter() - started) * 1000.0
             item.attempt_count += outcome.attempts
             item.selected_url = outcome.url
+            item.selected_url_source = outcome.selected_url_source
+            item.resolution_attempts = outcome.resolution_attempts
+            item.reason_code = outcome.reason_code
             item.last_error = outcome.error
             observability.inc("attempted")
             if outcome.attempts > 1:
                 observability.inc("retries", outcome.attempts - 1)
             domain = _domain_from_url(outcome.url or source.url)
+            if outcome.selected_url_source == "openalex":
+                observability.inc("resolved_via_openalex")
+            elif outcome.selected_url_source == "unpaywall":
+                observability.inc("resolved_via_unpaywall")
+            elif outcome.selected_url_source in {"pmc", "arxiv"}:
+                observability.inc("resolved_via_repository")
 
             if outcome.kind == "pdf":
                 artifact = _persist_artifact(db, run.id, item, source.id, kind="pdf", mime_type=outcome.mime_type, content=outcome.content)
@@ -158,6 +184,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
                 item.status = "partial"
                 partial_total += 1
                 observability.inc("partial")
+                observability.inc("manual_recovery_required")
                 db.add(artifact)
                 observability.record_download(
                     acq_run_id=run.id,
@@ -171,6 +198,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
                 item.status = "skipped"
                 skipped_total += 1
                 observability.inc("skipped")
+                observability.inc("manual_recovery_required")
                 observability.record_download(
                     acq_run_id=run.id,
                     source_id=source.id,
@@ -184,6 +212,9 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
                 failed_total += 1
                 observability.inc("failed")
                 observability.inc("api_errors")
+                observability.inc("manual_recovery_required")
+                if outcome.reason_code == "paywalled":
+                    observability.inc("paywalled")
                 observability.record_download(
                     acq_run_id=run.id,
                     source_id=source.id,
@@ -202,6 +233,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         run.updated_at = datetime.now(UTC)
         db.commit()
         _write_manifest_file(db, run.id)
+        _write_coverage_report_file(run.id, observability.snapshot())
         observability.emit_summary(acq_run_id=run.id, status=run.status)
     except Exception as exc:  # pragma: no cover
         db.rollback()
@@ -219,30 +251,46 @@ class AcquisitionOutcome(NamedTuple):
     mime_type: str | None
     content: bytes | None
     url: str | None
+    selected_url_source: str | None
+    resolution_attempts: list[dict]
     attempts: int
     error: str | None
+    reason_code: str | None
 
 
 def _acquire_source_content(source: Source) -> AcquisitionOutcome:
-    candidate_urls = _resolve_candidate_urls(source)
-    if not candidate_urls:
+    resolution_attempts = _resolve_candidate_chain(source)
+    if not resolution_attempts:
         return AcquisitionOutcome(
             kind=None,
             mime_type=None,
             content=None,
             url=None,
+            selected_url_source=None,
+            resolution_attempts=[],
             attempts=0,
             error="no_candidate_urls",
+            reason_code="no_oa_found",
         )
 
     max_bytes = int(getattr(settings, "acquisition_max_bytes", 25_000_000))
     timeout_seconds = float(getattr(settings, "acquisition_timeout_seconds", 20.0))
-    pdf_first = sorted(candidate_urls, key=lambda url: (0 if _looks_pdf_url(url) else 1, url))
+    pdf_first = sorted(
+        resolution_attempts,
+        key=lambda candidate: (
+            0 if _looks_pdf_url(str(candidate.get("candidate_url") or "")) else 1,
+            int(candidate.get("candidate_rank", 999999)),
+        ),
+    )
 
     attempts = 0
     html_fallback: AcquisitionOutcome | None = None
     last_error = "download_failed"
-    for url in pdf_first:
+    for candidate in pdf_first:
+        url = str(candidate.get("candidate_url") or "")
+        source_name = str(candidate.get("candidate_source") or "publisher")
+        if not url:
+            continue
         result, call_attempts = _download_with_retries(url, timeout_seconds=timeout_seconds, max_bytes=max_bytes)
         attempts += call_attempts
         if result.kind == "pdf":
@@ -251,8 +299,11 @@ def _acquire_source_content(source: Source) -> AcquisitionOutcome:
                 mime_type=result.mime_type,
                 content=result.content,
                 url=result.url,
+                selected_url_source=source_name,
+                resolution_attempts=resolution_attempts,
                 attempts=attempts,
                 error=None,
+                reason_code=None,
             )
         if result.kind == "html" and html_fallback is None:
             html_fallback = AcquisitionOutcome(
@@ -260,8 +311,11 @@ def _acquire_source_content(source: Source) -> AcquisitionOutcome:
                 mime_type=result.mime_type,
                 content=result.content,
                 url=result.url,
+                selected_url_source=source_name,
+                resolution_attempts=resolution_attempts,
                 attempts=attempts,
                 error=None,
+                reason_code=None,
             )
         if result.error:
             last_error = result.error
@@ -272,10 +326,23 @@ def _acquire_source_content(source: Source) -> AcquisitionOutcome:
             mime_type=html_fallback.mime_type,
             content=html_fallback.content,
             url=html_fallback.url,
+            selected_url_source=html_fallback.selected_url_source,
+            resolution_attempts=resolution_attempts,
             attempts=attempts,
             error="pdf_unavailable_html_fallback",
+            reason_code="source_error",
         )
-    return AcquisitionOutcome(kind=None, mime_type=None, content=None, url=None, attempts=attempts, error=last_error)
+    return AcquisitionOutcome(
+        kind=None,
+        mime_type=None,
+        content=None,
+        url=None,
+        selected_url_source=None,
+        resolution_attempts=resolution_attempts,
+        attempts=attempts,
+        error=last_error,
+        reason_code=_reason_code_from_error(last_error),
+    )
 
 
 def _download_with_retries(
@@ -301,25 +368,85 @@ def _download_with_retries(
     return last, attempts
 
 
-def _resolve_candidate_urls(source: Source) -> list[str]:
-    candidates: list[str] = []
-    if source.url:
-        candidates.append(source.url.strip())
+def _resolve_candidate_chain(source: Source) -> list[dict]:
+    candidates: list[tuple[str, str]] = []
     if source.doi:
         doi = source.doi.strip()
         if doi:
-            candidates.append(f"https://doi.org/{doi}")
-    # Deduplicate while preserving order.
-    deduped: list[str] = []
+            candidates.append((f"https://doi.org/{doi}", "doi"))
+    openalex_url = _lookup_openalex_oa_url(source)
+    if openalex_url:
+        candidates.append((openalex_url, "openalex"))
+    unpaywall_url = _lookup_unpaywall_oa_url(source)
+    if unpaywall_url:
+        candidates.append((unpaywall_url, "unpaywall"))
+    for repository_url, repository_source in _lookup_repository_urls(source):
+        candidates.append((repository_url, repository_source))
+    if source.url:
+        candidates.append((source.url.strip(), "publisher"))
+
+    deduped: list[dict] = []
     seen: set[str] = set()
-    for url in candidates:
-        if not url or url in seen:
+    rank = 0
+    for raw_url, source_name in candidates:
+        normalized = _normalize_url(raw_url)
+        if normalized is None or normalized in seen:
             continue
-        parsed = urlparse(url)
-        if parsed.scheme in {"http", "https"} and parsed.netloc:
-            deduped.append(url)
-            seen.add(url)
+        seen.add(normalized)
+        rank += 1
+        deduped.append(
+            {
+                "candidate_url": raw_url,
+                "candidate_source": source_name,
+                "candidate_rank": rank,
+            }
+        )
     return deduped
+
+
+def _resolve_candidate_urls(source: Source) -> list[str]:
+    return [entry["candidate_url"] for entry in _resolve_candidate_chain(source)]
+
+
+def _lookup_openalex_oa_url(source: Source) -> str | None:
+    if source.source == "openalex" and source.url:
+        return source.url
+    return None
+
+
+def _lookup_unpaywall_oa_url(source: Source) -> str | None:
+    return None
+
+
+def _lookup_repository_urls(source: Source) -> list[tuple[str, str]]:
+    urls: list[tuple[str, str]] = []
+    if not source.url:
+        return urls
+    parsed = urlparse(source.url)
+    host = (parsed.netloc or "").lower()
+    if "arxiv.org" in host:
+        path = parsed.path.strip("/")
+        if path.startswith("abs/"):
+            arxiv_id = path.removeprefix("abs/")
+            if arxiv_id:
+                urls.append((f"https://arxiv.org/pdf/{arxiv_id}.pdf", "arxiv"))
+        else:
+            urls.append((source.url, "arxiv"))
+    if "ncbi.nlm.nih.gov" in host and "/pmc/" in parsed.path.lower():
+        urls.append((source.url, "pmc"))
+    return urls
+
+
+def _reason_code_from_error(error: str | None) -> str:
+    if error in {"http_401", "http_403"}:
+        return "paywalled"
+    if error == "http_429":
+        return "rate_limited"
+    if error in {"http_451", "robots_blocked"}:
+        return "robots_blocked"
+    if error in {"no_candidate_urls", "download_failed"}:
+        return "no_oa_found"
+    return "source_error"
 
 
 def _looks_pdf_url(url: str) -> bool:
@@ -379,7 +506,7 @@ def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> Downlo
     except httpx.RequestError:
         return DownloadResult(kind=None, mime_type=None, content=None, url=url, error="network_error", retryable=True)
 
-    if response.status_code == 429 or 500 <= response.status_code <= 599:
+    if 500 <= response.status_code <= 599:
         return DownloadResult(
             kind=None,
             mime_type=None,
@@ -387,6 +514,15 @@ def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> Downlo
             url=str(response.url),
             error=f"http_{response.status_code}",
             retryable=True,
+        )
+    if response.status_code == 429:
+        return DownloadResult(
+            kind=None,
+            mime_type=None,
+            content=None,
+            url=str(response.url),
+            error="http_429",
+            retryable=False,
         )
     if response.status_code >= 400:
         return DownloadResult(
@@ -468,6 +604,9 @@ def build_manifest_payload(db: Session, acq_run_id: str) -> dict:
                 "status": i.status,
                 "attempt_count": i.attempt_count,
                 "selected_url": i.selected_url,
+                "selected_url_source": i.selected_url_source,
+                "resolution_attempts": i.resolution_attempts,
+                "reason_code": i.reason_code,
                 "last_error": i.last_error,
             }
             for i in items
@@ -495,6 +634,29 @@ def _manifest_file_path(acq_run_id: str) -> Path:
 def _write_manifest_file(db: Session, acq_run_id: str) -> Path:
     payload = build_manifest_payload(db, acq_run_id)
     path = _manifest_file_path(acq_run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def _coverage_report_file_path(acq_run_id: str) -> Path:
+    return Path(settings.artifacts_dir) / "acquisition" / acq_run_id / "acquisition_coverage_report.json"
+
+
+def _write_coverage_report_file(acq_run_id: str, observability_snapshot: dict) -> Path:
+    counters = dict(observability_snapshot.get("counters", {}))
+    payload = {
+        "acq_run_id": acq_run_id,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "coverage": {
+            "resolved_via_openalex": int(counters.get("resolved_via_openalex", 0)),
+            "resolved_via_unpaywall": int(counters.get("resolved_via_unpaywall", 0)),
+            "resolved_via_repository": int(counters.get("resolved_via_repository", 0)),
+            "paywalled": int(counters.get("paywalled", 0)),
+            "manual_recovery_required": int(counters.get("manual_recovery_required", 0)),
+        },
+    }
+    path = _coverage_report_file_path(acq_run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
@@ -530,6 +692,8 @@ def build_manual_downloads_payload(db: Session, acq_run_id: str, *, limit: int, 
                 "source_url": source.url,
                 "selected_url": item.selected_url,
                 "manual_url_candidates": _manual_url_candidates(source=source, item=item),
+                "legal_candidates": list(item.resolution_attempts or []),
+                "reason_code": item.reason_code or _reason_code_from_error(item.last_error),
             }
             for item, source in page
         ],
@@ -590,6 +754,7 @@ def register_manual_upload(
     db.add(artifact)
     item.status = "downloaded"
     item.last_error = None
+    item.reason_code = None
     item.updated_at = datetime.now(UTC)
     _recompute_acquisition_totals(db, run)
     db.commit()
@@ -598,7 +763,12 @@ def register_manual_upload(
 
 
 def _manual_url_candidates(*, source: Source, item: AcquisitionItem) -> list[str]:
-    urls = [source.url, f"https://doi.org/{source.doi}" if source.doi else None, item.selected_url]
+    ranked = sorted(
+        list(item.resolution_attempts or []),
+        key=lambda candidate: int(candidate.get("candidate_rank", 999999)),
+    )
+    urls = [candidate.get("candidate_url") for candidate in ranked]
+    urls.extend([source.url, f"https://doi.org/{source.doi}" if source.doi else None, item.selected_url])
     deduped: list[str] = []
     seen: set[str] = set()
     for raw in urls:

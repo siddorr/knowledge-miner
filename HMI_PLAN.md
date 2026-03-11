@@ -1,166 +1,216 @@
-# HMI Plan - Ops Dashboard (FastAPI-hosted)
+# HMI Plan - UX Rebuild (Operator-First)
 
 ## Summary
 
-Build a FastAPI-served web HMI focused on operations for mixed users.
+Rebuild the HMI as an operator-first console with a search-first workflow.
 
-Primary intent:
-1. Guide users through Discovery -> Acquisition -> Parse -> Search.
-2. Expose operational status/errors clearly.
-3. Support manual recovery for non-downloaded documents.
+Primary goals:
+1. Fast triage loop across Discovery -> Acquisition -> Parse -> Manual Recovery.
+2. Minimal manual ID handling in normal operations.
+3. Clear status reasons and actionability for non-technical operators.
 
-Acceptance target:
-1. Task completion + API parity (UI actions map 1:1 to API behavior).
+Decision lock:
+1. Scope: full dashboard redesign (all tabs).
+2. Primary interaction: search-first.
+3. ID visibility: hidden by default.
+4. Auth/key UX: system env by default + optional temporary manual override.
+5. Rollout: hard replace (no side-by-side feature flag).
 
-## Scope
+## UX Principles
 
-In scope:
-1. FastAPI-hosted web UI (single deployable app).
-2. Full navigation:
-- Runs dashboard
-- Discovery details
-- Acquisition details
-- Parse details
-- Search explorer
-- Manual recovery queue
-3. Auto-refresh polling.
-4. UI actions:
-- Start runs
-- Retry failed-only runs
-- Review decisions
-- Export artifacts/lists
-- Register manual uploads
+1. Row-first actions:
+- Operators act from the item row (`Approve`, `Reject`, `Retry`, `Manual Upload`) without copy/paste.
 
-Out of scope (v1 HMI):
-1. Separate frontend repo/app.
-2. WebSocket push updates.
-3. New backend login/session system.
-4. Admin config editing UI.
+2. Human context before technical data:
+- Show title, abstract snippet, source/provider, status reason first.
+- Keep IDs in optional "technical details" panels.
 
-## Required APIs
+3. One selected context:
+- Selecting an item synchronizes context across sections (Discovery/Acquisition/Parse/Search/Recovery).
 
-Existing APIs used:
-1. `POST /v1/discovery/runs`
-2. `GET /v1/discovery/runs/{run_id}` (extended to include `seed_queries`)
-3. `GET /v1/discovery/runs/{run_id}/sources` (extended with `status` filter)
-4. `POST /v1/sources/{source_id}/review`
-5. `GET /v1/exports/sources_raw`
-6. `POST /v1/acquisition/runs`
-7. `GET /v1/acquisition/runs/{acq_run_id}`
-8. `GET /v1/acquisition/runs/{acq_run_id}/items`
-9. `GET /v1/acquisition/artifacts/{artifact_id}`
-10. `GET /v1/acquisition/runs/{acq_run_id}/manifest`
-11. `POST /v1/parse/runs`
-12. `GET /v1/parse/runs/{parse_run_id}`
-13. `GET /v1/parse/runs/{parse_run_id}/documents`
-14. `GET /v1/parse/runs/{parse_run_id}/chunks`
-15. `GET /v1/parse/documents/{document_id}`
-16. `GET /v1/parse/documents/{document_id}/text`
-17. `POST /v1/search`
+4. Explicit "why" messaging:
+- Every non-terminal/problem state must expose reason code + readable explanation.
 
-Phase 2.1 APIs required for manual recovery:
-1. `GET /v1/acquisition/runs/{acq_run_id}/manual-downloads`
-2. `GET /v1/acquisition/runs/{acq_run_id}/manual-downloads.csv`
-3. `POST /v1/acquisition/runs/{acq_run_id}/manual-upload`
+## Information Architecture
 
-Discovery visualization API additions:
-1. `GET /v1/discovery/runs/{run_id}` returns:
-- `seed_queries: list[str]`
-2. `GET /v1/discovery/runs/{run_id}/sources` supports:
-- `status=accepted|rejected|needs_review|all`
-- Backward compatibility default: accepted-only when omitted
+1. Global shell:
+- Top bar:
+  - global search
+  - `Create New Session`
+  - connection/health badges
+  - auth mode indicator (`System token` / `Manual override`)
+- Left navigation:
+  - `Work Queue` (default)
+  - `Discovery`
+  - `Acquisition`
+  - `Parse`
+  - `Search`
+  - `Manual Recovery`
+  - `Runs & Logs` (advanced)
 
-## UI Information Architecture
+2. Work Queue (new default screen):
+- Unified actionable items:
+  - discovery `needs_review`
+  - acquisition `failed|partial`
+  - parse `failed`
+- Inline actions:
+  - `Approve`
+  - `Reject`
+  - `Retry`
+  - `Open Source`
+  - `Manual Upload`
 
-1. Runs Dashboard
-- Unified run list across phases.
-- Filters: phase, status, date, keyword/run id.
-- Actions: create run, open details, retry failed-only.
+3. Stage screens:
+- Discovery:
+  - create run
+  - review queue
+  - status filters and decision provenance
+- Acquisition:
+  - run counters
+  - item outcomes + retry actions
+  - send failures to recovery
+- Parse:
+  - parse run counters
+  - document/chunk viewers
+  - failed parse visibility
+- Search:
+  - query parsed corpus
+  - open document/detail/source context
+- Manual Recovery:
+  - failed/partial list
+  - legal candidate links
+  - upload registration
+- Runs & Logs:
+  - explicit run IDs and technical diagnostics
 
-2. Discovery Detail
-- Run metrics and AI filter warning.
-- Sources list with status filters (`accepted/rejected/needs_review/all`) and review actions.
-- Per-source decision trace fields:
-  - `final_decision`
-  - `decision_source`
-  - `heuristic_recommendation`
-  - `heuristic_score`
-- Export `sources_raw.json`.
+## API Contract
 
-3. Acquisition Detail
-- Progress/counters and item statuses.
-- Error visibility and selected URL trace.
-- Manifest/artifact links.
+Existing endpoints remain in use:
+1. Discovery, review, export endpoints
+2. Acquisition run/items/manifest/manual recovery endpoints
+3. Parse run/documents/chunks endpoints
+4. Search endpoint
+5. AI filter settings endpoint
 
-4. Parse Detail
-- Parse status/counters/error summary.
-- Parsed documents list and chunk list.
+New endpoints for UX v2:
+1. `GET /v1/work-queue`
+- Aggregated actionable rows across phases.
+- Query support:
+  - `kind=discovery|acquisition|parse|all`
+  - `status=needs_review|failed|partial|all`
+  - `limit`
+  - `offset` (or cursor in future iteration)
 
-5. Search Explorer
-- Query input, result ranking, snippet view.
-- Links back to document/chunk/source context.
+2. `GET /v1/search/global`
+- Unified search across:
+  - sources
+  - runs
+  - acquisition items
+  - parsed documents
+  - chunks
 
-6. Manual Recovery
-- Failed/partial/skipped queue.
-- CSV export.
-- Manual upload registration.
+3. `GET /v1/system/status`
+- Returns:
+  - auth mode and readiness
+  - AI filter readiness and warning
+  - provider readiness summary
 
-## UX/Behavior Defaults
+Contract additions for operator clarity:
+1. list responses should include:
+- `reason_code`
+- `reason_text`
+- `last_transition_at` (when available)
 
-1. No dedicated auth screen in v1; behavior follows API auth mode.
-- `AUTH_ENABLED=false`: token controls are hidden and requests run without auth header.
-- `AUTH_ENABLED=true`: token controls are shown with system-token prefill + manual override.
-2. Polling intervals:
-- 5s when page is visible and run is active.
-- 15s when hidden.
-3. Polling stops for terminal statuses (`completed`, `failed`) unless user refreshes.
-4. Error mapping in UI:
-- 400 invalid request
-- 401/403 auth/config issue
-- 404 resource missing
-- 409 state conflict
-- 429 rate limited
-- 5xx retry guidance
-5. Discovery table default status view: `accepted + needs_review`.
-6. Quick toggles available in UI: `accepted | rejected | needs_review | all`.
-7. Fallback/policy decisions (`decision_source=fallback_heuristic|policy_no_ai`) are visually marked as review-required.
-8. Runtime AI filter settings are operator-controlled in HMI (`Load AI Settings` / `Save AI Settings`) and apply to new discovery runs.
-9. Review actions must support DOI-style source IDs with `/` (path-safe review routing).
+## ID Handling Policy
+
+1. IDs are not required as primary user input in core workflows.
+2. IDs are displayed only in:
+- copy controls
+- technical details drawers
+- `Runs & Logs` section
+3. Existing ID-based APIs remain unchanged for compatibility.
+
+## Auth and Token UX
+
+1. `AUTH_ENABLED=false`:
+- hide token input controls
+- show "No app token required"
+
+2. `AUTH_ENABLED=true`:
+- show current mode:
+  - system token present
+  - manual override active
+- allow temporary manual override from UI
+- never echo plaintext token in API responses
+
+3. Provider keys:
+- system env remains source of truth
+- readiness is shown through `GET /v1/system/status`
+
+## Polling and Runtime Behavior
+
+1. Polling:
+- 5s for active tabs/runs
+- 15s when browser tab is hidden
+
+2. Polling stop:
+- stop for terminal statuses (`completed`, `failed`) with manual refresh option
+
+3. State persistence:
+- preserve filters/pagination/selected context on refresh
+
+4. Error mapping:
+- `400`: invalid request
+- `401/403`: auth/config
+- `404`: resource missing
+- `409`: invalid run state
+- `429`: rate limit
+- `5xx`: retry guidance
+
+## Accessibility and Clarity Requirements
+
+1. All action buttons must have clear labels (no icon-only critical actions).
+2. Keyboard focus order must allow operator workflow without mouse.
+3. Status uses text + color (not color only).
+4. Tables support truncation + expand/collapse for abstract/error text.
+
+## Test and Acceptance Matrix
+
+1. Functional:
+- create session from UI without manual run-ID typing
+- review from queue row (approve/reject)
+- retry failed acquisition from row
+- register manual upload from row context
+- open parsed document and source context from search result
+
+2. UX:
+- IDs hidden by default in core views
+- row-level actions complete without copy-paste IDs
+- context sync works across sections
+
+3. Security/config:
+- auth disabled mode works with no token UI
+- auth enabled mode validates token and supports manual override
+- AI readiness/warnings visible and accurate
+
+4. Regression:
+- existing API clients remain compatible
+- DOI-style source IDs remain reviewable
+- manual recovery CSV/export/upload flows unchanged
 
 ## Implementation Order
 
-1. Backend parity first:
-- Phase 2.1 manual recovery endpoints + schemas + tests.
-2. HMI shell:
-- FastAPI static assets + base route.
-3. Read-only dashboards:
-- Runs and detail pages with polling.
-4. Mutating actions:
-- Review, retry, exports.
-5. Recovery workflows:
-- Manual downloads list, CSV export, upload registration.
-6. End-to-end tests:
-- Discovery -> Acquisition -> Parse -> Search
-- Recovery flow with failed downloads.
+1. Add backend aggregator/status endpoints (`work-queue`, `global-search`, `system-status`).
+2. Implement new shell + global search + context store.
+3. Build Work Queue and row action flows.
+4. Refactor Discovery/Acquisition/Parse/Search/Recovery screens to row-first behavior.
+5. Remove legacy ID-first forms from core paths.
+6. Keep advanced technical views under `Runs & Logs`.
+7. Hard replace old HMI route.
 
-## Test/Acceptance Matrix
+## Out of Scope for This UX Rebuild
 
-1. Unit tests:
-- Polling state transitions.
-- Status and error mapping.
-2. API integration tests:
-- Manual recovery endpoint contracts.
-- CSV export semantics.
-- Manual upload validation/provenance.
- - Discovery source `status` filter combinations.
- - Run status response includes `seed_queries`.
- - Discovery source response includes decision-trace fields (`final_decision`, `decision_source`, `heuristic_recommendation`, `heuristic_score`).
-3. End-to-end scenarios:
-- Full happy path run.
-- Partial/failure recovery path.
-
-## Assumptions
-
-1. Primary deployment is local/internal at first.
-2. Auth is optional by deployment mode (`AUTH_ENABLED`), with UI parity for both modes.
-3. API-first behavior is authoritative; UI must not infer unsupported states.
+1. Separate frontend repository/framework migration.
+2. WebSocket event streaming.
+3. Multi-user RBAC/login redesign.
+4. Mobile-native app.

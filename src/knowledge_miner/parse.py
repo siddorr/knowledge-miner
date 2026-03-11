@@ -18,6 +18,7 @@ from .config import settings
 from .db import SessionLocal
 from .models import AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Source
 from .observability import ParseObservability
+from .runtime_state import acquire_run_lock, is_primary_instance, release_run_lock
 from .scoring import decision_from_score, score_text
 
 
@@ -86,8 +87,20 @@ def create_parse_run(db: Session, acq_run_id: str, *, retry_failed_only: bool) -
 
 
 def enqueue_parse_run(parse_run_id: str) -> None:
-    worker = threading.Thread(target=execute_parse_run_by_id, args=(parse_run_id,), daemon=True)
+    if not is_primary_instance():
+        return
+    run_lock = acquire_run_lock(base_dir=settings.runtime_state_dir, phase="parse", run_id=parse_run_id)
+    if run_lock is None:
+        return
+    worker = threading.Thread(target=_execute_parse_run_with_lock, args=(parse_run_id, run_lock), daemon=True)
     worker.start()
+
+
+def _execute_parse_run_with_lock(parse_run_id: str, run_lock: Path) -> None:
+    try:
+        execute_parse_run_by_id(parse_run_id)
+    finally:
+        release_run_lock(run_lock)
 
 
 def execute_parse_run_by_id(parse_run_id: str) -> None:

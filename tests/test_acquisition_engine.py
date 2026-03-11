@@ -106,7 +106,7 @@ def _seed_completed_run_with_two_sources() -> tuple[str, list[str]]:
         return run.id, source_ids
 
 
-def test_resolve_candidate_urls_prefers_source_then_doi():
+def test_resolve_candidate_urls_prefers_doi_then_publisher():
     source = Source(
         id="s1",
         run_id="r1",
@@ -131,8 +131,8 @@ def test_resolve_candidate_urls_prefers_source_then_doi():
         provenance_history=[],
     )
     urls = acquisition._resolve_candidate_urls(source)  # noqa: SLF001
-    assert urls[0] == "https://publisher.example/paper"
-    assert urls[1] == "https://doi.org/10.1000/xyz"
+    assert urls[0] == "https://doi.org/10.1000/xyz"
+    assert urls[1] == "https://publisher.example/paper"
 
 
 def test_execute_acquisition_run_downloads_pdf(monkeypatch, tmp_path):
@@ -306,16 +306,22 @@ def test_execute_acquisition_run_mixed_success_and_failure(monkeypatch, tmp_path
                     mime_type="application/pdf",
                     content=b"%PDF-1.4 mixed",
                     url=source.url,
+                    selected_url_source="publisher",
+                    resolution_attempts=[],
                     attempts=1,
                     error=None,
+                    reason_code=None,
                 )
             return acquisition.AcquisitionOutcome(
                 kind=None,
                 mime_type=None,
                 content=None,
                 url=source.url,
+                selected_url_source=None,
+                resolution_attempts=[],
                 attempts=3,
                 error="http_500",
+                reason_code="source_error",
             )
 
         monkeypatch.setattr(acquisition, "_acquire_source_content", fake_acquire)
@@ -335,8 +341,49 @@ def test_execute_acquisition_run_mixed_success_and_failure(monkeypatch, tmp_path
             statuses = {i.source_id: i.status for i in items}
             assert statuses[source_ids[0]] == "downloaded"
             assert statuses[source_ids[1]] == "failed"
+            coverage_path = Path(tmp_path) / "acquisition" / run.id / "acquisition_coverage_report.json"
+            assert coverage_path.exists()
+            coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+            assert coverage["coverage"]["manual_recovery_required"] >= 1
     finally:
         object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
+def test_reason_code_mapping_for_http_errors():
+    assert acquisition._reason_code_from_error("http_403") == "paywalled"  # noqa: SLF001
+    assert acquisition._reason_code_from_error("http_429") == "rate_limited"  # noqa: SLF001
+    assert acquisition._reason_code_from_error("no_candidate_urls") == "no_oa_found"  # noqa: SLF001
+    assert acquisition._reason_code_from_error("http_500") == "source_error"  # noqa: SLF001
+
+
+def test_resolve_candidate_chain_ordering_with_legal_sources(monkeypatch):
+    source = Source(
+        id="s2",
+        run_id="r1",
+        title="t",
+        year=2020,
+        url="https://publisher.example/paper",
+        doi="10.1000/xyz",
+        abstract=None,
+        type="academic",
+        source="openalex",
+        source_native_id=None,
+        patent_office=None,
+        patent_number=None,
+        iteration=1,
+        discovery_method="seed_search",
+        relevance_score=0.0,
+        accepted=False,
+        review_status="auto_reject",
+        ai_decision=None,
+        ai_confidence=None,
+        parent_source_id=None,
+        provenance_history=[],
+    )
+    monkeypatch.setattr(acquisition, "_lookup_openalex_oa_url", lambda _s: "https://openalex.org/oa.pdf")
+    monkeypatch.setattr(acquisition, "_lookup_unpaywall_oa_url", lambda _s: "https://unpaywall.org/oa.pdf")
+    chain = acquisition._resolve_candidate_chain(source)  # noqa: SLF001
+    assert [entry["candidate_source"] for entry in chain] == ["doi", "openalex", "unpaywall", "publisher"]
 
 
 def test_pdf_artifact_checksum_and_size(monkeypatch, tmp_path):

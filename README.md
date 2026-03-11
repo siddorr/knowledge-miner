@@ -41,6 +41,16 @@ Supporting docs:
 7. `DEVELOPMENT_PLAN.md`
 8. `HMI_PLAN.md`
 
+## HMI UX Rebuild Direction
+
+HMI is being rebuilt as an operator-first interface with search-first workflow:
+1. Primary landing: `Work Queue` with row-level actions.
+2. IDs are hidden by default in normal operations.
+3. Global search drives context across Discovery/Acquisition/Parse/Recovery.
+4. Technical IDs remain available in advanced diagnostics views.
+
+Decision and implementation details are defined in `HMI_PLAN.md`.
+
 ## Quick Start
 
 ```bash
@@ -54,6 +64,10 @@ uvicorn knowledge_miner.main:app --reload
 Auth modes:
 1. Default local/internal mode: auth disabled (`AUTH_ENABLED=false`), no header required.
 2. Secured mode: set `AUTH_ENABLED=true`, then send `Authorization: Bearer <API_TOKEN>`.
+
+Local runtime safety defaults:
+1. `CLEAN_ON_STARTUP=true` (development default) clears stale runtime lock files under `RUNTIME_STATE_DIR` on app startup.
+2. Startup acquires a single-instance runtime lock to avoid duplicate background workers in local reload workflows.
 
 ## Real Provider Search
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+import knowledge_miner.main as main_module
 from knowledge_miner.config import settings
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.main import app
@@ -202,12 +203,13 @@ def test_source_review_supports_slash_source_id():
     assert response.json()["accepted"] is True
 
 
-def test_ai_settings_update_applies_to_new_runs():
+def test_ai_settings_update_applies_to_new_runs(monkeypatch):
     original_use_ai = settings.use_ai_filter
     original_key = settings.ai_api_key
     original_model = settings.ai_model
     original_base = settings.ai_base_url
     try:
+        monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
         client = TestClient(app)
         update = client.post(
             "/v1/settings/ai-filter",

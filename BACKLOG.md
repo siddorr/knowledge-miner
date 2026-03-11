@@ -5,7 +5,19 @@ Status:
 
 ## High Priority
 
-1. [x] P0 - Remove required app access token for local/internal usage
+1. [x] P0 - Auto-clean startup state for local dev server runs
+- Goal: starting the app should not leave stale runtime state/process conflicts from previous sessions.
+- Tasks:
+  - Add startup guard to detect/clean stale run locks/temp state from interrupted runs.
+  - Add single-instance safety for local `--reload` workflow (prevent duplicate workers from conflicting on same state files).
+  - Add optional `CLEAN_ON_STARTUP=true` mode (default for local dev) with clear startup log message of what was cleaned.
+  - Ensure cleanup is scoped and safe (no deletion of persisted DB/artifacts unless explicitly configured).
+  - Add tests for:
+    - stale state present -> startup completes and state is cleaned
+    - no stale state -> no-op cleanup
+    - cleanup disabled -> startup does not alter state
+
+2. [x] P0 - Remove required app access token for local/internal usage
 - Goal: API/HMI should work without mandatory `Authorization: Bearer ...` token.
 - Tasks:
   - Make API auth optional via config switch (default: auth disabled).
@@ -18,6 +30,18 @@ Status:
   - Add tests for both modes:
     - auth disabled -> no token required.
     - auth enabled -> token required and validated.
+
+3. [x] P0 - Fix AI filtering authentication and runtime reliability
+- Goal: when AI filter is enabled, classification should work without repeated unauthorized failures.
+- Tasks:
+  - Validate OpenAI token load path from system environment and `.env` (single source of truth, no silent fallback to empty token).
+  - Add startup/runtime health check for AI provider config (`token present`, `base URL`, `model`) and expose clear status in HMI/API.
+  - Prevent repeated `401 Unauthorized` retry storms; fail fast per run with explicit warning and fallback policy.
+  - Add structured AI error metrics (`auth_error`, `rate_limited`, `timeout`, `provider_error`) in logs and run summary.
+  - Add tests for:
+    - valid token -> AI calls succeed
+    - missing/invalid token -> deterministic fallback to `needs_review` + operator-visible warning
+    - HMI AI toggle + token update applies to newly created runs
 
 ## Must-Fix (Spec Compliance)
 
@@ -160,6 +184,60 @@ Definition of done for Phase 2.1:
 1. End user can retrieve a clear list of non-downloaded documents with direct/manual URL options.
 2. User can export the list for offline/manual processing.
 3. Manually downloaded files can be registered back into acquisition artifacts with traceable provenance.
+
+## Phase 2.2 Implementation Tasks (Legal Full-Text Coverage Expansion)
+
+Goal:
+- Increase automatic full-text success using legal/open sources before manual recovery.
+
+1. [x] P0 - Add legal source resolution chain to acquisition
+- Resolution order per source:
+  - DOI landing (`https://doi.org/<doi>`)
+  - OpenAlex OA location lookup
+  - Unpaywall OA URL lookup
+  - trusted repository checks (PubMed Central, arXiv when identifiers match)
+  - existing publisher/source URL fallback
+- Persist resolution attempts and selected URL source (`doi|openalex|unpaywall|pmc|arxiv|publisher`).
+
+2. [x] P0 - Implement OA-first download policy
+- Prefer OA PDF URLs over publisher paywalled pages.
+- If PDF unavailable but legal HTML available, store as `partial` with extracted text path.
+- Avoid retry storms on known paywall/forbidden responses (`403/401/429`) with bounded retry policy.
+
+3. [x] P1 - Extend manual recovery payload for operator action
+- Include per-item legal candidate links with provenance labels:
+  - `candidate_url`
+  - `candidate_source`
+  - `candidate_rank`
+- Include actionable reason codes:
+  - `paywalled`
+  - `no_oa_found`
+  - `rate_limited`
+  - `robots_blocked`
+  - `source_error`
+
+4. [x] P1 - Add observability and reporting for legal coverage
+- Add counters in acquisition summary:
+  - `resolved_via_openalex`
+  - `resolved_via_unpaywall`
+  - `resolved_via_repository`
+  - `paywalled`
+  - `manual_recovery_required`
+- Add run-level coverage report artifact (`acquisition_coverage_report.json`).
+
+5. [x] P1 - Add tests for resolution and fallback behavior
+- Unit:
+  - source resolver ordering and deterministic URL ranking
+  - reason-code mapping from HTTP/provider outcomes
+- Integration:
+  - mixed OA/paywalled dataset -> expected `downloaded|partial|failed` distribution
+  - manual recovery list includes labeled legal candidates
+
+Definition of done for Phase 2.2:
+1. Acquisition tries legal OA/repository sources before final failure.
+2. More documents end in `downloaded`/`partial` without manual intervention.
+3. Manual recovery list shows ranked legal links with clear failure reasons.
+4. Coverage metrics show where full text came from and where manual work is still needed.
 
 ## Phase 3 Implementation Tasks (Document Intelligence)
 
@@ -489,3 +567,42 @@ Definition of done for Phase 4.1:
 2. AI failures are handled gracefully with `needs_review` fallback.
 3. API and exports expose decision provenance clearly.
 4. Legacy consumers using `accepted`/`review_status` remain functional.
+
+## Phase 4.2 Implementation Tasks (HMI UX Rebuild - Operator First)
+
+Reference:
+- `HMI_PLAN.md` (UX Rebuild)
+
+1. [ ] P0 - Add aggregated work queue endpoint
+- `GET /v1/work-queue`
+- Return actionable rows across phases (`needs_review`, `failed`, `partial`) with reason fields and quick-action context.
+
+2. [ ] P0 - Add global search endpoint for HMI
+- `GET /v1/search/global`
+- Search across runs, sources, acquisition items, parsed docs, and chunks.
+- Return typed results with target context for one-click navigation.
+
+3. [ ] P0 - Add system status endpoint for operator clarity
+- `GET /v1/system/status`
+- Include auth mode, AI filter readiness/warnings, and provider readiness summary.
+
+4. [ ] P0 - Replace ID-first HMI forms with row-first operator actions
+- Core workflows must not require manual copy/paste of run/source IDs.
+- Keep IDs available only in technical details / copy controls.
+
+5. [ ] P1 - Introduce `Work Queue` as default landing view
+- Unified queue and action loop for discovery review + acquisition/parse failures.
+- Inline `Approve/Reject/Retry/Manual Upload` actions.
+
+6. [ ] P1 - Implement global context synchronization in HMI
+- Selecting an item in one section synchronizes context across related sections.
+- Preserve selected context, filters, and pagination across polling refresh.
+
+7. [ ] P1 - Move technical workflows to advanced `Runs & Logs` section
+- Keep explicit ID and diagnostics tools in advanced area.
+- Prevent operator screens from being overloaded with technical fields.
+
+8. [ ] P1 - Add UX-focused acceptance tests
+- End-to-end operator flow with no manual ID entry.
+- Visibility tests for hidden-by-default IDs.
+- Regression tests for review/upload/retry actions.

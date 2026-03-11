@@ -261,6 +261,8 @@ def test_manual_downloads_endpoint(monkeypatch):
     assert item["status"] == "failed"
     # ordered: source_url, doi_url, selected_url(deduped away when equal to source_url)
     assert item["manual_url_candidates"] == ["https://ieee.org/test", "https://doi.org/10.1000/test-acq"]
+    assert "legal_candidates" in item
+    assert "reason_code" in item
 
 
 def test_manual_downloads_csv_endpoint(monkeypatch):
@@ -272,7 +274,10 @@ def test_manual_downloads_csv_endpoint(monkeypatch):
     assert resp.status_code == 200
     assert "text/csv" in resp.headers.get("content-type", "")
     body = resp.text
-    assert "item_id,source_id,status,attempt_count,last_error,title,doi,source_url,selected_url,manual_url_candidates" in body
+    assert (
+        "item_id,source_id,status,attempt_count,last_error,title,doi,source_url,selected_url,manual_url_candidates,reason_code,legal_candidates"
+        in body
+    )
     assert "acq_item_manual_1" in body
 
 
