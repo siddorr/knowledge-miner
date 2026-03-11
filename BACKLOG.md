@@ -110,7 +110,7 @@ Status:
     - restart keeps same DB target path
     - after reload, same run/source IDs remain queryable and review actions do not flap between `200` and `404`
 
-7. [ ] P0 - Add focused diagnostics for intermittent `run_not_found/source_not_found` flapping
+7. [x] P0 - Add focused diagnostics for intermittent `run_not_found/source_not_found` flapping
 - Goal: collect unambiguous runtime evidence to isolate and close the `200 -> 404` run/source disappearance bug.
 - Progress:
   - startup DB context logging added
@@ -149,6 +149,60 @@ Status:
 - Exit criteria:
   - one captured trace proving root cause, linked in backlog note.
   - fix PR references this diagnostics output and removes need for temporary debug endpoint/log verbosity.
+
+8. [x] P0 - Clear indication of work in progress in HMI
+- Goal: operator must always see when background work is still running and when actions are blocked/waiting.
+- Tasks:
+  - Add a global in-progress banner/spinner with current active phase (`discovery|acquisition|parse`) and last update time.
+  - Add per-section busy states for long actions (`Run Discovery`, `Acquire Pending`, `Retry Failed`, `Parse`, `Search`) with disabled buttons during request in-flight.
+  - Show run status transitions inline (`queued -> running -> completed/failed`) with explicit text, not color-only indication.
+  - Add “still processing” hints when list endpoints return empty while run is active (avoid “No records found” ambiguity).
+  - Persist in-progress state across polling refresh and page hash navigation.
+  - Emit telemetry events for busy-state enter/exit and action-complete/fail.
+  - Add tests:
+  - UI test: spinner/banner appears while run is active and clears on terminal state.
+  - API/UI integration test: empty intermediate state during running shows “in progress” message, not final empty-result message.
+  - accessibility check: status text available to screen readers (`aria-live`).
+
+9. [x] P0 - Apply design review findings (2026-03-12)
+- Goal: close critical UX/behavior mismatches identified in full design review.
+- Tasks:
+  - Fix `Send Accepted to Documents` semantics:
+    - either process only selected accepted `source_id`s via a new API contract, or rename UX text to explicitly say “Send all accepted in run”.
+  - Implement persistent `Manual Complete` action:
+    - replace UI-only message with API-backed state update and durable status.
+  - Persist `Later` review state:
+    - move from in-memory-only set to backend-stored review queue status.
+  - Correct dashboard KPI semantics:
+    - `Accepted waiting docs` must be computed from accepted-without-successful-acquisition, not generic acquisition queue count.
+  - Remove flow inconsistencies:
+    - align HMI header/nav/docs on one canonical flow (`Build/Review/Documents/Library/Advanced`).
+    - remove hidden `#discover` dependency from default user flow or reintroduce it explicitly in nav/spec.
+  - Improve stale-run recovery UX:
+    - when `run_not_found/source_not_found` appears, auto-suggest/select latest valid run and show actionable reload guidance.
+- Tests:
+  - integration test for selected-only vs all-accepted acquisition behavior (according to finalized contract).
+  - UI test that `Manual Complete` and `Later` survive reload and are reflected in API data.
+  - UI regression test for status-strip KPI correctness.
+
+10. [ ] P0 - Auto-reset stale HMI run context when DB is empty or run is invalid
+- Goal: prevent infinite polling/review loops on non-existent run IDs after restart/cleanup.
+- Problem observed:
+  - HMI keeps polling old run IDs (for example `run_1dcfa040bb46`) while DB has `runs=0`, producing repeated `run_not_found/source_not_found`.
+- Tasks:
+  - On HMI load and every poll cycle:
+    - if `/v1/system/status` shows `db_run_count == 0`, clear `state.latest.discovery|acquisition|parse` and related run-id input fields.
+    - if discovery run lookup returns `run_not_found`, auto-clear stale run context (and selected review rows) instead of retrying forever.
+  - Add UX feedback:
+    - show explicit message: `No active runs found. Start from Build -> Run Discovery.`
+    - suppress repeating error toasts for same stale run id.
+  - Add optional recovery aid:
+    - query latest available run IDs (when any) and offer one-click `Use Latest`.
+  - Ensure telemetry emits a single `stale_context_reset` event per reset action.
+- Tests:
+  - UI test: with empty DB, polling does not keep requesting old run id.
+  - UI test: stale run id is auto-cleared after first `run_not_found`.
+  - integration test: `db_run_count=0` leads to clean idle state without repeated 404 spam.
 
 ## Must-Fix (Spec Compliance)
 

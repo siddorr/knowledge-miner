@@ -9,13 +9,18 @@
 <body>
   <header class="topbar">
     <h1>Knowledge Miner Task Dashboard</h1>
-    <p>First-time-user flow: Discover -> Review -> Documents -> Search.</p>
+    <p>First-time-user flow: Build -> Review -> Documents -> Library.</p>
   </header>
 
   <section class="pollbar">
     <strong>Polling:</strong>
     <span id="pollState" class="poll-ok">Idle.</span>
     <span id="systemBadges" class="muted">System status not loaded.</span>
+  </section>
+
+  <section id="inProgressBanner" class="pollbar" aria-live="polite" hidden>
+    <strong>Work in progress:</strong>
+    <span id="inProgressState" class="muted">Idle</span>
   </section>
 
   <nav class="nav" aria-label="Primary">
@@ -222,7 +227,7 @@
       <div class="row compact">
         <button id="reviewBatchAcceptBtn" type="button">Accept Selected</button>
         <button id="reviewBatchRejectBtn" type="button">Reject Selected</button>
-        <button id="reviewBatchSendDocsBtn" type="button">Send Accepted to Documents</button>
+        <button id="reviewBatchSendDocsBtn" type="button">Send Selected Accepted to Documents</button>
       </div>
       <div class="row compact">
         <button id="reviewPrev" type="button">Prev</button>

@@ -21,7 +21,13 @@ from .observability import AcquisitionObservability
 from .runtime_state import acquire_run_lock, is_primary_instance, release_run_lock
 
 
-def create_acquisition_run(db: Session, discovery_run_id: str, *, retry_failed_only: bool) -> AcquisitionRun:
+def create_acquisition_run(
+    db: Session,
+    discovery_run_id: str,
+    *,
+    retry_failed_only: bool,
+    selected_source_ids: list[str] | None = None,
+) -> AcquisitionRun:
     run = db.get(Run, discovery_run_id)
     if run is None:
         raise ValueError("run_not_found")
@@ -32,6 +38,9 @@ def create_acquisition_run(db: Session, discovery_run_id: str, *, retry_failed_o
         select(Source).where(Source.run_id == discovery_run_id, Source.accepted.is_(True)).order_by(Source.id.asc())
     ).all()
     selected_sources = accepted_sources
+    selected_ids = {value.strip() for value in (selected_source_ids or []) if value and value.strip()}
+    if selected_ids and not retry_failed_only:
+        selected_sources = [source for source in accepted_sources if source.id in selected_ids]
     if retry_failed_only:
         prev_run = db.scalars(
             select(AcquisitionRun)
@@ -760,6 +769,25 @@ def register_manual_upload(
     db.commit()
     db.refresh(artifact)
     return artifact
+
+
+def mark_manual_complete(db: Session, *, acq_run_id: str, source_id: str) -> AcquisitionItem:
+    run = db.get(AcquisitionRun, acq_run_id)
+    if run is None:
+        raise ValueError("acq_run_not_found")
+    item = db.scalars(
+        select(AcquisitionItem).where(AcquisitionItem.acq_run_id == acq_run_id, AcquisitionItem.source_id == source_id)
+    ).first()
+    if item is None:
+        raise ValueError("item_not_found")
+    item.status = "skipped"
+    item.reason_code = "manual_complete"
+    item.last_error = "manual_complete"
+    item.updated_at = datetime.now(UTC)
+    _recompute_acquisition_totals(db, run)
+    db.commit()
+    db.refresh(item)
+    return item
 
 
 def _manual_url_candidates(*, source: Source, item: AcquisitionItem) -> list[str]:

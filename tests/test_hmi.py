@@ -26,7 +26,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Later" in body
     assert "Accept Selected" in body
     assert "Reject Selected" in body
-    assert "Send Accepted to Documents" in body
+    assert "Send Selected Accepted to Documents" in body
     assert "Preview" in body
     assert "Copy DOI" in body
     assert "Copy Error" in body
@@ -47,6 +47,8 @@ def test_hmi_shell_route_and_navigation():
     assert "reviewNavBadge" in body
     assert "documentsNavBadge" in body
     assert "UPW Knowledge Miner" in body
+    assert "inProgressBanner" in body
+    assert "inProgressState" in body
     assert "Pending review:" in body
     assert "Accepted waiting docs:" in body
     assert "Document failures:" in body
@@ -131,6 +133,9 @@ def test_hmi_static_js_served():
     assert "copyFeedbackIdForTarget" in body
     assert "applyReviewDecisionToSelected" in body
     assert "sendAcceptedSelectedToDocuments" in body
+    assert "runBusy" in body
+    assert "setGlobalBusy" in body
+    assert "recoverLatestDiscoveryRun" in body
     assert "documentsAcquirePending" in body
     assert "documentsRetryFailed" in body
     assert "documentsCopySelected" in body

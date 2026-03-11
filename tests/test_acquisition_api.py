@@ -65,6 +65,38 @@ def _seed_discovery_run(*, completed: bool) -> tuple[str, str]:
         return run.id, src.id
 
 
+def _seed_discovery_run_with_two_sources() -> tuple[str, str, str]:
+    run_id, first_source_id = _seed_discovery_run(completed=True)
+    with SessionLocal() as db:
+        db.add(
+            Source(
+                id="doi:10.1000/test-acq-2",
+                run_id=run_id,
+                title="UPW second source",
+                year=2023,
+                url="https://example.org/second",
+                doi="10.1000/test-acq-2",
+                abstract="second",
+                type="academic",
+                source="openalex",
+                source_native_id="W2",
+                patent_office=None,
+                patent_number=None,
+                iteration=1,
+                discovery_method="seed_search",
+                relevance_score=6.1,
+                accepted=True,
+                review_status="auto_accept",
+                ai_decision=None,
+                ai_confidence=None,
+                parent_source_id=None,
+                provenance_history=[],
+            )
+        )
+        db.commit()
+    return run_id, first_source_id, "doi:10.1000/test-acq-2"
+
+
 def _seed_manual_recovery_case() -> tuple[str, str]:
     run_id, source_id = _seed_discovery_run(completed=True)
     with SessionLocal() as db:
@@ -107,6 +139,24 @@ def test_create_acquisition_run_happy_path(monkeypatch):
     body = resp.json()
     assert body["acq_run_id"].startswith("acq_")
     assert body["status"] in {"queued", "running", "completed"}
+
+
+def test_create_acquisition_run_supports_selected_source_ids(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    run_id, source_a, source_b = _seed_discovery_run_with_two_sources()
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/acquisition/runs",
+        json={"run_id": run_id, "retry_failed_only": False, "selected_source_ids": [source_b]},
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 202
+    acq_run_id = resp.json()["acq_run_id"]
+    items = client.get(f"/v1/acquisition/runs/{acq_run_id}/items", headers=_auth_headers())
+    assert items.status_code == 200
+    ids = [row["source_id"] for row in items.json()["items"]]
+    assert source_b in ids
+    assert source_a not in ids
 
 
 def test_create_acquisition_run_requires_completed_discovery_run(monkeypatch):
@@ -313,3 +363,21 @@ def test_manual_upload_registration(monkeypatch, tmp_path: Path):
         assert status_body["failed_total"] == 0
     finally:
         object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
+def test_manual_complete_endpoint_persists_item_state():
+    acq_run_id, source_id = _seed_manual_recovery_case()
+    client = TestClient(app)
+    resp = client.post(
+        f"/v1/acquisition/runs/{acq_run_id}/manual-complete",
+        json={"source_id": source_id},
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "skipped"
+    assert body["reason_code"] == "manual_complete"
+
+    items = client.get(f"/v1/acquisition/runs/{acq_run_id}/items", headers=_auth_headers())
+    assert items.status_code == 200
+    assert items.json()["items"][0]["status"] == "skipped"

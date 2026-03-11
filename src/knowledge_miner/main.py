@@ -25,6 +25,7 @@ from .acquisition import (
     build_manual_downloads_payload,
     create_acquisition_run,
     enqueue_acquisition_run,
+    mark_manual_complete,
     register_manual_upload,
 )
 from .ai_filter import describe_ai_filter_runtime
@@ -53,6 +54,7 @@ from .schemas import (
     ManualDownloadsListResponse,
     ManualUploadRequest,
     ManualUploadResponse,
+    ManualCompleteRequest,
     DocumentChunksListResponse,
     DocumentChunkOut,
     ParsedDocumentOut,
@@ -666,9 +668,11 @@ def list_sources(
     if effective_status == "accepted":
         stmt = stmt.where(Source.accepted.is_(True))
     elif effective_status == "rejected":
-        stmt = stmt.where(Source.accepted.is_(False), Source.review_status != "needs_review")
+        stmt = stmt.where(Source.review_status.in_(("auto_reject", "human_reject")))
     elif effective_status == "needs_review":
         stmt = stmt.where(Source.review_status == "needs_review")
+    elif effective_status == "later":
+        stmt = stmt.where(Source.review_status == "human_later")
     elif effective_status == "all":
         pass
     else:
@@ -758,7 +762,12 @@ def create_acq_run(
     db: Session = Depends(get_db),
 ) -> AcquisitionRunCreateResponse:
     try:
-        run = create_acquisition_run(db, payload.run_id, retry_failed_only=payload.retry_failed_only)
+        run = create_acquisition_run(
+            db,
+            payload.run_id,
+            retry_failed_only=payload.retry_failed_only,
+            selected_source_ids=payload.selected_source_ids,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found") from exc
     except RuntimeError as exc:
@@ -948,6 +957,29 @@ def manual_upload_registration(
         size_bytes=artifact.size_bytes,
         mime_type=artifact.mime_type,
     )
+
+
+@app.post("/v1/acquisition/runs/{acq_run_id}/manual-complete")
+def manual_complete_registration(
+    acq_run_id: str,
+    payload: ManualCompleteRequest,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        item = mark_manual_complete(db, acq_run_id=acq_run_id, source_id=payload.source_id)
+    except ValueError as exc:
+        reason = str(exc)
+        if reason == "acq_run_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found") from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="item_not_found") from exc
+    return {
+        "acq_run_id": acq_run_id,
+        "source_id": item.source_id,
+        "status": item.status,
+        "reason_code": item.reason_code,
+    }
 
 
 @app.get("/v1/acquisition/artifacts/{artifact_id}", response_model=ArtifactOut)

@@ -72,6 +72,7 @@ class SourcesListResponse(BaseModel):
 class AcquisitionRunCreateRequest(BaseModel):
     run_id: str = Field(min_length=1)
     retry_failed_only: bool = False
+    selected_source_ids: list[str] | None = None
 
 
 class AcquisitionRunCreateResponse(BaseModel):
@@ -169,6 +170,10 @@ class ManualUploadRequest(BaseModel):
     filename: str = Field(min_length=1)
     content_base64: str = Field(min_length=1)
     content_type: str | None = None
+
+
+class ManualCompleteRequest(BaseModel):
+    source_id: str = Field(min_length=1)
 
 
 class ParseRunCreateRequest(BaseModel):

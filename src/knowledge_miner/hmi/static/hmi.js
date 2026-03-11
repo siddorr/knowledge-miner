@@ -28,7 +28,7 @@ const state = {
       },
     },
   },
-  review: { offset: 0, loaded: false, expanded: new Set(), selected: new Set(), later: new Set(), items: [] },
+  review: { offset: 0, loaded: false, expanded: new Set(), selected: new Set(), items: [] },
   documents: { offset: 0, loaded: false, selectedSourceId: "", selected: new Set(), items: [], acqRunMeta: null },
   search: { loaded: false, payload: null, items: [], mode: "browse", docsById: new Map() },
   context: {},
@@ -38,6 +38,11 @@ const state = {
   },
   statusStrip: {
     nextActionRoute: "build",
+  },
+  busy: {
+    count: 0,
+    phase: "",
+    updatedAt: "",
   },
 };
 
@@ -65,6 +70,44 @@ function setPollState(message, stale = false) {
   node.textContent = message;
   node.classList.remove("poll-ok", "poll-stale");
   node.classList.add(stale ? "poll-stale" : "poll-ok");
+}
+
+function setButtonBusy(id, busy) {
+  const node = el(id);
+  if (node) node.disabled = busy;
+}
+
+function setGlobalBusy(phase, busy) {
+  if (busy) state.busy.count += 1;
+  else state.busy.count = Math.max(0, state.busy.count - 1);
+  if (busy && phase) state.busy.phase = phase;
+  if (state.busy.count === 0) state.busy.phase = "";
+  state.busy.updatedAt = new Date().toISOString();
+  const active = state.busy.count > 0;
+  setText(
+    "inProgressState",
+    active ? `In progress: ${state.busy.phase || "operation"} (updated ${state.busy.updatedAt})` : "Idle",
+  );
+  const banner = el("inProgressBanner");
+  if (banner) banner.hidden = !active;
+  if (active) emitTelemetryEvent("change", document.body, `busy:${state.busy.phase}:enter`);
+  else emitTelemetryEvent("change", document.body, "busy:exit");
+}
+
+async function runBusy(phase, buttonIds, fn) {
+  setGlobalBusy(phase, true);
+  for (const id of buttonIds || []) setButtonBusy(id, true);
+  try {
+    const out = await fn();
+    emitTelemetryEvent("change", document.body, `action:${phase}:complete`);
+    return out;
+  } catch (err) {
+    emitTelemetryEvent("change", document.body, `action:${phase}:fail`);
+    throw err;
+  } finally {
+    for (const id of buttonIds || []) setButtonBusy(id, false);
+    setGlobalBusy(phase, false);
+  }
 }
 
 function requiredKey() {
@@ -603,6 +646,9 @@ async function loadDashboard() {
   const docIssues = queueItems.filter((i) => i.phase === "acquisition" && (i.status === "failed" || i.status === "partial")).length;
   const parseErrors = queue.items.filter((i) => i.phase === "parse" && i.status === "failed").length;
   let sources = [];
+  let awaitingAcceptedDocs = docIssues;
+  let docFailures = docIssues;
+  let activeRunStatus = "unknown";
   if (state.latest.discovery) {
     try {
       const payload = await apiGet(`/v1/discovery/runs/${encodeURIComponent(state.latest.discovery)}/sources?status=all&limit=500&offset=0`);
@@ -610,12 +656,33 @@ async function loadDashboard() {
     } catch (_err) {
       sources = [];
     }
+    try {
+      const acceptedPayload = await apiGet(
+        `/v1/discovery/runs/${encodeURIComponent(state.latest.discovery)}/sources?status=accepted&limit=1000&offset=0`,
+      );
+      const acceptedIds = new Set((acceptedPayload.items || []).map((row) => row.id));
+      if (state.latest.acquisition) {
+        const [acqRun, acqItems] = await Promise.all([
+          apiGet(`/v1/acquisition/runs/${encodeURIComponent(state.latest.acquisition)}`),
+          apiGet(`/v1/acquisition/runs/${encodeURIComponent(state.latest.acquisition)}/items?limit=1000&offset=0`),
+        ]);
+        activeRunStatus = acqRun.status || "unknown";
+        const items = acqItems.items || [];
+        const downloaded = new Set(items.filter((row) => row.status === "downloaded").map((row) => row.source_id));
+        awaitingAcceptedDocs = Array.from(acceptedIds).filter((id) => !downloaded.has(id)).length;
+        docFailures = items.filter((row) => row.status === "failed" || row.status === "partial").length;
+      } else {
+        awaitingAcceptedDocs = acceptedIds.size;
+      }
+    } catch (_err) {
+      // keep fallback queue-derived values
+    }
   }
   state.build.coverageByTopic = mergeTopicCoverage(queueItems, sources);
   const activeCoverage = state.build.coverageByTopic[state.build.activeTopicId] || emptyTopicCoverage();
   const pendingForUi = activeCoverage.pending_review ?? needsReview;
-  const awaitingForUi = activeCoverage.awaiting_documents ?? docIssues;
-  const failedForUi = activeCoverage.failed_documents ?? docIssues;
+  const awaitingForUi = activeCoverage.awaiting_documents ?? awaitingAcceptedDocs;
+  const failedForUi = activeCoverage.failed_documents ?? docFailures;
   setText("reviewNavBadge", String(pendingForUi));
   setText("documentsNavBadge", String(awaitingForUi));
   renderBuildTopics();
@@ -639,6 +706,9 @@ async function loadDashboard() {
     ],
     4,
   );
+  if (!queueItems.length && (activeRunStatus === "running" || activeRunStatus === "queued")) {
+    setText("dashboardState", "Still processing. Results may appear soon.");
+  }
   updateStatusStrip({
     pendingReview: pendingForUi,
     awaitingDocs: awaitingForUi,
@@ -687,21 +757,24 @@ async function loadReview() {
   const runId = getDiscoveryRunId();
   if (!runId) throw new Error("discovery run id is required");
   const queueFilter = el("reviewStatusFilter").value;
-  const status = queueFilter === "pending" ? "needs_review" : queueFilter === "later" ? "all" : queueFilter;
+  const status = queueFilter === "pending" ? "needs_review" : queueFilter === "later" ? "later" : queueFilter;
   const limit = Number(el("reviewLimit").value);
   const offset = state.review.offset;
   const pageRaw = await apiGet(
     `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`,
   );
-  let items = pageRaw.items || [];
-  if (queueFilter === "pending") {
-    items = items.filter((s) => !state.review.later.has(s.id));
-  } else if (queueFilter === "later") {
-    items = items.filter((s) => state.review.later.has(s.id));
-  }
+  const items = pageRaw.items || [];
   state.review.items = items;
   setLatestId("discovery", runId);
   setText("reviewPage", `offset=${offset}, limit=${limit}, total=${items.length}`);
+  try {
+    const run = await apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
+    if (!items.length && (run.status === "queued" || run.status === "running")) {
+      setText("reviewState", "Discovery run is still processing. Review queue will fill automatically.");
+    }
+  } catch (_err) {
+    // keep current UI state
+  }
   renderTable(
     "reviewRows",
     items.map((s) => {
@@ -779,7 +852,11 @@ async function loadDocuments() {
   setText("documentsPage", `offset=${offset}, limit=${limit}, total=${filtered.length}`);
   setText("documentsState", `Loaded ${filtered.length} items for ${acqRunId}`);
   if (!filtered.length) {
-    setText("documentsDetails", "No item selected.");
+    if (run.status === "queued" || run.status === "running") {
+      setText("documentsDetails", "Acquisition is still processing. Items will appear as they are resolved.");
+    } else {
+      setText("documentsDetails", "No item selected.");
+    }
   }
   state.documents.loaded = true;
   return true;
@@ -899,19 +976,21 @@ async function runSearch(event) {
   if (event) event.preventDefault();
   setText("searchError", "");
   try {
-    const parseRunId = getParseRunId();
-    if (!parseRunId) throw new Error("parse run id is required");
-    const query = el("searchQuery").value.trim();
-    const payload = {
-      parse_run_id: parseRunId,
-      query,
-      limit: Number(el("searchLimit").value),
-    };
-    if (!payload.query) {
-      await loadLibraryBrowser(parseRunId);
-      return;
-    }
-    await runSearchData(payload);
+    await runBusy("library_search", [], async () => {
+      const parseRunId = getParseRunId();
+      if (!parseRunId) throw new Error("parse run id is required");
+      const query = el("searchQuery").value.trim();
+      const payload = {
+        parse_run_id: parseRunId,
+        query,
+        limit: Number(el("searchLimit").value),
+      };
+      if (!payload.query) {
+        await loadLibraryBrowser(parseRunId);
+        return;
+      }
+      await runSearchData(payload);
+    });
   } catch (err) {
     setText("searchError", `Search failed: ${err.message}`);
   }
@@ -1048,23 +1127,25 @@ async function startDiscovery(event) {
   event.preventDefault();
   setText("dashboardError", "");
   try {
-    const raw = el("startDiscoverySeeds").value;
-    const seedQueries = raw.split(",").map((s) => s.trim()).filter(Boolean);
-    if (!seedQueries.length) throw new Error("provide at least one seed query");
-    const aiMode = el("startDiscoveryAiMode").value;
-    const aiFilterEnabled = aiMode === "default" ? null : aiMode === "on";
-    const result = await apiPost("/v1/discovery/runs", {
-      seed_queries: seedQueries,
-      max_iterations: Number(el("startDiscoveryMaxIterations").value),
-      ai_filter_enabled: aiFilterEnabled,
+    await runBusy("discovery", ["createSessionBtn"], async () => {
+      const raw = el("startDiscoverySeeds").value;
+      const seedQueries = raw.split(",").map((s) => s.trim()).filter(Boolean);
+      if (!seedQueries.length) throw new Error("provide at least one seed query");
+      const aiMode = el("startDiscoveryAiMode").value;
+      const aiFilterEnabled = aiMode === "default" ? null : aiMode === "on";
+      const result = await apiPost("/v1/discovery/runs", {
+        seed_queries: seedQueries,
+        max_iterations: Number(el("startDiscoveryMaxIterations").value),
+        ai_filter_enabled: aiFilterEnabled,
+      });
+      setLatestId("discovery", result.run_id);
+      el("discoverRunIdInput").value = result.run_id;
+      el("reviewRunIdInput").value = result.run_id;
+      setText("dashboardState", "Discovery run started. IDs are available in Advanced.");
+      await loadDashboard();
+      await loadDiscover();
+      window.location.hash = "#review";
     });
-    setLatestId("discovery", result.run_id);
-    el("discoverRunIdInput").value = result.run_id;
-    el("reviewRunIdInput").value = result.run_id;
-    setText("dashboardState", "Discovery run started. IDs are available in Advanced.");
-    await loadDashboard();
-    await loadDiscover();
-    window.location.hash = "#discover";
   } catch (err) {
     setText("dashboardError", `Start failed: ${err.message}`);
   }
@@ -1192,7 +1273,30 @@ async function loadReviewClick(event) {
   try {
     await loadReview();
   } catch (err) {
+    if (String(err.message || "").includes("run_not_found")) {
+      const recovered = await recoverLatestDiscoveryRun();
+      if (recovered) {
+        await loadReview();
+        return;
+      }
+    }
     setText("reviewError", `Load failed: ${err.message}`);
+  }
+}
+
+async function recoverLatestDiscoveryRun() {
+  try {
+    const queue = await apiGet("/v1/work-queue?limit=200&offset=0");
+    const first = (queue.items || []).find((row) => row.phase === "discovery" && row.run_id);
+    if (!first) return false;
+    const runId = first.run_id;
+    setLatestId("discovery", runId);
+    el("discoverRunIdInput").value = runId;
+    el("reviewRunIdInput").value = runId;
+    setText("reviewState", `Recovered latest available run: ${runId}`);
+    return true;
+  } catch (_err) {
+    return false;
   }
 }
 
@@ -1249,14 +1353,17 @@ async function handleReviewAction(event) {
 
   if (action === "later") {
     if (!sourceId) return;
-    state.review.later.add(sourceId);
-    state.review.selected.delete(sourceId);
-    setText("reviewState", `Moved to Later: ${sourceId}`);
     try {
+      await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision: "later" });
+      state.review.selected.delete(sourceId);
+      setText("reviewState", "Moved to Later.");
       await loadReview();
       await loadDashboard();
     } catch (err) {
-      setText("reviewError", `Load failed: ${err.message}`);
+      if (String(err.message || "").includes("source_not_found")) {
+        await recoverLatestDiscoveryRun();
+      }
+      setText("reviewError", `Review failed: ${err.message}`);
     }
     return;
   }
@@ -1284,7 +1391,6 @@ async function applyReviewDecisionToSelected(decision) {
   for (const sourceId of selected) {
     try {
       await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision });
-      state.review.later.delete(sourceId);
       ok += 1;
     } catch (_err) {
       // continue to apply best-effort for rest
@@ -1313,7 +1419,13 @@ async function sendAcceptedSelectedToDocuments() {
     return;
   }
   try {
-    const acq = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: false });
+    const acq = await runBusy("acquisition", ["reviewBatchSendDocsBtn"], async () =>
+      apiPost("/v1/acquisition/runs", {
+        run_id: runId,
+        retry_failed_only: false,
+        selected_source_ids: accepted.map((item) => item.id),
+      }),
+    );
     setLatestId("acquisition", acq.acq_run_id);
     el("documentsAcqRunIdInput").value = acq.acq_run_id;
     setText("reviewState", "Sent accepted rows to Documents.");
@@ -1321,6 +1433,9 @@ async function sendAcceptedSelectedToDocuments() {
     await loadDocuments();
     await loadDashboard();
   } catch (err) {
+    if (String(err.message || "").includes("run_not_found")) {
+      await recoverLatestDiscoveryRun();
+    }
     setText("reviewError", `Send to Documents failed: ${err.message}`);
   }
 }
@@ -1329,13 +1444,16 @@ async function startAcquisition(event) {
   event.preventDefault();
   setText("acqError", "");
   try {
-    const runId = el("startAcqRunId").value.trim();
-    if (!runId) throw new Error("discovery run id is required");
-    const retryFailedOnly = el("startAcqRetry").value === "true";
-    const result = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: retryFailedOnly });
-    setLatestId("acquisition", result.acq_run_id);
-    el("documentsAcqRunIdInput").value = result.acq_run_id;
-    setText("acqError", "Acquisition started. IDs are available in Advanced.");
+    await runBusy("acquisition", [], async () => {
+      const runId = el("startAcqRunId").value.trim();
+      if (!runId) throw new Error("discovery run id is required");
+      const retryFailedOnly = el("startAcqRetry").value === "true";
+      const result = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: retryFailedOnly });
+      setLatestId("acquisition", result.acq_run_id);
+      el("documentsAcqRunIdInput").value = result.acq_run_id;
+      setText("acqError", "Acquisition started. IDs are available in Advanced.");
+    });
+    });
   } catch (err) {
     setText("acqError", `Start failed: ${err.message}`);
   }
@@ -1345,13 +1463,15 @@ async function startParse(event) {
   event.preventDefault();
   setText("parseError", "");
   try {
-    const acqRunId = el("startParseAcqRunId").value.trim();
-    if (!acqRunId) throw new Error("acquisition run id is required");
-    const retryFailedOnly = el("startParseRetry").value === "true";
-    const result = await apiPost("/v1/parse/runs", { acq_run_id: acqRunId, retry_failed_only: retryFailedOnly });
-    setLatestId("parse", result.parse_run_id);
-    el("searchParseRunIdInput").value = result.parse_run_id;
-    setText("parseError", "Parse started. IDs are available in Advanced.");
+    await runBusy("parse", [], async () => {
+      const acqRunId = el("startParseAcqRunId").value.trim();
+      if (!acqRunId) throw new Error("acquisition run id is required");
+      const retryFailedOnly = el("startParseRetry").value === "true";
+      const result = await apiPost("/v1/parse/runs", { acq_run_id: acqRunId, retry_failed_only: retryFailedOnly });
+      setLatestId("parse", result.parse_run_id);
+      el("searchParseRunIdInput").value = result.parse_run_id;
+      setText("parseError", "Parse started. IDs are available in Advanced.");
+    });
   } catch (err) {
     setText("parseError", `Start failed: ${err.message}`);
   }
@@ -1415,7 +1535,16 @@ async function handleDocumentsAction(event) {
   }
 
   if (action === "manual-complete") {
-    setText("documentsState", `Marked manual complete: ${sourceId}`);
+    try {
+      const acqRunId = getAcqRunId();
+      if (!acqRunId) throw new Error("acquisition run id is required");
+      await apiPost(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-complete`, { source_id: sourceId });
+      setText("documentsState", "Manual completion saved.");
+      await loadDocuments();
+      await loadDashboard();
+    } catch (err) {
+      setText("documentsError", `Manual complete failed: ${err.message}`);
+    }
   }
 }
 
@@ -1479,7 +1608,9 @@ async function documentsAcquirePending() {
     return;
   }
   try {
-    const next = await apiPost("/v1/acquisition/runs", { run_id: run.discovery_run_id, retry_failed_only: false });
+    const next = await runBusy("acquisition", ["documentsAcquirePendingBtn"], async () =>
+      apiPost("/v1/acquisition/runs", { run_id: run.discovery_run_id, retry_failed_only: false }),
+    );
     setLatestId("acquisition", next.acq_run_id);
     el("documentsAcqRunIdInput").value = next.acq_run_id;
     setText("documentsState", "Started acquisition for pending sources.");
@@ -1496,7 +1627,9 @@ async function documentsRetryFailed() {
     return;
   }
   try {
-    const next = await apiPost("/v1/acquisition/runs", { run_id: run.discovery_run_id, retry_failed_only: true });
+    const next = await runBusy("acquisition", ["documentsRetryFailedBtn"], async () =>
+      apiPost("/v1/acquisition/runs", { run_id: run.discovery_run_id, retry_failed_only: true }),
+    );
     setLatestId("acquisition", next.acq_run_id);
     el("documentsAcqRunIdInput").value = next.acq_run_id;
     setText("documentsState", "Started retry-failed acquisition.");

@@ -208,17 +208,21 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
 
 def review_source(db: Session, source: Source, decision: str) -> Source:
     normalized = decision.strip().lower()
-    if normalized not in {"accept", "reject"}:
-        raise ValueError("decision must be accept or reject")
+    if normalized not in {"accept", "reject", "later"}:
+        raise ValueError("decision must be accept, reject, or later")
 
     if normalized == "accept":
         source.accepted = True
         source.review_status = "human_accept"
         source.final_decision = "human_accept"
-    else:
+    elif normalized == "reject":
         source.accepted = False
         source.review_status = "human_reject"
         source.final_decision = "human_reject"
+    else:
+        source.accepted = False
+        source.review_status = "human_later"
+        source.final_decision = "human_later"
     source.decision_source = "human_review"
     source.updated_at = datetime.now(UTC)
     db.commit()

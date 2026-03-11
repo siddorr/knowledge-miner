@@ -103,7 +103,7 @@ def test_hmi_first_time_flow_labels_and_no_required_manual_ids():
     response = client.get("/hmi")
     assert response.status_code == 200
     body = response.text
-    assert "First-time-user flow: Discover -> Review -> Documents -> Search." in body
+    assert "First-time-user flow: Build -> Review -> Documents -> Library." in body
     assert "Run Discovery" in body
     assert "Load Review Queue" in body
     assert "Load Download Issues" in body

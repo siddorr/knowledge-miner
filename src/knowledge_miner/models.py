@@ -57,11 +57,11 @@ class Source(Base):
             name="ck_sources_discovery_method_values",
         ),
         CheckConstraint(
-            "review_status IN ('auto_accept','auto_reject','needs_review','human_accept','human_reject')",
+            "review_status IN ('auto_accept','auto_reject','needs_review','human_accept','human_reject','human_later')",
             name="ck_sources_review_status_values",
         ),
         CheckConstraint(
-            "final_decision IN ('auto_accept','auto_reject','needs_review','human_accept','human_reject')",
+            "final_decision IN ('auto_accept','auto_reject','needs_review','human_accept','human_reject','human_later')",
             name="ck_sources_final_decision_values",
         ),
         CheckConstraint(
@@ -166,7 +166,7 @@ class AcquisitionItem(Base):
         ),
         CheckConstraint("attempt_count >= 0", name="ck_acquisition_items_attempt_count_gte_0"),
         CheckConstraint(
-            "reason_code IS NULL OR reason_code IN ('paywalled','no_oa_found','rate_limited','robots_blocked','source_error')",
+            "reason_code IS NULL OR reason_code IN ('paywalled','no_oa_found','rate_limited','robots_blocked','source_error','manual_complete')",
             name="ck_acquisition_items_reason_code_values",
         ),
         Index("ix_acquisition_items_acq_run_id_status", "acq_run_id", "status"),
