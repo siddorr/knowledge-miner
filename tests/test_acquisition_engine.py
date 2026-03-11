@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import hashlib
 
 from sqlalchemy import select
 
@@ -57,6 +58,52 @@ def _seed_completed_run(source_url: str, doi: str | None = None) -> tuple[str, s
         db.add(source)
         db.commit()
         return run.id, source.id
+
+
+def _seed_completed_run_with_two_sources() -> tuple[str, list[str]]:
+    with SessionLocal() as db:
+        run = Run(
+            id="run_acq_test_two",
+            status="completed",
+            seed_queries=["upw semiconductor"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=2,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning="AI filter disabled (USE_AI_FILTER=false); heuristic filtering only.",
+        )
+        db.add(run)
+        source_ids = ["doi:10.1000/acq-engine-a", "doi:10.1000/acq-engine-b"]
+        for sid, url in zip(source_ids, ["https://publisher.example/a.pdf", "https://publisher.example/b"], strict=True):
+            db.add(
+                Source(
+                    id=sid,
+                    run_id=run.id,
+                    title=f"UPW source {sid}",
+                    year=2023,
+                    url=url,
+                    doi=sid.removeprefix("doi:"),
+                    abstract="UPW abstract",
+                    type="academic",
+                    source="openalex",
+                    source_native_id=sid,
+                    patent_office=None,
+                    patent_number=None,
+                    iteration=1,
+                    discovery_method="seed_search",
+                    relevance_score=6.0,
+                    accepted=True,
+                    review_status="auto_accept",
+                    ai_decision=None,
+                    ai_confidence=None,
+                    parent_source_id=None,
+                    provenance_history=[],
+                )
+            )
+        db.commit()
+        return run.id, source_ids
 
 
 def test_resolve_candidate_urls_prefers_source_then_doi():
@@ -233,3 +280,93 @@ def test_retry_failed_only_selects_only_failed_sources(monkeypatch):
         assert len(second_items) == 1
         assert second_items[0].source_id == source_id
         assert second.retry_failed_only is True
+
+
+def test_retry_failed_only_without_previous_run_creates_no_items():
+    run_id, _ = _seed_completed_run("https://publisher.example/paper.pdf")
+    with SessionLocal() as db:
+        run = acquisition.create_acquisition_run(db, run_id, retry_failed_only=True)
+        items = db.scalars(select(AcquisitionItem).where(AcquisitionItem.acq_run_id == run.id)).all()
+        assert run.total_sources == 0
+        assert items == []
+
+
+def test_execute_acquisition_run_mixed_success_and_failure(monkeypatch, tmp_path):
+    run_id, source_ids = _seed_completed_run_with_two_sources()
+    original_artifacts_dir = settings.artifacts_dir
+    try:
+        object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+        with SessionLocal() as db:
+            acq_run = acquisition.create_acquisition_run(db, run_id, retry_failed_only=False)
+
+        def fake_acquire(source: Source):  # noqa: ANN001
+            if source.id == source_ids[0]:
+                return acquisition.AcquisitionOutcome(
+                    kind="pdf",
+                    mime_type="application/pdf",
+                    content=b"%PDF-1.4 mixed",
+                    url=source.url,
+                    attempts=1,
+                    error=None,
+                )
+            return acquisition.AcquisitionOutcome(
+                kind=None,
+                mime_type=None,
+                content=None,
+                url=source.url,
+                attempts=3,
+                error="http_500",
+            )
+
+        monkeypatch.setattr(acquisition, "_acquire_source_content", fake_acquire)
+        with SessionLocal() as db:
+            run = db.get(AcquisitionRun, acq_run.id)
+            assert run is not None
+            acquisition.execute_acquisition_run(db, run)
+            db.refresh(run)
+            assert run.downloaded_total == 1
+            assert run.failed_total == 1
+            assert run.partial_total == 0
+
+            items = db.scalars(
+                select(AcquisitionItem).where(AcquisitionItem.acq_run_id == run.id).order_by(AcquisitionItem.source_id.asc())
+            ).all()
+            assert len(items) == 2
+            statuses = {i.source_id: i.status for i in items}
+            assert statuses[source_ids[0]] == "downloaded"
+            assert statuses[source_ids[1]] == "failed"
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
+def test_pdf_artifact_checksum_and_size(monkeypatch, tmp_path):
+    run_id, source_id = _seed_completed_run("https://publisher.example/paper.pdf")
+    original_artifacts_dir = settings.artifacts_dir
+    payload = b"%PDF-1.4 checksum"
+    try:
+        object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+        with SessionLocal() as db:
+            acq_run = acquisition.create_acquisition_run(db, run_id, retry_failed_only=False)
+
+        def fake_download(url: str, *, timeout_seconds: float, max_bytes: int):  # noqa: ANN001
+            del url, timeout_seconds, max_bytes
+            return acquisition.DownloadResult(
+                kind="pdf",
+                mime_type="application/pdf",
+                content=payload,
+                url="https://publisher.example/paper.pdf",
+                error=None,
+                retryable=False,
+            )
+
+        monkeypatch.setattr(acquisition, "_download_url", fake_download)
+        with SessionLocal() as db:
+            run = db.get(AcquisitionRun, acq_run.id)
+            assert run is not None
+            acquisition.execute_acquisition_run(db, run)
+            artifact = db.scalars(select(Artifact).where(Artifact.acq_run_id == run.id, Artifact.source_id == source_id)).first()
+            assert artifact is not None
+            assert artifact.size_bytes == len(payload)
+            assert artifact.checksum_sha256 == hashlib.sha256(payload).hexdigest()
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)

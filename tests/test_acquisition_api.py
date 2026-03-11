@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 import knowledge_miner.main as main_module
+import knowledge_miner.rate_limit as rate_limit_module
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.main import app
 from knowledge_miner.models import Artifact, Run, Source
@@ -145,3 +146,46 @@ def test_get_artifact_endpoint(monkeypatch):
     assert body["artifact_id"] == "artifact_1"
     assert body["acq_run_id"] == acq_run_id
     assert body["source_id"] == source_id
+
+
+def test_acquisition_endpoints_require_auth(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    run_id, _ = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+
+    resp = client.post("/v1/acquisition/runs", json={"run_id": run_id})
+    assert resp.status_code == 401
+
+    resp = client.get("/v1/acquisition/runs/unknown")
+    assert resp.status_code == 401
+
+
+def test_acquisition_endpoints_rate_limited(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    monkeypatch.setattr(rate_limit_module.rate_limiter, "check", lambda key: False)
+    run_id, _ = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+    resp = client.post("/v1/acquisition/runs", json={"run_id": run_id}, headers=_auth_headers())
+    assert resp.status_code == 429
+    assert resp.json()["detail"] == "rate_limited"
+
+
+def test_acquisition_not_found_endpoints(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    client = TestClient(app)
+
+    resp = client.get("/v1/acquisition/runs/acq_missing", headers=_auth_headers())
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "run_not_found"
+
+    resp = client.get("/v1/acquisition/runs/acq_missing/items", headers=_auth_headers())
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "run_not_found"
+
+    resp = client.get("/v1/acquisition/runs/acq_missing/manifest", headers=_auth_headers())
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "run_not_found"
+
+    resp = client.get("/v1/acquisition/artifacts/missing", headers=_auth_headers())
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "artifact_not_found"

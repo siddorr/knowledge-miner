@@ -87,7 +87,7 @@ Decision lock (approved):
 - Run-level `manifest.json`
 - Artifact metadata parity between DB and filesystem
 
-6. [ ] P1 - Add tests for acquisition stage
+6. [x] P1 - Add tests for acquisition stage
 - Unit: URL selection, content classification, checksum, status transitions
 - Integration: mixed success/failure run, resume behavior
 - API: endpoint semantics, auth/rate-limit/error consistency
