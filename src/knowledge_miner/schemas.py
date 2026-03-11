@@ -261,6 +261,48 @@ class SearchResponse(BaseModel):
     total: int
 
 
+class WorkQueueItemOut(BaseModel):
+    item_type: str
+    phase: str
+    run_id: str
+    source_id: str | None = None
+    item_id: str | None = None
+    status: str
+    title: str | None = None
+    reason_code: str | None = None
+    reason_text: str | None = None
+    context: dict = Field(default_factory=dict)
+
+
+class WorkQueueResponse(BaseModel):
+    items: list[WorkQueueItemOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class GlobalSearchResultOut(BaseModel):
+    result_type: str
+    id: str
+    label: str
+    snippet: str | None = None
+    context: dict = Field(default_factory=dict)
+
+
+class GlobalSearchResponse(BaseModel):
+    query: str
+    items: list[GlobalSearchResultOut]
+    total: int
+
+
+class SystemStatusResponse(BaseModel):
+    auth_enabled: bool
+    auth_mode: str
+    ai_filter_active: bool
+    ai_filter_warning: str | None
+    provider_readiness: dict
+
+
 class AISettingsUpdateRequest(BaseModel):
     use_ai_filter: bool | None = None
     ai_api_key: str | None = None

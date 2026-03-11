@@ -9,28 +9,31 @@
 <body>
   <header class="topbar">
     <h1>Knowledge Miner Ops Dashboard</h1>
-    <p>Read-only operations views for discovery, acquisition, parse, and search context.</p>
+    <p>Operator-first workflow for discovery review, acquisition recovery, and parse triage.</p>
   </header>
 
-  <section class="authbar">
+  <section id="apiAuthBar" class="authbar">
     <label for="apiKeyInput">API Key</label>
     <input id="apiKeyInput" type="password" placeholder="Bearer token (e.g. dev-token)">
     <button id="saveApiKeyBtn" type="button">Save Key</button>
     <span id="authState" class="muted">Key not set</span>
+    <span id="authModeHint" class="muted"></span>
   </section>
 
   <nav class="nav" aria-label="Primary">
-    <a href="#runs">Runs</a>
+    <a href="#work-queue">Work Queue</a>
     <a href="#discovery">Discovery</a>
     <a href="#acquisition">Acquisition</a>
     <a href="#parse">Parse</a>
     <a href="#search">Search</a>
     <a href="#manual-recovery">Manual Recovery</a>
+    <a href="#runs">Runs &amp; Logs</a>
   </nav>
 
   <section class="pollbar">
     <strong>Polling:</strong>
     <span id="pollState" class="poll-ok">Idle (set API key, load a section).</span>
+    <span id="systemBadges" class="muted">System status not loaded.</span>
   </section>
 
   <section class="authbar">
@@ -59,9 +62,49 @@
     <span id="idCopyState" class="muted"></span>
   </section>
 
+  <section class="pollbar">
+    <form id="globalSearchForm" class="row compact">
+      <label>
+        Global Search
+        <input id="globalSearchQuery" type="text" placeholder="run id, DOI, source title, chunk text">
+      </label>
+      <label>
+        Limit
+        <select id="globalSearchLimit">
+          <option value="10">10</option>
+          <option value="25" selected>25</option>
+          <option value="50">50</option>
+        </select>
+      </label>
+      <button id="globalSearchBtn" type="submit">Search</button>
+      <span id="globalSearchState" class="muted"></span>
+    </form>
+  </section>
+
+  <section class="idbar">
+    <strong>Context:</strong>
+    <pre id="globalContext" class="metrics">No context selected.</pre>
+  </section>
+
   <main class="stack">
+    <section id="work-queue" class="panel">
+      <h2>Work Queue</h2>
+      <p class="muted">Actionable queue across discovery, acquisition, and parse.</p>
+      <div class="row compact">
+        <button id="refreshQueueBtn" type="button">Refresh Queue</button>
+        <span id="workQueueState" class="muted"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Phase</th><th>Status</th><th>Title</th><th>Reason</th><th>Actions</th></tr></thead>
+          <tbody id="workQueueRows"></tbody>
+        </table>
+      </div>
+      <p id="workQueueError" class="error"></p>
+    </section>
+
     <section id="runs" class="panel">
-      <h2>Runs Dashboard</h2>
+      <h2>Runs &amp; Logs (Advanced)</h2>
       <form id="runLookupForm" class="row">
         <label>
           Phase

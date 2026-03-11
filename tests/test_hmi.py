@@ -18,7 +18,8 @@ def test_hmi_shell_route_and_navigation():
     assert "Parse" in body
     assert "Search" in body
     assert "Manual Recovery" in body
-    assert "Runs Dashboard" in body
+    assert "Work Queue" in body
+    assert "Runs &amp; Logs (Advanced)" in body
     assert "/hmi/static/hmi.js" in body
     assert "Create New Session" in body
     assert "postCreateGuidance" in body
@@ -28,6 +29,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Actions" in body
     assert "Latest IDs:" in body
     assert "Copy ID" in body
+    assert "Context:" in body
     assert "__KM_HMI_DEFAULT_TOKEN__" in body
     assert "Load Queue" in body
     assert "Export CSV" in body
@@ -36,6 +38,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Load AI Settings" in body
     assert "Save AI Settings" in body
     assert "AI Filter" in body
+    assert "Global Search" in body
     assert "Parse Run ID" in body
     assert "Selected Document Detail" in body
     assert "Selected Document Full Text" in body
@@ -75,6 +78,11 @@ def test_hmi_static_js_served():
     assert "Switch filter to all or needs_review." in body
     assert "loadAiSettings" in body
     assert "saveAiSettings" in body
+    assert "runGlobalSearch" in body
+    assert "loadWorkQueueData" in body
+    assert "/v1/work-queue" in body
+    assert "/v1/system/status" in body
+    assert "/v1/search/global" in body
 
 
 def test_hmi_prefills_system_token_when_configured():
@@ -90,4 +98,16 @@ def test_hmi_prefills_system_token_when_configured():
         assert 'window.__KM_HMI_DEFAULT_TOKEN__ = "sys-token-123";' in body
     finally:
         object.__setattr__(settings, "hmi_api_token", original)
+        object.__setattr__(settings, "auth_enabled", original_auth)
+
+
+def test_hmi_auth_disabled_flag_is_injected():
+    original_auth = settings.auth_enabled
+    object.__setattr__(settings, "auth_enabled", False)
+    try:
+        client = TestClient(app)
+        response = client.get("/hmi")
+        assert response.status_code == 200
+        assert "window.__KM_HMI_AUTH_ENABLED__ = false;" in response.text
+    finally:
         object.__setattr__(settings, "auth_enabled", original_auth)

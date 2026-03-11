@@ -138,3 +138,10 @@ Notes:
 1. Settings apply to newly created discovery runs.
 2. Existing/running runs keep their already-saved `ai_filter_active` mode.
 3. API key is never returned in full; response includes only masked/boolean key state.
+
+## Operator-First HMI APIs
+
+New operator workflow APIs:
+1. `GET /v1/work-queue` for actionable cross-phase queue (`needs_review`, `failed`, `partial`).
+2. `GET /v1/search/global` for global typed search across runs/sources/acquisition/parse/chunks.
+3. `GET /v1/system/status` for auth mode, AI readiness, and provider readiness summary.

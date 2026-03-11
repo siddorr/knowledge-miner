@@ -573,36 +573,71 @@ Definition of done for Phase 4.1:
 Reference:
 - `HMI_PLAN.md` (UX Rebuild)
 
-1. [ ] P0 - Add aggregated work queue endpoint
+1. [x] P0 - Add aggregated work queue endpoint
 - `GET /v1/work-queue`
 - Return actionable rows across phases (`needs_review`, `failed`, `partial`) with reason fields and quick-action context.
 
-2. [ ] P0 - Add global search endpoint for HMI
+2. [x] P0 - Add global search endpoint for HMI
 - `GET /v1/search/global`
 - Search across runs, sources, acquisition items, parsed docs, and chunks.
 - Return typed results with target context for one-click navigation.
 
-3. [ ] P0 - Add system status endpoint for operator clarity
+3. [x] P0 - Add system status endpoint for operator clarity
 - `GET /v1/system/status`
 - Include auth mode, AI filter readiness/warnings, and provider readiness summary.
 
-4. [ ] P0 - Replace ID-first HMI forms with row-first operator actions
+4. [x] P0 - Replace ID-first HMI forms with row-first operator actions
 - Core workflows must not require manual copy/paste of run/source IDs.
 - Keep IDs available only in technical details / copy controls.
 
-5. [ ] P1 - Introduce `Work Queue` as default landing view
+5. [x] P1 - Introduce `Work Queue` as default landing view
 - Unified queue and action loop for discovery review + acquisition/parse failures.
 - Inline `Approve/Reject/Retry/Manual Upload` actions.
 
-6. [ ] P1 - Implement global context synchronization in HMI
+6. [x] P1 - Implement global context synchronization in HMI
 - Selecting an item in one section synchronizes context across related sections.
 - Preserve selected context, filters, and pagination across polling refresh.
 
-7. [ ] P1 - Move technical workflows to advanced `Runs & Logs` section
+7. [x] P1 - Move technical workflows to advanced `Runs & Logs` section
 - Keep explicit ID and diagnostics tools in advanced area.
 - Prevent operator screens from being overloaded with technical fields.
 
-8. [ ] P1 - Add UX-focused acceptance tests
+8. [x] P1 - Add UX-focused acceptance tests
 - End-to-end operator flow with no manual ID entry.
 - Visibility tests for hidden-by-default IDs.
 - Regression tests for review/upload/retry actions.
+
+9. [x] P0 - Hard replace rollout of HMI route
+- Replace legacy HMI shell with new operator-first shell at `/hmi`.
+- Remove deprecated ID-first UI paths/components from primary route.
+- Keep rollback instructions documented (git/redeploy procedure).
+
+10. [x] P0 - Implement auth UX parity (system token + optional override)
+- `AUTH_ENABLED=false`:
+  - hide token inputs and show explicit "No app token required" state.
+- `AUTH_ENABLED=true`:
+  - show token mode (`system token` vs `manual override`).
+  - support temporary manual override without exposing plaintext secrets.
+- Add tests for both auth modes in HMI.
+
+11. [x] P1 - Add operator "why" messaging in UI
+- Surface `reason_code` + readable `reason_text` on queue/stage rows.
+- Show actionable explanation for `needs_review|failed|partial` states.
+- Add tests verifying reasons render consistently for all major statuses.
+
+12. [x] P1 - Implement polling behavior contract in rebuilt HMI
+- Poll every 5s when active/visible, 15s when tab is hidden.
+- Stop polling for terminal run states unless user explicitly refreshes.
+- Preserve selected context/filters/pagination during polling updates.
+- Add UI tests for polling state transitions.
+
+13. [x] P1 - Build global shell/navigation layer for operator workflow
+- Add top-level global search bar and `Create New Session` CTA.
+- Add health/readiness badges (API/auth/AI/provider readiness).
+- Add default landing section (`Work Queue`) and persistent cross-section context panel.
+
+14. [x] P1 - Add accessibility baseline for new HMI
+- Ensure keyboard navigability for primary triage actions.
+- Ensure status signaling uses text + color (not color-only).
+- Ensure critical actions use explicit text labels (no icon-only controls).
+- Add focused accessibility regression checks for core operator flow.
