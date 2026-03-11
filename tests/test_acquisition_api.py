@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+
+from knowledge_miner.db import Base, SessionLocal, engine
+from knowledge_miner.main import app
+from knowledge_miner.models import Artifact, Run, Source
+
+
+def setup_function():
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+
+def _auth_headers() -> dict[str, str]:
+    return {"Authorization": "Bearer dev-token"}
+
+
+def _seed_discovery_run(*, completed: bool) -> tuple[str, str]:
+    with SessionLocal() as db:
+        run = Run(
+            id="run_seed_1",
+            status="completed" if completed else "running",
+            seed_queries=["upw semiconductor"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning="AI filter disabled (USE_AI_FILTER=false); heuristic filtering only.",
+        )
+        db.add(run)
+        src = Source(
+            id="doi:10.1000/test-acq",
+            run_id=run.id,
+            title="UPW control in semiconductor lines",
+            year=2023,
+            url="https://ieee.org/test",
+            doi="10.1000/test-acq",
+            abstract="UPW and semiconductor process control",
+            type="academic",
+            source="openalex",
+            source_native_id="W1",
+            patent_office=None,
+            patent_number=None,
+            iteration=1,
+            discovery_method="seed_search",
+            relevance_score=6.0,
+            accepted=True,
+            review_status="auto_accept",
+            ai_decision=None,
+            ai_confidence=None,
+            parent_source_id=None,
+            provenance_history=[],
+        )
+        db.add(src)
+        db.commit()
+        return run.id, src.id
+
+
+def test_create_acquisition_run_happy_path():
+    run_id, _ = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/acquisition/runs",
+        json={"run_id": run_id, "retry_failed_only": False},
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["acq_run_id"].startswith("acq_")
+    assert body["status"] in {"queued", "running", "completed"}
+
+
+def test_create_acquisition_run_requires_completed_discovery_run():
+    run_id, _ = _seed_discovery_run(completed=False)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/acquisition/runs",
+        json={"run_id": run_id, "retry_failed_only": False},
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "run_not_complete"
+
+
+def test_acquisition_status_items_manifest_endpoints():
+    run_id, source_id = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+    create_resp = client.post("/v1/acquisition/runs", json={"run_id": run_id}, headers=_auth_headers())
+    assert create_resp.status_code == 202
+    acq_run_id = create_resp.json()["acq_run_id"]
+
+    status_resp = client.get(f"/v1/acquisition/runs/{acq_run_id}", headers=_auth_headers())
+    assert status_resp.status_code == 200
+    status_body = status_resp.json()
+    assert status_body["acq_run_id"] == acq_run_id
+    assert status_body["discovery_run_id"] == run_id
+
+    items_resp = client.get(f"/v1/acquisition/runs/{acq_run_id}/items", headers=_auth_headers())
+    assert items_resp.status_code == 200
+    items_body = items_resp.json()
+    assert items_body["total"] == 1
+    assert items_body["items"][0]["source_id"] == source_id
+
+    manifest_resp = client.get(f"/v1/acquisition/runs/{acq_run_id}/manifest", headers=_auth_headers())
+    assert manifest_resp.status_code == 200
+    manifest = manifest_resp.json()
+    assert manifest["acq_run_id"] == acq_run_id
+    assert manifest["discovery_run_id"] == run_id
+    assert len(manifest["items"]) == 1
+
+
+def test_get_artifact_endpoint():
+    run_id, source_id = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+    create_resp = client.post("/v1/acquisition/runs", json={"run_id": run_id}, headers=_auth_headers())
+    assert create_resp.status_code == 202
+    acq_run_id = create_resp.json()["acq_run_id"]
+
+    with SessionLocal() as db:
+        artifact = Artifact(
+            id="artifact_1",
+            acq_run_id=acq_run_id,
+            source_id=source_id,
+            item_id=None,
+            kind="html",
+            path=f"acquisition/{acq_run_id}/{source_id}/source.html",
+            checksum_sha256="abc",
+            size_bytes=123,
+            mime_type="text/html",
+        )
+        db.add(artifact)
+        db.commit()
+
+    resp = client.get("/v1/acquisition/artifacts/artifact_1", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["artifact_id"] == "artifact_1"
+    assert body["acq_run_id"] == acq_run_id
+    assert body["source_id"] == source_id

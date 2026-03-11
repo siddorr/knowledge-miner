@@ -58,14 +58,14 @@ Decision lock (approved):
 - Storage: filesystem + DB index
 - Formats: PDF first, HTML fallback
 
-1. [ ] P0 - Add acquisition API endpoints
+1. [x] P0 - Add acquisition API endpoints
 - `POST /v1/acquisition/runs`
 - `GET /v1/acquisition/runs/{acq_run_id}`
 - `GET /v1/acquisition/runs/{acq_run_id}/items`
 - `GET /v1/acquisition/artifacts/{artifact_id}`
 - `GET /v1/acquisition/runs/{acq_run_id}/manifest`
 
-2. [ ] P0 - Add acquisition database schema and migrations
+2. [x] P0 - Add acquisition database schema and migrations
 - `acquisition_runs`
 - `acquisition_items`
 - `artifacts`

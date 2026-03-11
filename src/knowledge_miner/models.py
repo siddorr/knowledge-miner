@@ -118,3 +118,71 @@ class Keyword(Base):
     iteration: Mapped[int] = mapped_column(Integer, nullable=False)
     keyword: Mapped[str] = mapped_column(String, nullable=False)
     frequency: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AcquisitionRun(Base):
+    __tablename__ = "acquisition_runs"
+    __table_args__ = (
+        CheckConstraint("status IN ('queued','running','completed','failed')", name="ck_acquisition_runs_status_values"),
+        CheckConstraint("total_sources >= 0", name="ck_acquisition_runs_total_sources_gte_0"),
+        CheckConstraint("downloaded_total >= 0", name="ck_acquisition_runs_downloaded_total_gte_0"),
+        CheckConstraint("partial_total >= 0", name="ck_acquisition_runs_partial_total_gte_0"),
+        CheckConstraint("failed_total >= 0", name="ck_acquisition_runs_failed_total_gte_0"),
+        CheckConstraint("skipped_total >= 0", name="ck_acquisition_runs_skipped_total_gte_0"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    discovery_run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), nullable=False, index=True)
+    retry_failed_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    total_sources: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    downloaded_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    partial_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class AcquisitionItem(Base):
+    __tablename__ = "acquisition_items"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued','downloaded','partial','failed','skipped')",
+            name="ck_acquisition_items_status_values",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_acquisition_items_attempt_count_gte_0"),
+        Index("ix_acquisition_items_acq_run_id_status", "acq_run_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    acq_run_id: Mapped[str] = mapped_column(String, ForeignKey("acquisition_runs.id"), nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(String, ForeignKey("sources.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    selected_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class Artifact(Base):
+    __tablename__ = "artifacts"
+    __table_args__ = (
+        CheckConstraint("kind IN ('pdf','html')", name="ck_artifacts_kind_values"),
+        CheckConstraint("size_bytes IS NULL OR size_bytes >= 0", name="ck_artifacts_size_bytes_gte_0"),
+        Index("ix_artifacts_acq_run_id_source_id", "acq_run_id", "source_id"),
+        Index("ix_artifacts_checksum_sha256", "checksum_sha256"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    acq_run_id: Mapped[str] = mapped_column(String, ForeignKey("acquisition_runs.id"), nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    item_id: Mapped[str | None] = mapped_column(String, ForeignKey("acquisition_items.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    checksum_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)

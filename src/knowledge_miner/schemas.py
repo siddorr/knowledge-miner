@@ -58,3 +58,64 @@ class SourcesListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class AcquisitionRunCreateRequest(BaseModel):
+    run_id: str = Field(min_length=1)
+    retry_failed_only: bool = False
+
+
+class AcquisitionRunCreateResponse(BaseModel):
+    acq_run_id: str
+    status: str
+
+
+class AcquisitionRunStatusResponse(BaseModel):
+    acq_run_id: str
+    discovery_run_id: str
+    retry_failed_only: bool
+    status: str
+    total_sources: int
+    downloaded_total: int
+    partial_total: int
+    failed_total: int
+    skipped_total: int
+    error_message: str | None
+
+
+class AcquisitionItemOut(BaseModel):
+    item_id: str
+    source_id: str
+    status: str
+    attempt_count: int
+    selected_url: str | None
+    last_error: str | None
+
+
+class AcquisitionItemsListResponse(BaseModel):
+    items: list[AcquisitionItemOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class ArtifactOut(BaseModel):
+    artifact_id: str
+    acq_run_id: str
+    source_id: str
+    item_id: str | None
+    kind: str
+    path: str
+    checksum_sha256: str | None
+    size_bytes: int | None
+    mime_type: str | None
+
+
+class AcquisitionManifestResponse(BaseModel):
+    acq_run_id: str
+    discovery_run_id: str
+    status: str
+    generated_at: str
+    totals: dict
+    items: list[dict]
+    artifacts: list[dict]
