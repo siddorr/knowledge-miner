@@ -105,6 +105,46 @@ Definition of done for Phase 2:
 3. Failed/partial statuses are queryable via API and resumable with retry mode.
 4. Manifest content matches DB artifact records for the same run.
 
+## Phase 2.1 Implementation Tasks (Manual Download Recovery)
+
+Goal:
+- Show documents that failed/partial/skipped in acquisition so end users can download them manually.
+
+1. [ ] P0 - Add manual-recovery API endpoint
+- `GET /v1/acquisition/runs/{acq_run_id}/manual-downloads`
+- Return only items with status in `failed|partial|skipped`.
+
+2. [ ] P0 - Define manual download response schema
+- Per item include:
+  - `item_id`, `source_id`, `status`, `attempt_count`, `last_error`
+  - `title`, `doi`, `source_url`, `selected_url`
+  - `manual_url_candidates[]` (deduped, ordered)
+
+3. [ ] P0 - Build URL candidate aggregation logic
+- Combine URLs from source metadata:
+  - source landing URL
+  - DOI URL (`https://doi.org/...`)
+  - selected acquisition URL (if any)
+- Deduplicate/canonicalize and preserve deterministic ordering.
+
+4. [ ] P1 - Add export endpoint for user operations
+- `GET /v1/acquisition/runs/{acq_run_id}/manual-downloads.csv`
+- CSV columns aligned with manual download schema.
+
+5. [ ] P1 - Add manual-upload registration path
+- `POST /v1/acquisition/runs/{acq_run_id}/manual-upload`
+- Allow user-provided file registration for a `source_id` with checksum/MIME/path validation.
+
+6. [ ] P1 - Add tests for manual recovery
+- API tests for filtering, pagination, and schema.
+- Tests for URL candidate ordering/dedup.
+- Tests for CSV export and manual-upload validation.
+
+Definition of done for Phase 2.1:
+1. End user can retrieve a clear list of non-downloaded documents with direct/manual URL options.
+2. User can export the list for offline/manual processing.
+3. Manually downloaded files can be registered back into acquisition artifacts with traceable provenance.
+
 ## Phase 3 Implementation Tasks (Document Intelligence)
 
 Decision lock (proposed baseline):
@@ -132,7 +172,7 @@ Decision lock (proposed baseline):
   - full-text index on chunk text (`tsvector`) for PostgreSQL
   - checksum/content-hash indexes for dedup/reparse skip
 
-3. [ ] P0 - Implement parser engine for acquired artifacts
+3. [x] P0 - Implement parser engine for acquired artifacts
 - Input source: `artifacts` from completed acquisition runs.
 - PDF extraction pipeline with deterministic parser order and fallback.
 - HTML extraction pipeline using readability-style main-content extraction.

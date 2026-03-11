@@ -122,6 +122,7 @@ def test_parse_endpoints_basic(monkeypatch, tmp_path):
     doc = client.get(f"/v1/parse/documents/{doc_id}", headers=_auth_headers())
     assert doc.status_code == 200
     assert doc.json()["status"] == "parsed"
+    assert doc.json()["parser_used"] == "html_readability_heuristic"
 
     text = client.get(f"/v1/parse/documents/{doc_id}/text", headers=_auth_headers())
     assert text.status_code == 200

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import hashlib
+import html
 from pathlib import Path
 import re
 import threading
@@ -104,14 +105,14 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
                 failed_total += 1
                 continue
             try:
-                text, parser_used = _extract_artifact_text(artifact)
+                text, parser_used, section_count = _extract_artifact_text(artifact)
                 chunks = _chunk_text(text)
                 doc.status = "parsed"
                 doc.body_text = text
                 doc.language = "unknown"
                 doc.parser_used = parser_used
                 doc.char_count = len(text)
-                doc.section_count = 1
+                doc.section_count = section_count
                 doc.content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
                 doc.last_error = None
                 parsed_total += 1
@@ -155,32 +156,99 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
         raise
 
 
-def _extract_artifact_text(artifact: Artifact) -> tuple[str, str]:
+def _extract_artifact_text(artifact: Artifact) -> tuple[str, str, int]:
     path = Path(settings.artifacts_dir) / artifact.path
     if not path.exists():
         raise FileNotFoundError("artifact_file_missing")
     if artifact.kind == "html":
         html = path.read_text(encoding="utf-8", errors="ignore")
-        return _extract_html_text(html), "html_simple"
+        text, sections = _extract_html_text(html)
+        return text, "html_readability_heuristic", sections
     if artifact.kind == "pdf":
-        # Minimal fallback parser for now; dedicated PDF parsing improvements are part of Phase 3 task 3.
-        raw = path.read_bytes()
-        text = raw.decode("utf-8", errors="ignore")
-        cleaned = re.sub(r"\s+", " ", text).strip()
-        if not cleaned:
-            raise RuntimeError("pdf_text_empty")
-        return cleaned, "pdf_naive"
+        text, parser_used = _extract_pdf_text(path)
+        return text, parser_used, _estimate_section_count(text)
     raise RuntimeError("unsupported_artifact_kind")
 
 
-def _extract_html_text(html: str) -> str:
-    text = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.I)
-    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
+def _extract_pdf_text(path: Path) -> tuple[str, str]:
+    # Deterministic parser order: pypdf -> byte decode fallback.
+    text = _extract_pdf_text_pypdf(path)
+    if text:
+        return text, "pdf_pypdf"
+    raw = path.read_bytes()
+    cleaned = re.sub(r"\s+", " ", raw.decode("utf-8", errors="ignore")).strip()
+    if cleaned:
+        return cleaned, "pdf_naive"
+    cleaned_latin = re.sub(r"\s+", " ", raw.decode("latin-1", errors="ignore")).strip()
+    if cleaned_latin:
+        return cleaned_latin, "pdf_naive_latin1"
+    raise RuntimeError("pdf_text_empty")
+
+
+def _extract_pdf_text_pypdf(path: Path) -> str | None:
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception:
+        return None
+    try:
+        reader = PdfReader(str(path))
+    except Exception:
+        return None
+    page_texts: list[str] = []
+    for page in reader.pages:
+        try:
+            extracted = page.extract_text() or ""
+        except Exception:
+            extracted = ""
+        cleaned = re.sub(r"\s+", " ", extracted).strip()
+        if cleaned:
+            page_texts.append(cleaned)
+    if not page_texts:
+        return None
+    merged = "\n\n".join(page_texts).strip()
+    return merged or None
+
+
+def _extract_html_text(html_text: str) -> tuple[str, int]:
+    # Remove clearly non-content regions.
+    reduced = re.sub(r"<script[\s\S]*?</script>", " ", html_text, flags=re.I)
+    reduced = re.sub(r"<style[\s\S]*?</style>", " ", reduced, flags=re.I)
+    reduced = re.sub(r"<noscript[\s\S]*?</noscript>", " ", reduced, flags=re.I)
+    reduced = re.sub(r"<nav[\s\S]*?</nav>", " ", reduced, flags=re.I)
+    reduced = re.sub(r"<header[\s\S]*?</header>", " ", reduced, flags=re.I)
+    reduced = re.sub(r"<footer[\s\S]*?</footer>", " ", reduced, flags=re.I)
+
+    preferred_blocks = re.findall(r"<(article|main)\b[\s\S]*?</\1>", reduced, flags=re.I)
+    block_html = ""
+    if preferred_blocks:
+        # If any explicit content block exists, prefer the first longest one.
+        candidates = re.findall(r"<(?:article|main)\b[\s\S]*?</(?:article|main)>", reduced, flags=re.I)
+        block_html = max(candidates, key=len, default="")
+    else:
+        # Fallback: choose longest section/div block as readability-like heuristic.
+        candidates = re.findall(r"<(?:section|div)\b[\s\S]*?</(?:section|div)>", reduced, flags=re.I)
+        block_html = max(candidates, key=len, default=reduced)
+
+    heading_count = len(re.findall(r"<h[1-6]\b", block_html, flags=re.I))
+    text = re.sub(r"<[^>]+>", " ", block_html)
+    text = html.unescape(text)
     text = re.sub(r"\s+", " ", text).strip()
+    if len(text) < 200:
+        # Fallback to full-page extraction when chosen block is too small.
+        text = re.sub(r"<[^>]+>", " ", reduced)
+        text = html.unescape(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        heading_count = len(re.findall(r"<h[1-6]\b", reduced, flags=re.I))
     if not text:
         raise RuntimeError("html_text_empty")
-    return text
+    return text, max(1, heading_count)
+
+
+def _estimate_section_count(text: str) -> int:
+    paragraph_like = len([p for p in text.split("\n\n") if p.strip()])
+    if paragraph_like > 0:
+        return paragraph_like
+    return 1
 
 
 def _chunk_text(text: str, *, target_size: int = 1200, overlap: int = 200) -> list[tuple[str, int, int]]:
