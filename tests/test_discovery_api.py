@@ -205,6 +205,14 @@ def test_source_review_supports_slash_source_id():
     assert response.json()["accepted"] is True
 
 
+def test_source_review_not_found_returns_context_hint():
+    client = TestClient(app)
+    response = client.post("/v1/sources/src_missing/review", json={"decision": "accept"}, headers=_auth_headers())
+    assert response.status_code == 404
+    assert "source_not_found" in response.json()["detail"]
+    assert "reload_review_queue_or_check_discovery_run_context" in response.json()["detail"]
+
+
 def test_ai_settings_update_applies_to_new_runs(monkeypatch):
     original_use_ai = settings.use_ai_filter
     original_key = settings.ai_api_key

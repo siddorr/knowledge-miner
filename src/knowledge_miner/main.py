@@ -8,12 +8,16 @@ import base64
 import json
 import hashlib
 import re
+import os
+from contextlib import suppress
+from uuid import uuid4
 from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from .acquisition import (
@@ -26,7 +30,7 @@ from .acquisition import (
 from .ai_filter import describe_ai_filter_runtime
 from .auth import require_api_key
 from .config import is_sqlite_url, settings
-from .db import Base, engine, get_db
+from .db import Base, database_readiness, engine, get_db
 from .discovery import create_run, enqueue_run, export_sources_raw, review_source
 from .models import AcquisitionItem, AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Run, Source
 from .parse import create_parse_run, enqueue_parse_run
@@ -79,7 +83,6 @@ logger = logging.getLogger("knowledge_miner")
 HMI_DIR = Path(__file__).resolve().parent / "hmi"
 
 # Create tables on module load for v1 local/dev simplicity.
-Base.metadata.create_all(bind=engine)
 app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_static")
 
 
@@ -87,6 +90,36 @@ app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_st
 def validate_runtime_config() -> None:
     log_path = configure_logging()
     logger.info("Persistent logging initialized at %s", log_path)
+    db_meta = database_readiness()
+    logger.info(
+        "startup_db_context pid=%s ppid=%s cwd=%s process_role=%s database_url=%s sqlite_file=%s sqlite_inode=%s sqlite_mtime=%s ready=%s missing_tables=%s",
+        os.getpid(),
+        os.getppid(),
+        os.getcwd(),
+        _process_role(),
+        db_meta["database_url"],
+        db_meta["sqlite_file_path"] or "-",
+        db_meta.get("sqlite_file_inode"),
+        db_meta.get("sqlite_file_mtime"),
+        db_meta["ready"],
+        ",".join(db_meta["missing_tables"]) if db_meta["missing_tables"] else "-",
+    )
+    if (not db_meta["ready"]) and settings.db_auto_migrate_on_start:
+        with suppress(Exception):
+            Base.metadata.create_all(bind=engine)
+        db_meta = database_readiness()
+        logger.info(
+            "DB auto-migrate check: enabled=%s ready=%s missing_tables=%s",
+            settings.db_auto_migrate_on_start,
+            db_meta["ready"],
+            ",".join(db_meta["missing_tables"]) if db_meta["missing_tables"] else "-",
+        )
+    if not db_meta["ready"]:
+        logger.error(
+            "DB schema readiness failed: missing_tables=%s error=%s",
+            ",".join(db_meta["missing_tables"]) if db_meta["missing_tables"] else "-",
+            db_meta["error"] or "-",
+        )
     cleanup_result = cleanup_runtime_state(base_dir=settings.runtime_state_dir, enabled=settings.clean_on_startup)
     log_cleanup_result(cleanup_result)
     primary = acquire_instance_lock(base_dir=settings.runtime_state_dir)
@@ -98,6 +131,71 @@ def validate_runtime_config() -> None:
         logger.warning(
             "Production mode is configured with SQLite. Use PostgreSQL DATABASE_URL for v1 production baseline."
         )
+
+
+@app.exception_handler(OperationalError)
+def handle_operational_error(_: Request, exc: OperationalError):
+    detail = str(exc).lower()
+    if "no such table" in detail:
+        logger.error("Database schema not ready during request: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "detail": "database_not_ready_schema_missing",
+                "hint": "Run migrations or enable DB_AUTO_MIGRATE_ON_START for local development.",
+            },
+        )
+    return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"detail": "database_error"})
+
+
+def _process_role() -> str:
+    if os.getenv("UVICORN_RELOAD_PROCESS", "").strip().lower() == "true":
+        return "reloader"
+    if os.getenv("RUN_MAIN", "").strip().lower() == "true":
+        return "worker"
+    return "single"
+
+
+def _not_found_diagnostics(db: Session, *, run_id: str | None = None, source_id: str | None = None) -> dict:
+    run_count = db.scalar(select(func.count()).select_from(Run)) or 0
+    source_count = db.scalar(select(func.count()).select_from(Source)) or 0
+    latest_run_ids = db.scalars(select(Run.id).order_by(Run.created_at.desc(), Run.id.desc()).limit(5)).all()
+    source_exists = bool(source_id and db.get(Source, source_id) is not None)
+    db_meta = database_readiness()
+    return {
+        "run_id": run_id,
+        "source_id": source_id,
+        "run_count": int(run_count),
+        "source_count": int(source_count),
+        "latest_run_ids": latest_run_ids,
+        "source_exists_any_run": source_exists,
+        "db_file": db_meta.get("sqlite_file_path"),
+        "db_inode": db_meta.get("sqlite_file_inode"),
+        "pid": os.getpid(),
+    }
+
+
+@app.middleware("http")
+async def request_trace_middleware(request: Request, call_next):
+    request_id = f"req_{uuid4().hex[:12]}"
+    request.state.request_id = request_id
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/v1/discovery/runs") or path.startswith("/v1/sources/"):
+        db_meta = database_readiness()
+        logger.info(
+            "request_trace request_id=%s pid=%s method=%s path=%s run_id=%s source_id=%s db_file=%s db_inode=%s status=%s",
+            request_id,
+            os.getpid(),
+            request.method,
+            path,
+            request.path_params.get("run_id"),
+            request.path_params.get("source_id"),
+            db_meta.get("sqlite_file_path"),
+            db_meta.get("sqlite_file_inode"),
+            response.status_code,
+        )
+    return response
 
 
 @app.get("/healthz")
@@ -146,6 +244,7 @@ def _sanitize_hmi_value_preview(value: str | None) -> str | None:
 def get_system_status(
     _: str = Depends(require_api_key),
     __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
 ) -> SystemStatusResponse:
     ai_filter_active, ai_filter_warning = describe_ai_filter_runtime(
         use_ai_filter=settings.use_ai_filter,
@@ -162,13 +261,40 @@ def get_system_status(
             "api_key_present": bool(settings.brave_api_key),
         },
     }
+    db_meta = database_readiness()
+    run_count: int | None = None
+    if db_meta["ready"]:
+        with suppress(Exception):
+            run_count = int(db.scalar(select(func.count()).select_from(Run)) or 0)
     return SystemStatusResponse(
         auth_enabled=settings.auth_enabled,
         auth_mode="enabled" if settings.auth_enabled else "disabled",
         ai_filter_active=ai_filter_active,
         ai_filter_warning=ai_filter_warning,
         provider_readiness=provider_readiness,
+        db_ready=bool(db_meta["ready"]),
+        db_missing_tables=list(db_meta["missing_tables"]),
+        db_error=db_meta["error"],
+        database_target=db_meta["sqlite_file_path"] or settings.database_url,
+        db_target_url=settings.database_url,
+        db_target_resolved_path=db_meta["sqlite_file_path"],
+        db_schema_ready=bool(db_meta["ready"]),
+        db_run_count=run_count,
+        process_pid=os.getpid(),
     )
+
+
+@app.get("/v1/debug/db-context")
+def debug_db_context(
+    run_id: str | None = Query(default=None),
+    source_id: str | None = Query(default=None),
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> dict:
+    if not settings.enable_debug_endpoints:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    return _not_found_diagnostics(db, run_id=run_id, source_id=source_id)
 
 
 @app.get("/v1/work-queue", response_model=WorkQueueResponse)
@@ -499,6 +625,7 @@ def get_run_status(
 ) -> RunStatusResponse:
     run = db.get(Run, run_id)
     if run is None:
+        logger.warning("run_not_found %s", _not_found_diagnostics(db, run_id=run_id))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
     ai_filter_effective_enabled = bool(run.ai_filter_active and settings.ai_api_key)
     return RunStatusResponse(
@@ -531,6 +658,7 @@ def list_sources(
 ) -> SourcesListResponse:
     run = db.get(Run, run_id)
     if run is None:
+        logger.warning("run_not_found %s", _not_found_diagnostics(db, run_id=run_id))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
 
     stmt = select(Source).where(Source.run_id == run_id)
@@ -592,7 +720,11 @@ def source_review(
 ) -> SourceReviewResponse:
     source = db.get(Source, source_id)
     if source is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="source_not_found")
+        logger.warning("source_not_found %s", _not_found_diagnostics(db, source_id=source_id))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="source_not_found; hint=reload_review_queue_or_check_discovery_run_context",
+        )
     try:
         updated = review_source(db, source, payload.decision)
     except ValueError as exc:

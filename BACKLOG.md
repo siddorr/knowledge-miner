@@ -88,7 +88,7 @@ Status:
     - run AI enabled + missing/invalid key -> deterministic `needs_review` + visible warning + AI error metrics
     - run AI disabled + global AI enabled -> no AI calls, policy remains manual/heuristic fallback
 
-6. [ ] P0 - Fix runtime DB mismatch causing `no such table: runs`
+6. [x] P0 - Fix runtime DB mismatch causing `no such table: runs`
 - Goal: prevent server from attaching to an uninitialized SQLite file and breaking review/acquisition flows after restart.
 - Problem observed:
   - `2026-03-11 23:55:17` in `logs/knowledge_miner.log`: `sqlite3.OperationalError: no such table: runs`

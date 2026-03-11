@@ -155,3 +155,26 @@ def test_system_status_endpoint_returns_operator_summary():
     assert "auth_mode" in body
     assert "ai_filter_active" in body
     assert "provider_readiness" in body
+    assert "db_ready" in body
+    assert "db_missing_tables" in body
+    assert "database_target" in body
+    assert "db_target_url" in body
+    assert "db_target_resolved_path" in body
+    assert "db_schema_ready" in body
+    assert "process_pid" in body
+
+
+def test_system_status_reports_schema_not_ready_when_tables_missing():
+    Base.metadata.drop_all(bind=engine)
+    client = TestClient(app)
+    resp = client.get("/v1/system/status", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["db_ready"] is False
+    assert "runs" in body["db_missing_tables"]
+
+
+def test_debug_db_context_is_disabled_by_default():
+    client = TestClient(app)
+    resp = client.get("/v1/debug/db-context", headers=_auth_headers())
+    assert resp.status_code == 404

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 def _as_bool(value: str | None, *, default: bool) -> bool:
@@ -22,11 +23,27 @@ def _default_database_url() -> str:
     # Keep local development friction low while aligning production default with spec.
     explicit = os.getenv("DATABASE_URL")
     if explicit:
-        return explicit
+        return _normalize_database_url(explicit)
     app_env = os.getenv("APP_ENV", "development").lower()
     if app_env in {"production", "prod"}:
         return "postgresql+psycopg://knowledge_miner:knowledge_miner@localhost:5432/knowledge_miner"
-    return "sqlite:///./knowledge_miner.db"
+    project_root = Path(__file__).resolve().parents[2]
+    return f"sqlite:///{(project_root / 'knowledge_miner.db').resolve()}"
+
+
+def _normalize_database_url(database_url: str) -> str:
+    raw = database_url.strip()
+    if not raw.lower().startswith("sqlite"):
+        return raw
+    if raw.startswith("sqlite:///:memory:"):
+        return raw
+    if not raw.startswith("sqlite:///"):
+        return raw
+    path_part = raw[len("sqlite:///") :]
+    if path_part.startswith("/"):
+        return raw
+    resolved = (Path(__file__).resolve().parents[2] / path_part).resolve()
+    return f"sqlite:///{resolved}"
 
 
 @dataclass(frozen=True)
@@ -61,6 +78,8 @@ class Settings:
     log_backup_count: int = int(os.getenv("LOG_BACKUP_COUNT", "5"))
     runtime_state_dir: str = os.getenv("RUNTIME_STATE_DIR", "./runtime")
     clean_on_startup: bool = _as_bool(os.getenv("CLEAN_ON_STARTUP"), default=app_env.lower() != "production")
+    db_auto_migrate_on_start: bool = _as_bool(os.getenv("DB_AUTO_MIGRATE_ON_START"), default=app_env.lower() != "production")
+    enable_debug_endpoints: bool = _as_bool(os.getenv("ENABLE_DEBUG_ENDPOINTS"), default=False)
 
 
 settings = Settings()

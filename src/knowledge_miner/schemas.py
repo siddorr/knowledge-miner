@@ -304,6 +304,15 @@ class SystemStatusResponse(BaseModel):
     ai_filter_active: bool
     ai_filter_warning: str | None
     provider_readiness: dict
+    db_ready: bool
+    db_missing_tables: list[str]
+    db_error: str | None
+    database_target: str
+    db_target_url: str
+    db_target_resolved_path: str | None
+    db_schema_ready: bool
+    db_run_count: int | None
+    process_pid: int
 
 
 class AISettingsUpdateRequest(BaseModel):

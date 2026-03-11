@@ -588,7 +588,8 @@ async function loadSystemStatus() {
     const brave = provider.brave && provider.brave.api_key_present ? "brave:ready" : "brave:missing-key";
     const s2 = provider.semantic_scholar && provider.semantic_scholar.api_key_present ? "s2:ready" : "s2:limited";
     const ai = payload.ai_filter_active ? "ai:active" : `ai:${payload.ai_filter_warning ? "warning" : "disabled"}`;
-    setText("systemBadges", `${payload.auth_mode} | ${ai} | ${brave} | ${s2}`);
+    const db = payload.db_ready ? "db:ready" : `db:missing-${(payload.db_missing_tables || []).length}`;
+    setText("systemBadges", `${payload.auth_mode} | ${db} | ${ai} | ${brave} | ${s2}`);
   } catch (err) {
     setText("systemBadges", `status unavailable: ${err.message}`);
   }

@@ -2,6 +2,7 @@ from fastapi import HTTPException
 
 from knowledge_miner.auth import require_api_key
 from knowledge_miner.config import settings
+from knowledge_miner.db import sqlite_file_path
 from knowledge_miner.rate_limit import InMemoryRateLimiter
 from knowledge_miner.rate_limit import require_rate_limit
 from knowledge_miner.retry import retry_call
@@ -91,3 +92,11 @@ def test_require_rate_limit_noop_when_auth_disabled():
         require_rate_limit("any")
     finally:
         object.__setattr__(settings, "auth_enabled", original_auth)
+
+
+def test_default_sqlite_database_path_is_absolute_when_sqlite():
+    if not settings.database_url.lower().startswith("sqlite:///"):
+        return
+    path = sqlite_file_path(settings.database_url)
+    assert path is not None
+    assert path.startswith("/")
