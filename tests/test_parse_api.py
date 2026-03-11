@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -147,6 +149,29 @@ def test_parse_endpoints_basic(monkeypatch, tmp_path):
     assert search.status_code == 200
     assert search.json()["total"] >= 1
 
+    parse_dir = Path(artifacts_dir) / "parse" / parse_run_id
+    parsed_corpus_path = parse_dir / "parsed_corpus.json"
+    search_manifest_path = parse_dir / "search_index_manifest.json"
+    findings_path = parse_dir / "findings_report.json"
+    assert parsed_corpus_path.exists()
+    assert search_manifest_path.exists()
+    assert findings_path.exists()
+
+    parsed_corpus = json.loads(parsed_corpus_path.read_text(encoding="utf-8"))
+    assert parsed_corpus["parse_run_id"] == parse_run_id
+    assert parsed_corpus["totals"]["documents"] == 1
+    assert parsed_corpus["totals"]["chunks"] >= 1
+
+    search_manifest = json.loads(search_manifest_path.read_text(encoding="utf-8"))
+    assert search_manifest["parse_run_id"] == parse_run_id
+    assert search_manifest["index"]["document_count"] == 1
+    assert len(search_manifest["artifact_entries"]) == 1
+    assert search_manifest["artifact_entries"][0]["artifact_id"] == "artifact_parse_seed"
+
+    findings = json.loads(findings_path.read_text(encoding="utf-8"))
+    assert findings["parse_run_id"] == parse_run_id
+    assert findings["summary"]["eligible_documents"] in {0, 1}
+
 
 def test_parse_incremental_reuses_chunks_for_unchanged_document(monkeypatch, tmp_path):
     acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
@@ -178,3 +203,46 @@ def test_parse_incremental_reuses_chunks_for_unchanged_document(monkeypatch, tmp
         assert second_doc.parser_used == "cached_chunks"
         second_chunks = db.scalars(select(DocumentChunk).where(DocumentChunk.parsed_document_id == second_doc.id)).all()
         assert len(second_chunks) == len(first_chunks)
+
+
+def test_parse_observability_logs(monkeypatch, tmp_path, caplog):
+    acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
+    object.__setattr__(settings, "artifacts_dir", artifacts_dir)
+    monkeypatch.setattr(main_module, "enqueue_parse_run", lambda parse_run_id: None)
+
+    client = TestClient(app)
+    created = client.post("/v1/parse/runs", json={"acq_run_id": acq_run_id}, headers=_auth_headers())
+    assert created.status_code == 202
+    parse_run_id = created.json()["parse_run_id"]
+
+    caplog.set_level(logging.INFO, logger="knowledge_miner")
+    with SessionLocal() as db:
+        run = db.get(main_module.ParseRun, parse_run_id)  # type: ignore[attr-defined]
+        assert run is not None
+        execute_parse_run(db, run)
+
+    event_payloads: list[dict] = []
+    for record in caplog.records:
+        try:
+            payload = json.loads(record.getMessage())
+        except Exception:
+            continue
+        if "event" in payload:
+            event_payloads.append(payload)
+
+    parse_document_events = [p for p in event_payloads if p.get("event") == "parse_document"]
+    assert parse_document_events
+    first_document_event = parse_document_events[0]
+    assert first_document_event["parse_run_id"] == parse_run_id
+    assert first_document_event["document_id"]
+    assert first_document_event["artifact_id"]
+    assert isinstance(first_document_event["latency_ms"], float)
+    assert first_document_event["status"] in {"parsed", "failed"}
+
+    parse_index_events = [p for p in event_payloads if p.get("event") == "parse_index"]
+    assert parse_index_events
+    assert parse_index_events[0]["parse_run_id"] == parse_run_id
+
+    parse_summary_events = [p for p in event_payloads if p.get("event") == "parse_summary"]
+    assert parse_summary_events
+    assert parse_summary_events[0]["parse_run_id"] == parse_run_id

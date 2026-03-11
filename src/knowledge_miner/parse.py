@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 import html
+import json
 from pathlib import Path
 import re
 import threading
+import time
 import uuid
 
 from sqlalchemy import select
@@ -15,6 +17,7 @@ from .ai_filter import AIRelevanceFilter, describe_ai_filter_runtime
 from .config import settings
 from .db import SessionLocal
 from .models import AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Source
+from .observability import ParseObservability
 from .scoring import decision_from_score, score_text
 
 
@@ -98,6 +101,7 @@ def execute_parse_run_by_id(parse_run_id: str) -> None:
 def execute_parse_run(db: Session, run: ParseRun) -> None:
     run_id = run.id
     ai_filter = AIRelevanceFilter()
+    observability = ParseObservability()
     try:
         run.status = "running"
         db.commit()
@@ -107,11 +111,21 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
         failed_total = 0
         chunked_total = 0
         for doc in docs:
+            started = time.perf_counter()
             artifact = db.get(Artifact, doc.artifact_id)
             if artifact is None:
                 doc.status = "failed"
                 doc.last_error = "artifact_not_found"
                 failed_total += 1
+                observability.inc("failed_documents")
+                observability.record_document(
+                    parse_run_id=run_id,
+                    document_id=doc.id,
+                    artifact_id=doc.artifact_id,
+                    latency_ms=(time.perf_counter() - started) * 1000.0,
+                    status="failed",
+                    error="artifact_not_found",
+                )
                 continue
             try:
                 text, parser_used, section_count = _extract_artifact_text(artifact)
@@ -142,10 +156,17 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
                 doc.confidence = doc_confidence
                 doc.reason = doc_reason
                 parsed_total += 1
+                observability.inc("parsed_documents")
                 if cached_doc is not None:
-                    chunked_total += _copy_chunks_from_cached_document(db, run_id=run_id, target_doc_id=doc.id, cached_doc_id=cached_doc.id)
+                    chunk_count = _copy_chunks_from_cached_document(
+                        db,
+                        run_id=run_id,
+                        target_doc_id=doc.id,
+                        cached_doc_id=cached_doc.id,
+                    )
+                    chunked_total += chunk_count
                 else:
-                    chunked_total += _persist_chunks_for_document(
+                    chunk_count = _persist_chunks_for_document(
                         db,
                         run_id=run_id,
                         parsed_document_id=doc.id,
@@ -153,10 +174,30 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
                         chunks=chunks,
                         ai_filter=ai_filter,
                     )
+                    chunked_total += chunk_count
+                observability.inc("chunked_chunks", chunk_count)
+                observability.record_document(
+                    parse_run_id=run_id,
+                    document_id=doc.id,
+                    artifact_id=doc.artifact_id,
+                    latency_ms=(time.perf_counter() - started) * 1000.0,
+                    status="parsed",
+                    parser_used=doc.parser_used,
+                    chunks=chunk_count,
+                )
             except Exception as exc:
                 doc.status = "failed"
                 doc.last_error = str(exc)
                 failed_total += 1
+                observability.inc("failed_documents")
+                observability.record_document(
+                    parse_run_id=run_id,
+                    document_id=doc.id,
+                    artifact_id=doc.artifact_id,
+                    latency_ms=(time.perf_counter() - started) * 1000.0,
+                    status="failed",
+                    error=str(exc),
+                )
             doc.updated_at = datetime.now(UTC)
 
         db_run = db.get(ParseRun, run_id)
@@ -167,7 +208,20 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
         db_run.chunked_total = chunked_total
         db_run.status = "completed"
         db_run.updated_at = datetime.now(UTC)
+        indexing_started = time.perf_counter()
+        artifact_stats = _write_parse_output_artifacts(db, db_run)
+        observability.inc("indexed_documents", artifact_stats["indexed_documents"])
+        observability.inc("indexed_chunks", artifact_stats["indexed_chunks"])
+        observability.inc("findings_total", artifact_stats["findings_total"])
+        observability.record_indexing(
+            parse_run_id=run_id,
+            latency_ms=(time.perf_counter() - indexing_started) * 1000.0,
+            status="completed",
+            indexed_documents=artifact_stats["indexed_documents"],
+            indexed_chunks=artifact_stats["indexed_chunks"],
+        )
         db.commit()
+        observability.emit_summary(parse_run_id=run_id, status="completed")
     except Exception as exc:  # pragma: no cover
         db.rollback()
         db_run = db.get(ParseRun, run_id)
@@ -176,6 +230,15 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
             db_run.error_message = str(exc)
             db_run.updated_at = datetime.now(UTC)
             db.commit()
+        observability.record_indexing(
+            parse_run_id=run_id,
+            latency_ms=0.0,
+            status="failed",
+            indexed_documents=0,
+            indexed_chunks=0,
+            error=str(exc),
+        )
+        observability.emit_summary(parse_run_id=run_id, status="failed")
         raise
 
 
@@ -411,3 +474,198 @@ def _heuristic_confidence(*, score: float, decision: str) -> float:
         value = 0.7 + min(0.29, max(0.0, (3.0 - score) * 0.05))
         return round(value, 3)
     return 0.55
+
+
+def _write_parse_output_artifacts(db: Session, run: ParseRun) -> dict[str, int]:
+    db.flush()
+    docs = db.scalars(
+        select(ParsedDocument).where(ParsedDocument.parse_run_id == run.id).order_by(ParsedDocument.id.asc())
+    ).all()
+    chunks = db.scalars(
+        select(DocumentChunk)
+        .where(DocumentChunk.parse_run_id == run.id)
+        .order_by(DocumentChunk.parsed_document_id.asc(), DocumentChunk.chunk_index.asc(), DocumentChunk.id.asc())
+    ).all()
+    artifacts = db.scalars(select(Artifact).where(Artifact.acq_run_id == run.acq_run_id).order_by(Artifact.id.asc())).all()
+
+    chunks_by_doc: dict[str, list[DocumentChunk]] = {}
+    for chunk in chunks:
+        chunks_by_doc.setdefault(chunk.parsed_document_id, []).append(chunk)
+
+    generated_at = run.updated_at.isoformat() if run.updated_at else datetime.now(UTC).isoformat()
+    parsed_corpus_payload = {
+        "schema_version": "1.0",
+        "parse_run_id": run.id,
+        "acq_run_id": run.acq_run_id,
+        "generated_at": generated_at,
+        "totals": {
+            "documents": len(docs),
+            "parsed_documents": sum(1 for d in docs if d.status == "parsed"),
+            "failed_documents": sum(1 for d in docs if d.status == "failed"),
+            "chunks": len(chunks),
+        },
+        "documents": [
+            {
+                "document_id": doc.id,
+                "source_id": doc.source_id,
+                "artifact_id": doc.artifact_id,
+                "status": doc.status,
+                "title": doc.title,
+                "publication_year": doc.publication_year,
+                "language": doc.language,
+                "parser_used": doc.parser_used,
+                "char_count": doc.char_count,
+                "section_count": doc.section_count,
+                "content_hash": doc.content_hash,
+                "relevance_score": float(doc.relevance_score) if doc.relevance_score is not None else None,
+                "decision": doc.decision,
+                "confidence": float(doc.confidence) if doc.confidence is not None else None,
+                "reason": doc.reason,
+                "last_error": doc.last_error,
+                "body_text": doc.body_text,
+                "chunks": [
+                    {
+                        "chunk_id": chunk.id,
+                        "chunk_index": chunk.chunk_index,
+                        "start_char": chunk.start_char,
+                        "end_char": chunk.end_char,
+                        "content_hash": chunk.content_hash,
+                        "relevance_score": float(chunk.relevance_score) if chunk.relevance_score is not None else None,
+                        "decision": chunk.decision,
+                        "confidence": float(chunk.confidence) if chunk.confidence is not None else None,
+                        "reason": chunk.reason,
+                        "text": chunk.text,
+                    }
+                    for chunk in chunks_by_doc.get(doc.id, [])
+                ],
+            }
+            for doc in docs
+        ],
+    }
+
+    findings_payload = _build_findings_report_payload(run=run, docs=docs, chunks_by_doc=chunks_by_doc, generated_at=generated_at)
+    search_manifest_payload = {
+        "schema_version": "1.0",
+        "parse_run_id": run.id,
+        "acq_run_id": run.acq_run_id,
+        "generated_at": generated_at,
+        "index": {
+            "engine": "naive_substring_v1",
+            "document_order": "document_id_asc",
+            "chunk_order": "parsed_document_id_asc,chunk_index_asc,chunk_id_asc",
+            "document_count": len(docs),
+            "chunk_count": len(chunks),
+        },
+        "db_counts": {
+            "total_documents": run.total_documents,
+            "parsed_total": run.parsed_total,
+            "failed_total": run.failed_total,
+            "chunked_total": run.chunked_total,
+        },
+        "artifact_entries": [
+            {
+                "artifact_id": artifact.id,
+                "source_id": artifact.source_id,
+                "kind": artifact.kind,
+                "path": artifact.path,
+                "checksum_sha256": artifact.checksum_sha256,
+                "size_bytes": artifact.size_bytes,
+                "mime_type": artifact.mime_type,
+            }
+            for artifact in artifacts
+        ],
+        "documents": [
+            {
+                "document_id": doc.id,
+                "source_id": doc.source_id,
+                "artifact_id": doc.artifact_id,
+                "status": doc.status,
+                "decision": doc.decision,
+                "confidence": float(doc.confidence) if doc.confidence is not None else None,
+                "content_hash": doc.content_hash,
+                "chunk_count": len(chunks_by_doc.get(doc.id, [])),
+            }
+            for doc in docs
+        ],
+    }
+
+    base_dir = Path(settings.artifacts_dir) / "parse" / run.id
+    base_dir.mkdir(parents=True, exist_ok=True)
+    _write_json_file(base_dir / "parsed_corpus.json", parsed_corpus_payload)
+    _write_json_file(base_dir / "search_index_manifest.json", search_manifest_payload)
+    _write_json_file(base_dir / "findings_report.json", findings_payload)
+    return {
+        "indexed_documents": len(docs),
+        "indexed_chunks": len(chunks),
+        "findings_total": findings_payload["summary"]["findings_total"],
+    }
+
+
+def _build_findings_report_payload(
+    *,
+    run: ParseRun,
+    docs: list[ParsedDocument],
+    chunks_by_doc: dict[str, list[DocumentChunk]],
+    generated_at: str,
+) -> dict:
+    decision_priority = {"auto_accept": 0, "needs_review": 1, "auto_reject": 2, None: 3}
+    findings: list[dict] = []
+    for doc in docs:
+        if doc.status != "parsed":
+            continue
+        if doc.decision not in {"auto_accept", "needs_review"}:
+            continue
+        ranked_chunks = sorted(
+            chunks_by_doc.get(doc.id, []),
+            key=lambda chunk: (
+                decision_priority.get(chunk.decision, 3),
+                -(float(chunk.relevance_score) if chunk.relevance_score is not None else 0.0),
+                -(float(chunk.confidence) if chunk.confidence is not None else 0.0),
+                chunk.chunk_index,
+                chunk.id,
+            ),
+        )
+        for chunk in ranked_chunks[:2]:
+            finding_id = hashlib.sha1(f"{run.id}|{doc.id}|{chunk.id}".encode("utf-8")).hexdigest()[:20]
+            findings.append(
+                {
+                    "finding_id": f"finding_{finding_id}",
+                    "parse_run_id": run.id,
+                    "acq_run_id": run.acq_run_id,
+                    "document_id": doc.id,
+                    "source_id": doc.source_id,
+                    "artifact_id": doc.artifact_id,
+                    "document_title": doc.title,
+                    "document_decision": doc.decision,
+                    "document_confidence": float(doc.confidence) if doc.confidence is not None else None,
+                    "chunk_id": chunk.id,
+                    "chunk_index": chunk.chunk_index,
+                    "chunk_decision": chunk.decision,
+                    "chunk_confidence": float(chunk.confidence) if chunk.confidence is not None else None,
+                    "chunk_relevance_score": float(chunk.relevance_score) if chunk.relevance_score is not None else None,
+                    "start_char": chunk.start_char,
+                    "end_char": chunk.end_char,
+                    "snippet": chunk.text[:400],
+                    "reason": chunk.reason,
+                }
+            )
+
+    return {
+        "schema_version": "1.0",
+        "parse_run_id": run.id,
+        "acq_run_id": run.acq_run_id,
+        "generated_at": generated_at,
+        "summary": {
+            "eligible_documents": sum(
+                1
+                for doc in docs
+                if doc.status == "parsed" and doc.decision in {"auto_accept", "needs_review"}
+            ),
+            "findings_total": len(findings),
+        },
+        "findings": findings,
+    }
+
+
+def _write_json_file(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

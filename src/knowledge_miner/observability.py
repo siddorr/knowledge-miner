@@ -106,6 +106,78 @@ class AcquisitionObservability:
         self._log.info(json.dumps(payload, sort_keys=True))
 
 
+class ParseObservability:
+    def __init__(self) -> None:
+        self._counters: Counter[str] = Counter()
+        self._histograms: dict[str, Counter[str]] = defaultdict(Counter)
+        self._log = logging.getLogger("knowledge_miner")
+
+    def inc(self, name: str, value: int = 1) -> None:
+        self._counters[name] += value
+
+    def record_document(
+        self,
+        *,
+        parse_run_id: str,
+        document_id: str,
+        artifact_id: str,
+        latency_ms: float,
+        status: str,
+        parser_used: str | None = None,
+        chunks: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        self._histograms["parse:document"][_latency_bucket_label(latency_ms)] += 1
+        payload = {
+            "event": "parse_document",
+            "parse_run_id": parse_run_id,
+            "document_id": document_id,
+            "artifact_id": artifact_id,
+            "latency_ms": round(latency_ms, 3),
+            "status": status,
+        }
+        if parser_used is not None:
+            payload["parser_used"] = parser_used
+        if chunks is not None:
+            payload["chunks"] = chunks
+        if error:
+            payload["error"] = error
+        self._log.info(json.dumps(payload, sort_keys=True))
+
+    def record_indexing(
+        self,
+        *,
+        parse_run_id: str,
+        latency_ms: float,
+        status: str,
+        indexed_documents: int,
+        indexed_chunks: int,
+        error: str | None = None,
+    ) -> None:
+        self._histograms["parse:index"][_latency_bucket_label(latency_ms)] += 1
+        payload = {
+            "event": "parse_index",
+            "parse_run_id": parse_run_id,
+            "latency_ms": round(latency_ms, 3),
+            "status": status,
+            "indexed_documents": indexed_documents,
+            "indexed_chunks": indexed_chunks,
+        }
+        if error:
+            payload["error"] = error
+        self._log.info(json.dumps(payload, sort_keys=True))
+
+    def emit_summary(self, *, parse_run_id: str, status: str) -> None:
+        payload = {
+            "event": "parse_summary",
+            "parse_run_id": parse_run_id,
+            "status": status,
+            "counters": dict(self._counters),
+            "latency_histograms": {k: dict(v) for k, v in self._histograms.items()},
+        }
+        self._log.info(json.dumps(payload, sort_keys=True))
+
+
 def _latency_bucket_label(latency_ms: float) -> str:
     if latency_ms <= 100:
         return "le_100ms"
