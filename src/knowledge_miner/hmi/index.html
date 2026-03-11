@@ -33,6 +33,14 @@
     <span id="pollState" class="poll-ok">Idle (set API key, load a section).</span>
   </section>
 
+  <section class="idbar">
+    <strong>Latest IDs:</strong>
+    <span class="idrow">Discovery: <code id="latestDiscoveryId">-</code> <button id="copyDiscoveryIdBtn" type="button">Copy ID</button></span>
+    <span class="idrow">Acquisition: <code id="latestAcqId">-</code> <button id="copyAcqIdBtn" type="button">Copy ID</button></span>
+    <span class="idrow">Parse: <code id="latestParseId">-</code> <button id="copyParseIdBtn" type="button">Copy ID</button></span>
+    <span id="idCopyState" class="muted"></span>
+  </section>
+
   <main class="stack">
     <section id="runs" class="panel">
       <h2>Runs Dashboard</h2>
@@ -99,8 +107,9 @@
             <option value="6" selected>6</option>
           </select>
         </label>
-        <button type="submit">Start Discovery</button>
+        <button id="createSessionBtn" type="submit">Create New Session</button>
       </form>
+      <p id="createSessionState" class="muted"></p>
       <div class="row compact">
         <button id="downloadSourcesRawBtn" type="button">Export sources_raw</button>
       </div>
@@ -284,6 +293,7 @@
     </section>
   </main>
 
+  <script>window.__KM_HMI_DEFAULT_TOKEN__ = __HMI_DEFAULT_TOKEN_JSON__;</script>
   <script src="/hmi/static/hmi.js" defer></script>
 </body>
 </html>

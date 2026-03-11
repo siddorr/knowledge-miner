@@ -37,13 +37,20 @@ body {
 
 .authbar,
 .nav,
-.pollbar {
+.pollbar,
+.idbar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
   padding: 12px 18px;
   border-bottom: 1px solid var(--line);
+}
+
+.idrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .poll-ok {

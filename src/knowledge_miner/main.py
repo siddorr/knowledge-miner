@@ -5,9 +5,10 @@ from pathlib import Path
 import csv
 import io
 import base64
+import json
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, status
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -81,8 +82,11 @@ def health() -> dict[str, str]:
 
 
 @app.get("/hmi")
-def hmi_shell() -> FileResponse:
-    return FileResponse(HMI_DIR / "index.html")
+def hmi_shell() -> HTMLResponse:
+    template = (HMI_DIR / "index.html").read_text(encoding="utf-8")
+    token_json = json.dumps(settings.hmi_api_token) if settings.hmi_api_token else "null"
+    html = template.replace("__HMI_DEFAULT_TOKEN_JSON__", token_json)
+    return HTMLResponse(content=html)
 
 
 @app.post("/v1/discovery/runs", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)

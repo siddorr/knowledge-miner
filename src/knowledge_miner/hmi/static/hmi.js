@@ -1,8 +1,10 @@
 const POLL_ACTIVE_MS = 5000;
 const POLL_BACKGROUND_MS = 15000;
+const SYSTEM_TOKEN = typeof window !== "undefined" ? window.__KM_HMI_DEFAULT_TOKEN__ || null : null;
 
 const state = {
-  apiKey: localStorage.getItem("km_api_key") || "",
+  apiKey: "",
+  tokenSource: "none",
   runRows: [],
   pollTimer: null,
   view: {
@@ -57,18 +59,14 @@ function setPollState(message, stale = false) {
 }
 
 function schedulePoll() {
-  if (state.pollTimer) {
-    clearTimeout(state.pollTimer);
-  }
+  if (state.pollTimer) clearTimeout(state.pollTimer);
   const interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
   state.pollTimer = setTimeout(runPollCycle, interval);
 }
 
 async function apiGet(path) {
   requiredKey();
-  const res = await fetch(path, {
-    headers: { Authorization: `Bearer ${state.apiKey}` },
-  });
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${state.apiKey}` } });
   if (!res.ok) {
     let detail = `${res.status}`;
     try {
@@ -86,10 +84,7 @@ async function apiPost(path, payload) {
   requiredKey();
   const res = await fetch(path, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${state.apiKey}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${state.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
@@ -107,9 +102,7 @@ async function apiPost(path, payload) {
 
 async function apiDownload(path, filename) {
   requiredKey();
-  const res = await fetch(path, {
-    headers: { Authorization: `Bearer ${state.apiKey}` },
-  });
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${state.apiKey}` } });
   if (!res.ok) {
     let detail = `${res.status}`;
     try {
@@ -141,14 +134,36 @@ function summaryForRun(phase, payload) {
   return `parsed=${payload.parsed_total}, failed=${payload.failed_total}, chunks=${payload.chunked_total}`;
 }
 
+function setLatestId(kind, value) {
+  const id = value && value.trim() ? value.trim() : "-";
+  if (kind === "discovery") setText("latestDiscoveryId", id);
+  if (kind === "acquisition") setText("latestAcqId", id);
+  if (kind === "parse") setText("latestParseId", id);
+}
+
+function getLatestId(kind) {
+  if (kind === "discovery") return (el("latestDiscoveryId").textContent || "").trim();
+  if (kind === "acquisition") return (el("latestAcqId").textContent || "").trim();
+  return (el("latestParseId").textContent || "").trim();
+}
+
+async function copyLatestId(kind) {
+  const id = getLatestId(kind);
+  if (!id || id === "-") {
+    setText("idCopyState", "No ID to copy.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(id);
+    setText("idCopyState", `Copied ${kind} ID: ${id}`);
+  } catch (_err) {
+    setText("idCopyState", "Copy failed (clipboard unavailable).");
+  }
+}
+
 function upsertRunRow(phase, runId, payload) {
   const idx = state.runRows.findIndex((r) => r.phase === phase && r.id === runId);
-  const row = {
-    phase,
-    id: runId,
-    status: payload.status,
-    summary: summaryForRun(phase, payload),
-  };
+  const row = { phase, id: runId, status: payload.status, summary: summaryForRun(phase, payload) };
   if (idx >= 0) state.runRows[idx] = row;
   else state.runRows.unshift(row);
 }
@@ -212,6 +227,7 @@ async function lookupRun(event) {
   try {
     const payload = await apiGet(endpoint);
     upsertRunRow(phase, runId, payload);
+    setLatestId(phase, runId);
     renderRunsTable();
     schedulePoll();
   } catch (err) {
@@ -238,12 +254,11 @@ async function loadDiscoveryData() {
 
   const [run, sources] = await Promise.all([
     apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`),
-    apiGet(
-      `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`,
-    ),
+    apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`),
   ]);
 
   upsertRunRow("discovery", runId, run);
+  setLatestId("discovery", runId);
   renderRunsTable();
 
   el("discoveryMetrics").textContent = JSON.stringify(
@@ -264,11 +279,14 @@ async function loadDiscoveryData() {
     2,
   );
 
-  const rows = sources.items.map(
-    (s) =>
-      `<tr><td>${escapeHtml(s.id)}</td><td>${escapeHtml(s.title)}</td><td>${escapeHtml(s.review_status)}</td><td>${escapeHtml(String(s.relevance_score))}</td><td>${escapeHtml(s.type)}</td><td>${escapeHtml(s.source)}</td></tr>`,
+  renderTable(
+    "discoverySources",
+    sources.items.map(
+      (s) =>
+        `<tr><td>${escapeHtml(s.id)}</td><td>${escapeHtml(s.title)}</td><td>${escapeHtml(s.review_status)}</td><td>${escapeHtml(String(s.relevance_score))}</td><td>${escapeHtml(s.type)}</td><td>${escapeHtml(s.source)}</td></tr>`,
+    ),
+    6,
   );
-  renderTable("discoverySources", rows, 6);
   setText("discoveryPage", `offset=${offset}, limit=${limit}, total=${sources.total}`);
   state.view.discovery.loaded = true;
   return !isTerminalStatus(run.status);
@@ -298,6 +316,7 @@ async function loadAcquisitionData() {
   ]);
 
   upsertRunRow("acquisition", runId, run);
+  setLatestId("acquisition", runId);
   renderRunsTable();
 
   el("acqMetrics").textContent = JSON.stringify(
@@ -315,11 +334,14 @@ async function loadAcquisitionData() {
     2,
   );
 
-  const rows = items.items.map(
-    (i) =>
-      `<tr><td>${escapeHtml(i.item_id)}</td><td>${escapeHtml(i.source_id)}</td><td>${escapeHtml(i.status)}</td><td>${escapeHtml(String(i.attempt_count))}</td><td>${escapeHtml(i.selected_url || "")}</td><td>${escapeHtml(i.last_error || "")}</td></tr>`,
+  renderTable(
+    "acqItems",
+    items.items.map(
+      (i) =>
+        `<tr><td>${escapeHtml(i.item_id)}</td><td>${escapeHtml(i.source_id)}</td><td>${escapeHtml(i.status)}</td><td>${escapeHtml(String(i.attempt_count))}</td><td>${escapeHtml(i.selected_url || "")}</td><td>${escapeHtml(i.last_error || "")}</td></tr>`,
+    ),
+    6,
   );
-  renderTable("acqItems", rows, 6);
   setText("acqPage", `offset=${offset}, limit=${limit}, total=${items.total}`);
   state.view.acq.loaded = true;
   return !isTerminalStatus(run.status);
@@ -352,6 +374,7 @@ async function loadParseData() {
   ]);
 
   upsertRunRow("parse", runId, run);
+  setLatestId("parse", runId);
   renderRunsTable();
 
   el("parseMetrics").textContent = JSON.stringify(
@@ -408,17 +431,22 @@ async function loadParse(event) {
 async function startDiscovery(event) {
   event.preventDefault();
   setText("discoveryError", "");
+  setText("createSessionState", "");
   try {
     const rawSeeds = el("startDiscoverySeeds").value;
     const seedQueries = rawSeeds.split(",").map((s) => s.trim()).filter(Boolean);
     if (!seedQueries.length) throw new Error("provide at least one seed query");
     const maxIterations = Number(el("startDiscoveryMaxIterations").value);
-    const result = await apiPost("/v1/discovery/runs", {
-      seed_queries: seedQueries,
-      max_iterations: maxIterations,
-    });
+    const result = await apiPost("/v1/discovery/runs", { seed_queries: seedQueries, max_iterations: maxIterations });
     el("discoveryRunId").value = result.run_id;
-    upsertRunRow("discovery", result.run_id, { status: result.status, current_iteration: 0, accepted_total: 0, expanded_candidates_total: 0 });
+    setLatestId("discovery", result.run_id);
+    setText("createSessionState", `Created discovery session: ${result.run_id}`);
+    upsertRunRow("discovery", result.run_id, {
+      status: result.status,
+      current_iteration: 0,
+      accepted_total: 0,
+      expanded_candidates_total: 0,
+    });
     renderRunsTable();
     await loadDiscoveryData();
     schedulePoll();
@@ -434,11 +462,9 @@ async function startAcquisition(event) {
     const runId = el("startAcqRunId").value.trim();
     if (!runId) throw new Error("discovery run id is required");
     const retryFailedOnly = el("startAcqRetry").value === "true";
-    const result = await apiPost("/v1/acquisition/runs", {
-      run_id: runId,
-      retry_failed_only: retryFailedOnly,
-    });
+    const result = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: retryFailedOnly });
     el("acqRunId").value = result.acq_run_id;
+    setLatestId("acquisition", result.acq_run_id);
     upsertRunRow("acquisition", result.acq_run_id, { status: result.status, downloaded_total: 0, partial_total: 0, failed_total: 0 });
     renderRunsTable();
     await loadAcquisitionData();
@@ -455,11 +481,9 @@ async function startParse(event) {
     const acqRunId = el("startParseAcqRunId").value.trim();
     if (!acqRunId) throw new Error("acquisition run id is required");
     const retryFailedOnly = el("startParseRetry").value === "true";
-    const result = await apiPost("/v1/parse/runs", {
-      acq_run_id: acqRunId,
-      retry_failed_only: retryFailedOnly,
-    });
+    const result = await apiPost("/v1/parse/runs", { acq_run_id: acqRunId, retry_failed_only: retryFailedOnly });
     el("parseRunId").value = result.parse_run_id;
+    setLatestId("parse", result.parse_run_id);
     upsertRunRow("parse", result.parse_run_id, { status: result.status, parsed_total: 0, failed_total: 0, chunked_total: 0 });
     renderRunsTable();
     await loadParseData();
@@ -477,9 +501,7 @@ async function submitReview(event) {
     const decision = el("reviewDecision").value;
     if (!sourceId) throw new Error("source id is required");
     await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision });
-    if (state.view.discovery.loaded) {
-      await loadDiscoveryData();
-    }
+    if (state.view.discovery.loaded) await loadDiscoveryData();
     schedulePoll();
   } catch (err) {
     setText("discoveryError", `Review failed: ${err.message}`);
@@ -514,31 +536,32 @@ async function runPollCycle() {
 
   try {
     let keepPolling = true;
-    if (section === "runs") {
-      keepPolling = await refreshRunsData();
-    } else if (section === "discovery" && state.view.discovery.loaded) {
-      keepPolling = await loadDiscoveryData();
-    } else if (section === "acquisition" && state.view.acq.loaded) {
-      keepPolling = await loadAcquisitionData();
-    } else if (section === "parse" && state.view.parse.loaded) {
-      keepPolling = await loadParseData();
-    }
+    if (section === "runs") keepPolling = await refreshRunsData();
+    else if (section === "discovery" && state.view.discovery.loaded) keepPolling = await loadDiscoveryData();
+    else if (section === "acquisition" && state.view.acq.loaded) keepPolling = await loadAcquisitionData();
+    else if (section === "parse" && state.view.parse.loaded) keepPolling = await loadParseData();
 
     if (!keepPolling) {
       setPollState(`Stopped polling on #${section}: terminal status reached.`);
       return;
     }
-
     setPollState(`Auto-refreshing #${section} every ${Math.round(interval / 1000)}s.`);
   } catch (err) {
     setPollState(`Stale data in #${section}: ${err.message}`, true);
   }
-
   schedulePoll();
 }
 
 function setApiStateText() {
-  setText("authState", state.apiKey ? "Key saved" : "Key not set");
+  if (!state.apiKey) {
+    setText("authState", "Key not set");
+    return;
+  }
+  if (state.tokenSource === "system") {
+    setText("authState", "Using system token");
+    return;
+  }
+  setText("authState", "Using manual token");
 }
 
 function attachPaginationHandlers() {
@@ -629,13 +652,36 @@ function attachPaginationHandlers() {
 
 function init() {
   const keyInput = el("apiKeyInput");
+  const manualToken = localStorage.getItem("km_api_key");
+  if (manualToken) {
+    state.apiKey = manualToken;
+    state.tokenSource = "manual";
+  } else if (SYSTEM_TOKEN) {
+    state.apiKey = SYSTEM_TOKEN;
+    state.tokenSource = "system";
+  } else {
+    state.apiKey = "";
+    state.tokenSource = "none";
+  }
+
   keyInput.value = state.apiKey;
   setApiStateText();
 
   el("saveApiKeyBtn").addEventListener("click", () => {
     state.apiKey = keyInput.value.trim();
-    if (state.apiKey) localStorage.setItem("km_api_key", state.apiKey);
-    else localStorage.removeItem("km_api_key");
+    if (state.apiKey) {
+      localStorage.setItem("km_api_key", state.apiKey);
+      state.tokenSource = "manual";
+    } else {
+      localStorage.removeItem("km_api_key");
+      if (SYSTEM_TOKEN) {
+        state.apiKey = SYSTEM_TOKEN;
+        state.tokenSource = "system";
+        keyInput.value = state.apiKey;
+      } else {
+        state.tokenSource = "none";
+      }
+    }
     setApiStateText();
   });
 
@@ -654,6 +700,10 @@ function init() {
 
   el("startParseForm").addEventListener("submit", startParse);
   el("parseForm").addEventListener("submit", loadParse);
+
+  el("copyDiscoveryIdBtn").addEventListener("click", () => copyLatestId("discovery"));
+  el("copyAcqIdBtn").addEventListener("click", () => copyLatestId("acquisition"));
+  el("copyParseIdBtn").addEventListener("click", () => copyLatestId("parse"));
 
   attachPaginationHandlers();
 

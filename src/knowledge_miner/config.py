@@ -20,6 +20,7 @@ class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
     database_url: str = _default_database_url()
     api_token: str = os.getenv("API_TOKEN", "dev-token")
+    hmi_api_token: str | None = os.getenv("HMI_API_TOKEN")
     artifacts_dir: str = os.getenv("ARTIFACTS_DIR", "./artifacts")
     use_mock_connectors: bool = os.getenv("USE_MOCK_CONNECTORS", "true").lower() == "true"
     openalex_base_url: str = os.getenv("OPENALEX_BASE_URL", "https://api.openalex.org")

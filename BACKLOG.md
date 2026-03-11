@@ -329,13 +329,13 @@ Decision lock (approved):
 - API test verifies `seed_queries` is returned by run status.
 - UI test verifies default view shows `accepted + needs_review`.
 
-12. [ ] P0 - HMI auth via system variable with UI fallback
+12. [x] P0 - HMI auth via system variable with UI fallback
 - Add server-side config for default HMI token (from environment variable).
 - On HMI load, prefill API key from server-provided value when configured.
 - Keep manual API key input as fallback/override in browser.
 - Add clear UI state: `Using system token` vs `Using manual token`.
 
-13. [ ] P0 - Add "Create New Session" button in HMI (Discovery)
+13. [x] P0 - Add "Create New Session" button in HMI (Discovery)
 - Add HMI action to create a discovery run from seed queries/max iterations.
 - Call `POST /v1/discovery/runs` from UI and show request/response feedback.
 - On success:
@@ -343,12 +343,12 @@ Decision lock (approved):
   - auto-insert created `run_id` into Runs and Discovery panels
   - append row to Runs table.
 
-14. [ ] P0 - Improve run ID discoverability in HMI
+14. [x] P0 - Improve run ID discoverability in HMI
 - Display created run IDs in success toast/panel after create actions.
 - Add "Copy ID" action for run identifiers.
 - Keep latest IDs visible in Runs dashboard state for quick reuse.
 
-15. [ ] P1 - Add tests for session creation and token source UX
+15. [x] P1 - Add tests for session creation and token source UX
 - HMI/API tests for create-session action and run_id propagation in UI state.
 - Test system-token prefill path and manual override path.
 - Test ID visibility and copy action presence.
