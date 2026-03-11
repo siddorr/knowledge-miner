@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
+from pathlib import Path
 import threading
+from typing import NamedTuple
+from urllib.parse import urlparse
 import uuid
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .config import settings
 from .db import SessionLocal
 from .models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
 
@@ -73,17 +79,54 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         db.commit()
 
         items = db.scalars(select(AcquisitionItem).where(AcquisitionItem.acq_run_id == run.id)).all()
-        # Phase 2 task 1 scaffolding only; download engine is implemented in task 3.
+        downloaded_total = 0
+        partial_total = 0
+        failed_total = 0
+        skipped_total = 0
         for item in items:
-            item.status = "skipped"
-            item.attempt_count = max(1, item.attempt_count)
-            item.last_error = "download_engine_not_implemented_yet"
+            source = db.get(Source, item.source_id)
+            if source is None:
+                item.status = "failed"
+                item.last_error = "source_not_found"
+                failed_total += 1
+                continue
+
+            outcome = _acquire_source_content(source)
+            item.attempt_count += outcome.attempts
+            item.selected_url = outcome.url
+            item.last_error = outcome.error
+
+            if outcome.kind == "pdf":
+                artifact = _persist_artifact(db, run.id, item, source.id, kind="pdf", mime_type=outcome.mime_type, content=outcome.content)
+                item.status = "downloaded"
+                item.last_error = None
+                downloaded_total += 1
+                db.add(artifact)
+            elif outcome.kind == "html":
+                artifact = _persist_artifact(
+                    db,
+                    run.id,
+                    item,
+                    source.id,
+                    kind="html",
+                    mime_type=outcome.mime_type,
+                    content=outcome.content,
+                )
+                item.status = "partial"
+                partial_total += 1
+                db.add(artifact)
+            elif outcome.error == "no_candidate_urls":
+                item.status = "skipped"
+                skipped_total += 1
+            else:
+                item.status = "failed"
+                failed_total += 1
             item.updated_at = datetime.now(UTC)
 
-        run.downloaded_total = 0
-        run.partial_total = 0
-        run.failed_total = 0
-        run.skipped_total = len(items)
+        run.downloaded_total = downloaded_total
+        run.partial_total = partial_total
+        run.failed_total = failed_total
+        run.skipped_total = skipped_total
         run.status = "completed"
         run.updated_at = datetime.now(UTC)
         db.commit()
@@ -94,6 +137,164 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         run.updated_at = datetime.now(UTC)
         db.commit()
         raise
+
+
+class AcquisitionOutcome(NamedTuple):
+    kind: str | None
+    mime_type: str | None
+    content: bytes | None
+    url: str | None
+    attempts: int
+    error: str | None
+
+
+def _acquire_source_content(source: Source) -> AcquisitionOutcome:
+    candidate_urls = _resolve_candidate_urls(source)
+    if not candidate_urls:
+        return AcquisitionOutcome(
+            kind=None,
+            mime_type=None,
+            content=None,
+            url=None,
+            attempts=0,
+            error="no_candidate_urls",
+        )
+
+    max_bytes = int(getattr(settings, "acquisition_max_bytes", 25_000_000))
+    timeout_seconds = float(getattr(settings, "acquisition_timeout_seconds", 20.0))
+    pdf_first = sorted(candidate_urls, key=lambda url: (0 if _looks_pdf_url(url) else 1, url))
+
+    attempts = 0
+    html_fallback: AcquisitionOutcome | None = None
+    last_error = "download_failed"
+    for url in pdf_first:
+        attempts += 1
+        result = _download_url(url, timeout_seconds=timeout_seconds, max_bytes=max_bytes)
+        if result.kind == "pdf":
+            return AcquisitionOutcome(
+                kind="pdf",
+                mime_type=result.mime_type,
+                content=result.content,
+                url=result.url,
+                attempts=attempts,
+                error=None,
+            )
+        if result.kind == "html" and html_fallback is None:
+            html_fallback = AcquisitionOutcome(
+                kind="html",
+                mime_type=result.mime_type,
+                content=result.content,
+                url=result.url,
+                attempts=attempts,
+                error=None,
+            )
+        if result.error:
+            last_error = result.error
+
+    if html_fallback is not None:
+        return AcquisitionOutcome(
+            kind="html",
+            mime_type=html_fallback.mime_type,
+            content=html_fallback.content,
+            url=html_fallback.url,
+            attempts=attempts,
+            error="pdf_unavailable_html_fallback",
+        )
+    return AcquisitionOutcome(kind=None, mime_type=None, content=None, url=None, attempts=attempts, error=last_error)
+
+
+def _resolve_candidate_urls(source: Source) -> list[str]:
+    candidates: list[str] = []
+    if source.url:
+        candidates.append(source.url.strip())
+    if source.doi:
+        doi = source.doi.strip()
+        if doi:
+            candidates.append(f"https://doi.org/{doi}")
+    # Deduplicate while preserving order.
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for url in candidates:
+        if not url or url in seen:
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            deduped.append(url)
+            seen.add(url)
+    return deduped
+
+
+def _looks_pdf_url(url: str) -> bool:
+    normalized = url.lower()
+    return normalized.endswith(".pdf") or "/pdf" in normalized
+
+
+def _persist_artifact(
+    db: Session,
+    acq_run_id: str,
+    item: AcquisitionItem,
+    source_id: str,
+    *,
+    kind: str,
+    mime_type: str | None,
+    content: bytes | None,
+) -> Artifact:
+    payload = content or b""
+    checksum = hashlib.sha256(payload).hexdigest()
+    rel_path = Path("acquisition") / acq_run_id / source_id / f"source.{kind}"
+    abs_path = Path(settings.artifacts_dir) / rel_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    abs_path.write_bytes(payload)
+
+    return Artifact(
+        id=f"artifact_{uuid.uuid4().hex[:12]}",
+        acq_run_id=acq_run_id,
+        source_id=source_id,
+        item_id=item.id,
+        kind=kind,
+        path=str(rel_path),
+        checksum_sha256=checksum,
+        size_bytes=len(payload),
+        mime_type=mime_type,
+    )
+
+
+class DownloadResult(NamedTuple):
+    kind: str | None
+    mime_type: str | None
+    content: bytes | None
+    url: str
+    error: str | None
+
+
+def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> DownloadResult:
+    try:
+        with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
+            response = client.get(url)
+    except httpx.RequestError:
+        return DownloadResult(kind=None, mime_type=None, content=None, url=url, error="network_error")
+
+    if response.status_code >= 400:
+        return DownloadResult(kind=None, mime_type=None, content=None, url=str(response.url), error="http_error")
+
+    content = response.content
+    if len(content) > max_bytes:
+        return DownloadResult(kind=None, mime_type=None, content=None, url=str(response.url), error="file_too_large")
+
+    raw_mime = response.headers.get("Content-Type", "")
+    mime = raw_mime.split(";")[0].strip().lower() if raw_mime else None
+    if mime == "application/pdf":
+        return DownloadResult(kind="pdf", mime_type=mime, content=content, url=str(response.url), error=None)
+    if mime in {"text/html", "application/xhtml+xml"}:
+        return DownloadResult(kind="html", mime_type=mime, content=content, url=str(response.url), error=None)
+
+    # Fallback sniffing when providers omit proper content-type.
+    if content.startswith(b"%PDF"):
+        return DownloadResult(kind="pdf", mime_type="application/pdf", content=content, url=str(response.url), error=None)
+    if content[:1024].lower().find(b"<html") >= 0:
+        return DownloadResult(kind="html", mime_type="text/html", content=content, url=str(response.url), error=None)
+
+    return DownloadResult(kind=None, mime_type=mime, content=None, url=str(response.url), error="unsupported_content_type")
 
 
 def build_manifest_payload(db: Session, acq_run_id: str) -> dict:

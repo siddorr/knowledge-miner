@@ -71,7 +71,7 @@ Decision lock (approved):
 - `artifacts`
 - Required indexes for status/source/checksum lookups
 
-3. [ ] P0 - Implement URL resolution and download engine
+3. [x] P0 - Implement URL resolution and download engine
 - Candidate URL resolution from DOI/source metadata
 - PDF-first strategy with HTML fallback
 - File validation (content-type, size limits)

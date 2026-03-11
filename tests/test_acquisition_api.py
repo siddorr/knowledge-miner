@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+import knowledge_miner.main as main_module
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.main import app
 from knowledge_miner.models import Artifact, Run, Source
@@ -59,7 +60,8 @@ def _seed_discovery_run(*, completed: bool) -> tuple[str, str]:
         return run.id, src.id
 
 
-def test_create_acquisition_run_happy_path():
+def test_create_acquisition_run_happy_path(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
     run_id, _ = _seed_discovery_run(completed=True)
     client = TestClient(app)
     resp = client.post(
@@ -73,7 +75,8 @@ def test_create_acquisition_run_happy_path():
     assert body["status"] in {"queued", "running", "completed"}
 
 
-def test_create_acquisition_run_requires_completed_discovery_run():
+def test_create_acquisition_run_requires_completed_discovery_run(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
     run_id, _ = _seed_discovery_run(completed=False)
     client = TestClient(app)
     resp = client.post(
@@ -85,7 +88,8 @@ def test_create_acquisition_run_requires_completed_discovery_run():
     assert resp.json()["detail"] == "run_not_complete"
 
 
-def test_acquisition_status_items_manifest_endpoints():
+def test_acquisition_status_items_manifest_endpoints(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
     run_id, source_id = _seed_discovery_run(completed=True)
     client = TestClient(app)
     create_resp = client.post("/v1/acquisition/runs", json={"run_id": run_id}, headers=_auth_headers())
@@ -112,7 +116,8 @@ def test_acquisition_status_items_manifest_endpoints():
     assert len(manifest["items"]) == 1
 
 
-def test_get_artifact_endpoint():
+def test_get_artifact_endpoint(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
     run_id, source_id = _seed_discovery_run(completed=True)
     client = TestClient(app)
     create_resp = client.post("/v1/acquisition/runs", json={"run_id": run_id}, headers=_auth_headers())

@@ -36,6 +36,8 @@ class Settings:
     citation_expansion_limit_per_direction: int = int(os.getenv("CITATION_EXPANSION_LIMIT_PER_DIRECTION", "50"))
     citation_expansion_parent_cap_per_iteration: int = int(os.getenv("CITATION_EXPANSION_PARENT_CAP_PER_ITERATION", "10"))
     domains_allowlist_path: str = os.getenv("DOMAINS_ALLOWLIST_PATH", "./config/domains_allowlist.txt")
+    acquisition_timeout_seconds: float = float(os.getenv("ACQUISITION_TIMEOUT_SECONDS", "20"))
+    acquisition_max_bytes: int = int(os.getenv("ACQUISITION_MAX_BYTES", "25000000"))
 
 
 settings = Settings()
