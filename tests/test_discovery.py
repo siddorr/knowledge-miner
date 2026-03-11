@@ -355,3 +355,34 @@ def test_create_run_ai_enabled_without_warning():
     finally:
         object.__setattr__(settings, "use_ai_filter", original_use_ai)
         object.__setattr__(settings, "ai_api_key", original_key)
+
+
+def test_cross_run_canonical_id_collision_does_not_fail():
+    candidates = [
+        {
+            "title": "UPW process control for semiconductor fabs",
+            "year": 2023,
+            "url": "https://example.org/collision",
+            "doi": "10.1000/collision",
+            "abstract": "UPW and semiconductor process control",
+            "source": "openalex",
+            "source_native_id": "oa_collision",
+            "openalex_id": "oa_collision",
+            "semantic_scholar_id": None,
+            "patent_office": None,
+            "patent_number": None,
+            "type": "academic",
+            "discovery_method": "seed_search",
+            "parent_source_id": None,
+        }
+    ]
+    with SessionLocal() as db:
+        run1 = create_run(db, ["upw"], max_iterations=1)
+        run2 = create_run(db, ["upw"], max_iterations=1)
+        _ingest_candidates(db, run1.id, 1, candidates)
+        _ingest_candidates(db, run2.id, 1, candidates)
+
+        rows = db.scalars(select(Source).where(Source.doi == "10.1000/collision").order_by(Source.run_id.asc())).all()
+        assert len(rows) == 2
+        assert rows[0].run_id != rows[1].run_id
+        assert rows[0].id != rows[1].id

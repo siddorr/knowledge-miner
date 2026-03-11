@@ -392,7 +392,7 @@ def _ingest_candidates(
     new_accepted_unique = 0
     pending_source_ids: set[str] = set()
     for c in candidates:
-        sid = canonical_id(
+        canonical_sid = canonical_id(
             doi=c.get("doi"),
             url=c.get("url"),
             title=c["title"],
@@ -404,13 +404,14 @@ def _ingest_candidates(
             patent_office=c.get("patent_office"),
             patent_number=c.get("patent_number"),
         )
+        sid = _run_scoped_source_id(db, run_id, canonical_sid)
 
         if sid in pending_source_ids:
             if observability is not None:
                 observability.inc("dedup")
             continue
 
-        existing = _find_existing_source(db, run_id, c, sid)
+        existing = _find_existing_source(db, run_id, c, canonical_sid)
         if existing is not None:
             _merge_source(existing, c, iteration=iteration)
             db.add(existing)
@@ -469,6 +470,14 @@ def _ingest_candidates(
         pending_source_ids.add(sid)
     db.commit()
     return new_accepted_unique
+
+
+def _run_scoped_source_id(db: Session, run_id: str, canonical_sid: str) -> str:
+    existing = db.get(Source, canonical_sid)
+    if existing is None or existing.run_id == run_id:
+        return canonical_sid
+    # Keep canonical ID when possible; add run scope only for cross-run PK conflicts.
+    return f"{canonical_sid}::run:{run_id}"
 
 
 def _find_existing_source(db: Session, run_id: str, candidate: dict, candidate_id: str) -> Source | None:
