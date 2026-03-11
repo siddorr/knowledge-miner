@@ -12,7 +12,8 @@ from .auth import require_api_key
 from .config import is_sqlite_url, settings
 from .db import Base, engine, get_db
 from .discovery import create_run, enqueue_run, export_sources_raw, review_source
-from .models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
+from .models import AcquisitionItem, AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Run, Source
+from .parse import create_parse_run, enqueue_parse_run
 from .rate_limit import require_rate_limit
 from .schemas import (
     AcquisitionItemsListResponse,
@@ -22,9 +23,20 @@ from .schemas import (
     AcquisitionRunCreateResponse,
     AcquisitionRunStatusResponse,
     ArtifactOut,
+    DocumentChunksListResponse,
+    DocumentChunkOut,
+    ParsedDocumentOut,
+    ParsedDocumentsListResponse,
+    ParsedDocumentTextResponse,
+    ParseRunCreateRequest,
+    ParseRunCreateResponse,
+    ParseRunStatusResponse,
     RunCreateRequest,
     RunCreateResponse,
     RunStatusResponse,
+    SearchRequest,
+    SearchResponse,
+    SearchResultOut,
     SourceOut,
     SourceReviewRequest,
     SourceReviewResponse,
@@ -284,3 +296,203 @@ def get_acq_manifest(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found") from exc
     return AcquisitionManifestResponse(**payload)
+
+
+@app.post("/v1/parse/runs", response_model=ParseRunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
+def create_parse(
+    payload: ParseRunCreateRequest,
+    background_tasks: BackgroundTasks,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> ParseRunCreateResponse:
+    try:
+        run = create_parse_run(db, payload.acq_run_id, retry_failed_only=payload.retry_failed_only)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_not_complete") from exc
+    background_tasks.add_task(enqueue_parse_run, run.id)
+    return ParseRunCreateResponse(parse_run_id=run.id, status=run.status)
+
+
+@app.get("/v1/parse/runs/{parse_run_id}", response_model=ParseRunStatusResponse)
+def get_parse_status(
+    parse_run_id: str,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> ParseRunStatusResponse:
+    run = db.get(ParseRun, parse_run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    return ParseRunStatusResponse(
+        parse_run_id=run.id,
+        acq_run_id=run.acq_run_id,
+        retry_failed_only=run.retry_failed_only,
+        status=run.status,
+        total_documents=run.total_documents,
+        parsed_total=run.parsed_total,
+        failed_total=run.failed_total,
+        chunked_total=run.chunked_total,
+        error_message=run.error_message,
+    )
+
+
+@app.get("/v1/parse/runs/{parse_run_id}/documents", response_model=ParsedDocumentsListResponse)
+def list_parse_documents(
+    parse_run_id: str,
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> ParsedDocumentsListResponse:
+    run = db.get(ParseRun, parse_run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    rows = db.scalars(
+        select(ParsedDocument).where(ParsedDocument.parse_run_id == parse_run_id).order_by(ParsedDocument.id.asc())
+    ).all()
+    page = rows[offset : offset + limit]
+    return ParsedDocumentsListResponse(
+        items=[
+            ParsedDocumentOut(
+                document_id=d.id,
+                source_id=d.source_id,
+                artifact_id=d.artifact_id,
+                status=d.status,
+                title=d.title,
+                publication_year=d.publication_year,
+                language=d.language,
+                parser_used=d.parser_used,
+                char_count=d.char_count,
+                section_count=d.section_count,
+                last_error=d.last_error,
+            )
+            for d in page
+        ],
+        total=len(rows),
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/v1/parse/runs/{parse_run_id}/chunks", response_model=DocumentChunksListResponse)
+def list_parse_chunks(
+    parse_run_id: str,
+    document_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> DocumentChunksListResponse:
+    run = db.get(ParseRun, parse_run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    stmt = select(DocumentChunk).where(DocumentChunk.parse_run_id == parse_run_id)
+    if document_id is not None:
+        stmt = stmt.where(DocumentChunk.parsed_document_id == document_id)
+    rows = db.scalars(stmt.order_by(DocumentChunk.parsed_document_id.asc(), DocumentChunk.chunk_index.asc())).all()
+    page = rows[offset : offset + limit]
+    return DocumentChunksListResponse(
+        items=[
+            DocumentChunkOut(
+                chunk_id=c.id,
+                document_id=c.parsed_document_id,
+                chunk_index=c.chunk_index,
+                start_char=c.start_char,
+                end_char=c.end_char,
+                text=c.text,
+            )
+            for c in page
+        ],
+        total=len(rows),
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/v1/parse/documents/{document_id}", response_model=ParsedDocumentOut)
+def get_parsed_document(
+    document_id: str,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> ParsedDocumentOut:
+    doc = db.get(ParsedDocument, document_id)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document_not_found")
+    return ParsedDocumentOut(
+        document_id=doc.id,
+        source_id=doc.source_id,
+        artifact_id=doc.artifact_id,
+        status=doc.status,
+        title=doc.title,
+        publication_year=doc.publication_year,
+        language=doc.language,
+        parser_used=doc.parser_used,
+        char_count=doc.char_count,
+        section_count=doc.section_count,
+        last_error=doc.last_error,
+    )
+
+
+@app.get("/v1/parse/documents/{document_id}/text", response_model=ParsedDocumentTextResponse)
+def get_parsed_document_text(
+    document_id: str,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> ParsedDocumentTextResponse:
+    doc = db.get(ParsedDocument, document_id)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document_not_found")
+    if not doc.body_text:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="document_not_parsed")
+    return ParsedDocumentTextResponse(document_id=doc.id, text=doc.body_text)
+
+
+@app.post("/v1/search", response_model=SearchResponse)
+def search_corpus(
+    payload: SearchRequest,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> SearchResponse:
+    run = db.get(ParseRun, payload.parse_run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    needle = payload.query.strip().lower()
+    if not needle:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_request")
+
+    chunks = db.scalars(
+        select(DocumentChunk).where(DocumentChunk.parse_run_id == payload.parse_run_id).order_by(DocumentChunk.id.asc())
+    ).all()
+    scored: list[tuple[DocumentChunk, float]] = []
+    for chunk in chunks:
+        hay = chunk.text.lower()
+        hits = hay.count(needle)
+        if hits <= 0:
+            continue
+        score = float(hits)
+        scored.append((chunk, score))
+    scored.sort(key=lambda x: (-x[1], x[0].id))
+    page = scored[: payload.limit]
+
+    docs = {doc.id: doc for doc in db.scalars(select(ParsedDocument).where(ParsedDocument.parse_run_id == payload.parse_run_id)).all()}
+    return SearchResponse(
+        items=[
+            SearchResultOut(
+                document_id=chunk.parsed_document_id,
+                chunk_id=chunk.id,
+                source_id=docs[chunk.parsed_document_id].source_id if chunk.parsed_document_id in docs else "",
+                score=score,
+                snippet=chunk.text[:300],
+            )
+            for chunk, score in page
+        ],
+        total=len(scored),
+    )

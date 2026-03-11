@@ -104,3 +104,85 @@ Definition of done for Phase 2:
 2. Each successful artifact has checksum, size, MIME, and deterministic path.
 3. Failed/partial statuses are queryable via API and resumable with retry mode.
 4. Manifest content matches DB artifact records for the same run.
+
+## Phase 3 Implementation Tasks (Document Intelligence)
+
+Decision lock (proposed baseline):
+- Parse scope: PDF text extraction first, HTML readability fallback, OCR out-of-scope for v1.
+- Retrieval: PostgreSQL full-text search (tsvector/BM25-style) as required baseline.
+- AI use: optional; system must work in heuristic-only mode with explicit warning.
+
+1. [x] P0 - Add parsing and chunking API endpoints
+- `POST /v1/parse/runs` (input: `acq_run_id`, `retry_failed_only`)
+- `GET /v1/parse/runs/{parse_run_id}`
+- `GET /v1/parse/runs/{parse_run_id}/documents`
+- `GET /v1/parse/runs/{parse_run_id}/chunks`
+- `GET /v1/parse/documents/{document_id}`
+- `GET /v1/parse/documents/{document_id}/text`
+- `POST /v1/search` (query over parsed/chunked corpus)
+
+2. [x] P0 - Add Phase 3 database schema and migrations
+- `parse_runs`
+- `parsed_documents`
+- `document_chunks`
+- `document_findings`
+- Required indexes:
+  - run/status foreign-key indexes
+  - `document_chunks(parsed_document_id, chunk_index)`
+  - full-text index on chunk text (`tsvector`) for PostgreSQL
+  - checksum/content-hash indexes for dedup/reparse skip
+
+3. [ ] P0 - Implement parser engine for acquired artifacts
+- Input source: `artifacts` from completed acquisition runs.
+- PDF extraction pipeline with deterministic parser order and fallback.
+- HTML extraction pipeline using readability-style main-content extraction.
+- Normalize outputs to a single document schema:
+  - title, authors, publication_year, abstract_if_found, body_text, language
+  - parse quality metrics (char_count, section_count, parser_used)
+- Persist parse errors per document without failing whole run.
+
+4. [ ] P0 - Implement deterministic chunking + corpus indexing
+- Chunk policy:
+  - fixed target size (chars/tokens), overlap, sentence-aware boundary when possible
+  - stable `chunk_id` generation from `(document_id, chunk_index, content_hash)`
+- Store positional metadata (`start_char`, `end_char`) for citation/evidence mapping.
+- Build incremental full-text index updates (new/updated documents only).
+
+5. [ ] P1 - Add relevance classification on full text
+- Run heuristic scoring on document and chunk levels.
+- Optional AI classifier for override/rerank when enabled.
+- Persist per-document and per-chunk:
+  - decision (`accept/review/reject`)
+  - confidence
+  - reason code and human-readable rationale
+- Expose clear warning when AI is disabled or token missing.
+
+6. [ ] P1 - Add evidence extraction and output artifacts
+- Extract evidence snippets for accepted/reviewed documents with character-span provenance.
+- Generate run-level artifacts:
+  - `parsed_corpus.json`
+  - `search_index_manifest.json`
+  - `findings_report.json`
+- Ensure artifact entries match DB records and are reproducible.
+
+7. [ ] P1 - Add tests and observability for Phase 3
+- Unit tests:
+  - parser selection/fallback
+  - chunk boundary determinism
+  - index updates and query ranking behavior
+- Integration tests:
+  - acquisition -> parse -> search end-to-end
+  - mixed success/failure parse runs
+- API tests:
+  - endpoint contracts, pagination, error model, auth/rate-limit
+- Observability:
+  - structured logs (`parse_run_id`, `document_id`, `artifact_id`, `latency_ms`, `status`)
+  - counters for parsed/chunked/indexed/failed documents
+  - latency histograms per parser and indexing stage
+
+Definition of done for Phase 3:
+1. Parse run can process completed acquisition artifacts end-to-end with partial-failure tolerance.
+2. Every parsed document has normalized metadata, raw text, parse status, and provenance link to source/artifact.
+3. Chunking is deterministic and queryable with positional metadata.
+4. Search endpoint returns ranked results with document/chunk provenance.
+5. Findings and report artifacts are generated and consistent with database state.

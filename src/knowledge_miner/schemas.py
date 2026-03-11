@@ -119,3 +119,86 @@ class AcquisitionManifestResponse(BaseModel):
     totals: dict
     items: list[dict]
     artifacts: list[dict]
+
+
+class ParseRunCreateRequest(BaseModel):
+    acq_run_id: str = Field(min_length=1)
+    retry_failed_only: bool = False
+
+
+class ParseRunCreateResponse(BaseModel):
+    parse_run_id: str
+    status: str
+
+
+class ParseRunStatusResponse(BaseModel):
+    parse_run_id: str
+    acq_run_id: str
+    retry_failed_only: bool
+    status: str
+    total_documents: int
+    parsed_total: int
+    failed_total: int
+    chunked_total: int
+    error_message: str | None
+
+
+class ParsedDocumentOut(BaseModel):
+    document_id: str
+    source_id: str
+    artifact_id: str
+    status: str
+    title: str | None
+    publication_year: int | None
+    language: str | None
+    parser_used: str | None
+    char_count: int
+    section_count: int
+    last_error: str | None
+
+
+class ParsedDocumentsListResponse(BaseModel):
+    items: list[ParsedDocumentOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class DocumentChunkOut(BaseModel):
+    chunk_id: str
+    document_id: str
+    chunk_index: int
+    start_char: int
+    end_char: int
+    text: str
+
+
+class DocumentChunksListResponse(BaseModel):
+    items: list[DocumentChunkOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class ParsedDocumentTextResponse(BaseModel):
+    document_id: str
+    text: str
+
+
+class SearchRequest(BaseModel):
+    parse_run_id: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class SearchResultOut(BaseModel):
+    document_id: str
+    chunk_id: str
+    source_id: str
+    score: float
+    snippet: str
+
+
+class SearchResponse(BaseModel):
+    items: list[SearchResultOut]
+    total: int

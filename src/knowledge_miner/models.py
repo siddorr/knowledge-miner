@@ -186,3 +186,75 @@ class Artifact(Base):
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mime_type: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class ParseRun(Base):
+    __tablename__ = "parse_runs"
+    __table_args__ = (
+        CheckConstraint("status IN ('queued','running','completed','failed')", name="ck_parse_runs_status_values"),
+        CheckConstraint("total_documents >= 0", name="ck_parse_runs_total_documents_gte_0"),
+        CheckConstraint("parsed_total >= 0", name="ck_parse_runs_parsed_total_gte_0"),
+        CheckConstraint("failed_total >= 0", name="ck_parse_runs_failed_total_gte_0"),
+        CheckConstraint("chunked_total >= 0", name="ck_parse_runs_chunked_total_gte_0"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    acq_run_id: Mapped[str] = mapped_column(String, ForeignKey("acquisition_runs.id"), nullable=False, index=True)
+    retry_failed_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    total_documents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    parsed_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chunked_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class ParsedDocument(Base):
+    __tablename__ = "parsed_documents"
+    __table_args__ = (
+        CheckConstraint("status IN ('queued','parsed','failed','skipped')", name="ck_parsed_documents_status_values"),
+        CheckConstraint("char_count >= 0", name="ck_parsed_documents_char_count_gte_0"),
+        CheckConstraint("section_count >= 0", name="ck_parsed_documents_section_count_gte_0"),
+        Index("ix_parsed_documents_parse_run_id_status", "parse_run_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    parse_run_id: Mapped[str] = mapped_column(String, ForeignKey("parse_runs.id"), nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    artifact_id: Mapped[str] = mapped_column(String, ForeignKey("artifacts.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    publication_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    language: Mapped[str | None] = mapped_column(String, nullable=True)
+    abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parser_used: Mapped[str | None] = mapped_column(String, nullable=True)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    section_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    content_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+    __table_args__ = (
+        CheckConstraint("chunk_index >= 0", name="ck_document_chunks_chunk_index_gte_0"),
+        CheckConstraint("start_char >= 0", name="ck_document_chunks_start_char_gte_0"),
+        CheckConstraint("end_char >= 0", name="ck_document_chunks_end_char_gte_0"),
+        CheckConstraint("end_char >= start_char", name="ck_document_chunks_end_char_gte_start_char"),
+        Index("ix_document_chunks_document_chunk_index", "parsed_document_id", "chunk_index"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    parse_run_id: Mapped[str] = mapped_column(String, ForeignKey("parse_runs.id"), nullable=False, index=True)
+    parsed_document_id: Mapped[str] = mapped_column(String, ForeignKey("parsed_documents.id"), nullable=False, index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    start_char: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_char: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
