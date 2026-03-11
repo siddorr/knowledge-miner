@@ -11,9 +11,11 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .ai_filter import AIRelevanceFilter, describe_ai_filter_runtime
 from .config import settings
 from .db import SessionLocal
 from .models import AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Source
+from .scoring import decision_from_score, score_text
 
 
 def create_parse_run(db: Session, acq_run_id: str, *, retry_failed_only: bool) -> ParseRun:
@@ -42,10 +44,16 @@ def create_parse_run(db: Session, acq_run_id: str, *, retry_failed_only: bool) -
         else:
             selected_artifacts = []
 
+    ai_filter_active, ai_filter_warning = describe_ai_filter_runtime(
+        use_ai_filter=settings.use_ai_filter,
+        api_key=settings.ai_api_key,
+    )
     run = ParseRun(
         id=f"parse_{uuid.uuid4().hex[:12]}",
         acq_run_id=acq_run_id,
         retry_failed_only=retry_failed_only,
+        ai_filter_active=ai_filter_active,
+        ai_filter_warning=ai_filter_warning,
         status="queued",
         total_documents=len(selected_artifacts),
         parsed_total=0,
@@ -89,6 +97,7 @@ def execute_parse_run_by_id(parse_run_id: str) -> None:
 
 def execute_parse_run(db: Session, run: ParseRun) -> None:
     run_id = run.id
+    ai_filter = AIRelevanceFilter()
     try:
         run.status = "running"
         db.commit()
@@ -123,11 +132,27 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
                 doc.section_count = section_count
                 doc.content_hash = content_hash
                 doc.last_error = None
+                doc_score, doc_decision, doc_confidence, doc_reason = _classify_text(
+                    title=doc.title or "",
+                    text=text[:6000],
+                    ai_filter=ai_filter,
+                )
+                doc.relevance_score = doc_score
+                doc.decision = doc_decision
+                doc.confidence = doc_confidence
+                doc.reason = doc_reason
                 parsed_total += 1
                 if cached_doc is not None:
                     chunked_total += _copy_chunks_from_cached_document(db, run_id=run_id, target_doc_id=doc.id, cached_doc_id=cached_doc.id)
                 else:
-                    chunked_total += _persist_chunks_for_document(db, run_id=run_id, parsed_document_id=doc.id, chunks=chunks)
+                    chunked_total += _persist_chunks_for_document(
+                        db,
+                        run_id=run_id,
+                        parsed_document_id=doc.id,
+                        title=doc.title or "",
+                        chunks=chunks,
+                        ai_filter=ai_filter,
+                    )
             except Exception as exc:
                 doc.status = "failed"
                 doc.last_error = str(exc)
@@ -275,10 +300,13 @@ def _persist_chunks_for_document(
     *,
     run_id: str,
     parsed_document_id: str,
+    title: str,
     chunks: list[tuple[str, int, int]],
+    ai_filter: AIRelevanceFilter,
 ) -> int:
     for idx, (chunk_text, start, end) in enumerate(chunks):
         chunk_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
+        score, decision, confidence, reason = _classify_text(title=title, text=chunk_text, ai_filter=ai_filter)
         db.add(
             DocumentChunk(
                 id=_deterministic_chunk_id(
@@ -290,6 +318,10 @@ def _persist_chunks_for_document(
                 parsed_document_id=parsed_document_id,
                 chunk_index=idx,
                 text=chunk_text,
+                relevance_score=score,
+                decision=decision,
+                confidence=confidence,
+                reason=reason,
                 start_char=start,
                 end_char=end,
                 content_hash=chunk_hash,
@@ -344,9 +376,38 @@ def _copy_chunks_from_cached_document(
                 parsed_document_id=target_doc_id,
                 chunk_index=chunk.chunk_index,
                 text=chunk.text,
+                relevance_score=chunk.relevance_score,
+                decision=chunk.decision,
+                confidence=chunk.confidence,
+                reason=chunk.reason,
                 start_char=chunk.start_char,
                 end_char=chunk.end_char,
                 content_hash=chunk.content_hash,
             )
         )
     return len(cached_chunks)
+
+
+def _classify_text(*, title: str, text: str, ai_filter: AIRelevanceFilter) -> tuple[float, str, float, str]:
+    score = score_text(title, text)
+    _, base_decision = decision_from_score(score)
+    decision = base_decision
+    confidence = _heuristic_confidence(score=score, decision=base_decision)
+    reason = "heuristic_score"
+
+    ai_result = ai_filter.evaluate(title=title, abstract=text, base_score=score, base_decision=base_decision)
+    if ai_result is not None and ai_result.confidence >= settings.ai_min_confidence_override:
+        decision = ai_result.decision
+        confidence = float(ai_result.confidence)
+        reason = f"ai_override:{ai_result.reason or 'no_reason'}"
+    return score, decision, confidence, reason
+
+
+def _heuristic_confidence(*, score: float, decision: str) -> float:
+    if decision == "auto_accept":
+        value = 0.7 + min(0.29, max(0.0, (score - 5.0) * 0.03))
+        return round(value, 3)
+    if decision == "auto_reject":
+        value = 0.7 + min(0.29, max(0.0, (3.0 - score) * 0.05))
+        return round(value, 3)
+    return 0.55

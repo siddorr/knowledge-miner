@@ -201,6 +201,8 @@ class ParseRun(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     acq_run_id: Mapped[str] = mapped_column(String, ForeignKey("acquisition_runs.id"), nullable=False, index=True)
     retry_failed_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ai_filter_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ai_filter_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
     total_documents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     parsed_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -215,6 +217,10 @@ class ParsedDocument(Base):
     __tablename__ = "parsed_documents"
     __table_args__ = (
         CheckConstraint("status IN ('queued','parsed','failed','skipped')", name="ck_parsed_documents_status_values"),
+        CheckConstraint(
+            "decision IS NULL OR decision IN ('auto_accept','needs_review','auto_reject')",
+            name="ck_parsed_documents_decision_values",
+        ),
         CheckConstraint("char_count >= 0", name="ck_parsed_documents_char_count_gte_0"),
         CheckConstraint("section_count >= 0", name="ck_parsed_documents_section_count_gte_0"),
         Index("ix_parsed_documents_parse_run_id_status", "parse_run_id", "status"),
@@ -231,6 +237,10 @@ class ParsedDocument(Base):
     abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
     body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     parser_used: Mapped[str | None] = mapped_column(String, nullable=True)
+    relevance_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    decision: Mapped[str | None] = mapped_column(String, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     section_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     content_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
@@ -246,6 +256,10 @@ class DocumentChunk(Base):
         CheckConstraint("start_char >= 0", name="ck_document_chunks_start_char_gte_0"),
         CheckConstraint("end_char >= 0", name="ck_document_chunks_end_char_gte_0"),
         CheckConstraint("end_char >= start_char", name="ck_document_chunks_end_char_gte_start_char"),
+        CheckConstraint(
+            "decision IS NULL OR decision IN ('auto_accept','needs_review','auto_reject')",
+            name="ck_document_chunks_decision_values",
+        ),
         Index("ix_document_chunks_document_chunk_index", "parsed_document_id", "chunk_index"),
     )
 
@@ -254,6 +268,10 @@ class DocumentChunk(Base):
     parsed_document_id: Mapped[str] = mapped_column(String, ForeignKey("parsed_documents.id"), nullable=False, index=True)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    relevance_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    decision: Mapped[str | None] = mapped_column(String, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     start_char: Mapped[int] = mapped_column(Integer, nullable=False)
     end_char: Mapped[int] = mapped_column(Integer, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)

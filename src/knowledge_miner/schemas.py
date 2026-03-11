@@ -135,6 +135,8 @@ class ParseRunStatusResponse(BaseModel):
     parse_run_id: str
     acq_run_id: str
     retry_failed_only: bool
+    ai_filter_active: bool
+    ai_filter_warning: str | None
     status: str
     total_documents: int
     parsed_total: int
@@ -152,6 +154,10 @@ class ParsedDocumentOut(BaseModel):
     publication_year: int | None
     language: str | None
     parser_used: str | None
+    relevance_score: float | None
+    decision: str | None
+    confidence: float | None
+    reason: str | None
     char_count: int
     section_count: int
     last_error: str | None
@@ -168,6 +174,10 @@ class DocumentChunkOut(BaseModel):
     chunk_id: str
     document_id: str
     chunk_index: int
+    relevance_score: float | None
+    decision: str | None
+    confidence: float | None
+    reason: str | None
     start_char: int
     end_char: int
     text: str

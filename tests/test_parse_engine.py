@@ -51,3 +51,12 @@ def test_deterministic_chunk_id_is_stable():
     )
     assert c1 == c2
     assert c1 != c3
+
+
+def test_heuristic_confidence_ranges():
+    accept = parse._heuristic_confidence(score=8.0, decision="auto_accept")  # noqa: SLF001
+    review = parse._heuristic_confidence(score=4.0, decision="needs_review")  # noqa: SLF001
+    reject = parse._heuristic_confidence(score=1.0, decision="auto_reject")  # noqa: SLF001
+    assert 0.7 <= accept <= 0.99
+    assert review == 0.55
+    assert 0.7 <= reject <= 0.99

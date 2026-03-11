@@ -188,7 +188,7 @@ Decision lock (proposed baseline):
 - Store positional metadata (`start_char`, `end_char`) for citation/evidence mapping.
 - Build incremental full-text index updates (new/updated documents only).
 
-5. [ ] P1 - Add relevance classification on full text
+5. [x] P1 - Add relevance classification on full text
 - Run heuristic scoring on document and chunk levels.
 - Optional AI classifier for override/rerank when enabled.
 - Persist per-document and per-chunk:

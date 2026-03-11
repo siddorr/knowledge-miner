@@ -114,6 +114,8 @@ def test_parse_endpoints_basic(monkeypatch, tmp_path):
     status = client.get(f"/v1/parse/runs/{parse_run_id}", headers=_auth_headers())
     assert status.status_code == 200
     assert status.json()["status"] == "completed"
+    assert status.json()["ai_filter_active"] is False
+    assert status.json()["ai_filter_warning"] is not None
 
     docs = client.get(f"/v1/parse/runs/{parse_run_id}/documents", headers=_auth_headers())
     assert docs.status_code == 200
@@ -124,6 +126,9 @@ def test_parse_endpoints_basic(monkeypatch, tmp_path):
     assert doc.status_code == 200
     assert doc.json()["status"] == "parsed"
     assert doc.json()["parser_used"] == "html_readability_heuristic"
+    assert doc.json()["decision"] in {"auto_accept", "needs_review", "auto_reject"}
+    assert doc.json()["confidence"] is not None
+    assert doc.json()["reason"] is not None
 
     text = client.get(f"/v1/parse/documents/{doc_id}/text", headers=_auth_headers())
     assert text.status_code == 200
@@ -132,6 +137,7 @@ def test_parse_endpoints_basic(monkeypatch, tmp_path):
     chunks = client.get(f"/v1/parse/runs/{parse_run_id}/chunks", headers=_auth_headers())
     assert chunks.status_code == 200
     assert chunks.json()["total"] >= 1
+    assert chunks.json()["items"][0]["decision"] in {"auto_accept", "needs_review", "auto_reject"}
 
     search = client.post(
         "/v1/search",
