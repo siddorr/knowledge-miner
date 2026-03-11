@@ -1,73 +1,92 @@
-# System Architecture
+# Architecture
 
-v1 deploys as a single Python service with PostgreSQL and batch-style run execution.
+Knowledge Miner runs as a single Python service with database-backed state, background workers, and filesystem artifact storage.
 
-## Pipeline
+## 1. System Components
 
-1. Seed queries
-2. Provider search (OpenAlex, Semantic Scholar, Brave or SerpAPI, patents)
-3. Candidate normalization
-4. Citation expansion
-5. Abstract retrieval
-6. Relevance scoring
-7. Deduplication
-8. Review queue handling (`needs_review`)
-9. Accepted corpus persistence
-10. Keyword extraction
-11. Query generation
-12. Next iteration
-13. Document acquisition (Phase 2): PDF-first download, HTML fallback, artifact indexing
+1. API layer:
+- request validation
+- auth/rate-limit checks
+- run orchestration endpoints
+2. Discovery engine:
+- provider connector calls
+- normalization and canonical ID assignment
+- citation expansion
+- deduplication
+- iteration planner
+3. Decision engine:
+- heuristic scoring metadata
+- AI-first final decision policy
+- review queue integration
+4. Acquisition engine:
+- URL resolution and legal-source preference
+- file download/retry/resume
+- manifest/artifact registration
+5. Parse/search engine:
+- artifact parsing/chunking
+- parse run lifecycle
+- chunk-level search
+6. HMI layer:
+- task-first UX pages
+- advanced diagnostics and controls
+7. Persistence and observability:
+- relational DB for runs/sources/artifacts/parse data
+- structured logs and metrics
+- filesystem artifacts/runtime state
 
-## Runtime Model
+## 2. End-to-End Data Flow
 
-1. `POST /v1/discovery/runs` creates a run (`queued` -> `running`)
-2. Worker executes up to `max_iterations` (default 6)
-3. Each iteration persists checkpoints
-4. Run stops on convergence or max iteration
-5. Run ends `completed` or `failed`
+1. `POST /v1/discovery/runs` creates run (`queued -> running`).
+2. Discovery iterations execute provider search, expansion, filtering, dedup, and checkpoint updates.
+3. Final decisioning routes candidates to accepted/rejected/review states.
+4. Acquisition runs fetch full text for accepted sources and persist artifacts/manifest.
+5. Parse runs process artifacts into document/chunk records.
+6. Search queries retrieve scored snippets from parsed corpus.
+7. HMI exposes task-first operations for review, document recovery, and search.
 
-## Core Components
+## 3. Pipeline Stages and Ownership
 
-1. API layer (auth, validation, run control)
-2. Connector layer (external provider clients + retry/backoff)
-3. Scoring and filtering layer
-4. Deduplication layer
-5. Iteration planner (keyword extraction and query generation)
-6. Persistence layer (PostgreSQL)
-7. Export layer (`sources_raw.json`)
-8. Acquisition worker layer (download jobs, retries, resume)
-9. Artifact storage layer (filesystem paths + DB metadata index)
-10. Observability layer (structured JSON logs, counters, latency histograms)
+1. Discovery stage:
+- connector operations and candidate generation
+- citation graph growth
+- query expansion and stop-condition control
+2. Decision stage:
+- AI-first final decisions
+- heuristic recommendation metadata
+- human review override path
+3. Acquisition stage:
+- retrieval and artifact indexing
+- manual recovery queue
+4. Parse/search stage:
+- text extraction and chunk indexing
+- search endpoints and UX actions
 
-## Decision Engine Policy (AI-First)
+Detailed decision logic and thresholds are defined in `PIPELINE_RULES.md`.
 
-1. Heuristic scoring is always computed first as recommendation metadata.
-2. AI classifier is the primary auto-decision source for candidate relevance.
-3. If AI decision is valid, final decision follows AI output.
-4. If AI call fails or times out for a candidate, final decision is forced to `needs_review`.
-5. If AI is unavailable at run start (`USE_AI_FILTER=false` or token missing), run is allowed and all candidates default to `needs_review`.
-6. Human review (`accept`/`reject`) remains final override for v1.
+## 4. Runtime Behavior
 
-Invariants:
-1. Heuristic does not directly auto-accept/auto-reject in AI-first mode.
-2. AI runtime degradation never hard-fails the full discovery run by itself; affected candidates are routed to review.
+1. Runs are asynchronous and checkpointed.
+2. Startup performs runtime lock cleanup and instance lock acquisition.
+3. Retries are bounded and policy-driven.
+4. Terminal run statuses are `completed` or `failed`.
+5. Task pages in HMI avoid mandatory manual ID entry; advanced controls remain available.
 
-## Phase 2 Acquisition Runtime
+## 5. External Dependencies
 
-1. `POST /v1/acquisition/runs` queues acquisition for a completed discovery run.
-2. Background worker resolves URLs and downloads files per source.
-3. Format policy: PDF preferred, HTML snapshot fallback.
-4. Progress and outcomes persist in acquisition tables.
-5. Manifest endpoint exports complete artifact listing for downstream parsing.
+1. Search/discovery providers (OpenAlex, Semantic Scholar, Brave; optional others).
+2. AI provider for classification when enabled.
+3. Filesystem for artifacts/logs/runtime state.
+4. Database backend for persistent run and corpus data.
 
-## Observability
+## 6. API and Service Boundaries
 
-Discovery:
-1. Structured logs for provider calls with `run_id`, `iteration`, `provider`, `latency_ms`
-2. Run summary logs with counters and latency histograms
+1. API handlers are thin and delegate business logic to service modules.
+2. Connectors are isolated from scoring/dedup logic.
+3. Decision policy is independent from transport/provider clients.
+4. UI task flows consume stable API contracts (`work-queue`, discovery/review, acquisition/manual recovery, parse/search).
 
-Acquisition:
-1. Structured logs with `acq_run_id`, `source_id`, `domain`, `latency_ms`, `status`
-2. Acquisition summary logs with counters (`attempted`, `downloaded`, `partial`, `failed`, `skipped`, `retries`, `api_errors`)
+## 7. Operational Observability
 
-See `V1_SPEC.md` for detailed contracts.
+1. Structured logs include run and provider context.
+2. Stage summaries include counters and failure classifications.
+3. Status endpoints expose auth/provider/AI readiness for operators.

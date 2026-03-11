@@ -26,7 +26,7 @@ Status:
     - hide/disable token controls when auth is disabled.
     - keep manual/system token mode only when auth is enabled.
   - Update API dependency wiring so endpoints do not return `401` when auth is disabled.
-  - Update docs (`README.md`, `HMI_PLAN.md`) with new auth-mode behavior.
+  - Update docs (`README.md`, `UI_SPEC.md`) with new auth-mode behavior.
   - Add tests for both modes:
     - auth disabled -> no token required.
     - auth enabled -> token required and validated.
@@ -324,7 +324,7 @@ Definition of done for Phase 3:
 ## Phase 4 Implementation Tasks (HMI Ops Dashboard)
 
 Reference:
-- `HMI_PLAN.md`
+- `UI_SPEC.md`
 
 Decision lock (approved):
 - Surface: FastAPI-hosted web UI
@@ -571,7 +571,7 @@ Definition of done for Phase 4.1:
 ## Phase 4.2 Implementation Tasks (HMI UX Rebuild - Operator First)
 
 Reference:
-- `HMI_PLAN.md` (Task-First UX)
+- `UI_SPEC.md` (Task-First UX)
 
 1. [x] P0 - Hard replace HMI with task-first navigation
 - Set top-level nav to:

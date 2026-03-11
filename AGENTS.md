@@ -1,108 +1,63 @@
 # AGENTS.md
 
-This file is the operating guide for AI coding agents working in this repository.
+Operating guide for contributors and AI coding agents in this repository.
 
-## 1. Start Here (Mandatory)
+## 1. Documentation Precedence
 
-Before making changes:
-1. Read `V1_SPEC.md` first.
-2. Confirm task scope against implemented phases:
-   - Discovery pipeline (v1 baseline)
-   - Acquisition pipeline (Phase 2 extension)
-   - Parse/search pipeline (Phase 3 extension)
-   - Task-first HMI (Phase 4.2)
-3. Write a short task plan and execute in small, testable steps.
-4. Prefer editing existing files over adding new abstractions.
+When docs conflict, use this order:
+1. `CURRENT_SCOPE.md`
+2. `ARCHITECTURE.md`
+3. `UI_SPEC.md`
+4. `PIPELINE_RULES.md`
+5. `DATA_SCHEMA.md`
+6. `BACKLOG.md`
 
-Do not work from memory when repo docs define behavior.
+If behavior changes, update affected docs in the same change.
 
-## 2. Source of Truth
-
-When docs conflict, use this precedence:
-1. `V1_SPEC.md`
-2. `DATA_SCHEMA.md`
-3. `ARCHITECTURE.md`
-4. module docs (`SEARCH_ENGINE.md`, `CITATION_EXPANSION.md`, `ABSTRACT_FILTER.md`, `ITERATION_PROCESS.md`)
-
-If conflicts are found, update docs in the same change.
-
-## 3. v1 Scope Guardrails
+## 2. Scope Guardrails
 
 In scope:
-- Search connectors
-- Citation expansion
-- Abstract scoring/filtering
-- Deduplication
-- Iterative query refinement
-- Corpus export
-- Acquisition run execution (PDF-first with HTML fallback, manifest, retries/resume)
+1. Discovery, acquisition, parse/search, and task-first HMI improvements.
+2. Reliability, observability, and workflow UX improvements aligned with current docs.
 
-Out of scope:
-- Knowledge graph
-- Topic clustering
-- Automated report generation
+Out of scope unless explicitly requested:
+1. Knowledge graph and topic clustering.
+2. Productized entity/relationship extraction.
+3. Automated narrative report generation.
 
-Do not introduce out-of-scope features unless explicitly requested.
+## 3. Engineering Rules
 
-UI/HMI features are in scope when they align with:
-1. `HMI_PLAN.md` (navigation/UX behavior)
-2. `UI_UX_DETAILED_SPEC.md` (detailed UI contract)
-3. existing API contracts and tests
+1. Keep API layer thin; core behavior belongs in service modules.
+2. Keep connector code isolated from decision/dedup logic.
+3. Preserve deterministic behavior in ranking/dedup/query generation.
+4. Preserve provenance and decision-source traceability.
+5. Keep naming stable across API/model/UI.
 
-## 4. Architecture Rules
+## 4. UI/HMI Rules
 
-1. Keep deterministic behavior in core pipeline logic.
-2. Keep connectors isolated from scoring/dedup logic.
-3. Keep API layer thin; business logic belongs in service modules.
-4. Persist checkpoints per iteration.
-5. Use canonical IDs exactly per `V1_SPEC.md`.
+1. Enforce single navigation model from `UI_SPEC.md`.
+2. Keep task pages free of mandatory manual ID entry.
+3. Keep technical controls in `Advanced` or explicit technical drawers.
+4. Show status as text + color, never color-only.
 
-## 5. Data and Schema Discipline
+## 5. Pipeline Rules Compliance
 
-1. Treat schema changes as high-impact.
-2. Keep required/optional field behavior explicit.
-3. Avoid silent data coercion.
-4. Preserve provenance fields whenever records are merged.
-5. Add schema versioning to exported artifacts.
+1. Follow `PIPELINE_RULES.md` for provider, citation, scoring, AI fallback, dedup, and iteration behavior.
+2. Any threshold/policy change must update tests and docs together.
 
-## 6. Code Quality Standards
+## 6. Testing Baseline
 
-1. Keep code ASCII unless file already uses Unicode.
-2. Avoid non-informative comments.
-3. Prefer small pure functions for scoring, dedup, and query generation.
-4. Handle failures explicitly with typed errors or clear HTTP error codes.
-5. Keep naming stable and predictable across modules.
-
-## 7. Testing Requirements
-
-For logic changes, add/adjust tests for:
-1. scoring thresholds and review classification
-2. dedup precedence and merge behavior
-3. iteration stop-condition calculation
-4. export schema conformance
-5. acquisition status transitions and manifest/artifact parity
-
-Minimum validation before handoff:
+Before handoff:
 1. `python3 -m compileall src tests`
 2. `.venv/bin/pytest -q` (or `pytest -q` in active venv)
 
-## 8. API Contract Rules
+For changes touching policy/UI/workflows, add focused tests for:
+1. decision behavior and review routing
+2. dedup/merge behavior
+3. task-first user flow and accessibility states
 
-1. Do not break existing endpoint shapes without updating docs and tests.
-2. Keep error response semantics consistent (`400/401/404/409/429/500` per spec).
-3. Validate request payloads strictly.
-4. Keep auth checks on all non-health endpoints.
+## 7. Change Management
 
-## 9. Operational Expectations
-
-1. Log with run and iteration context.
-2. Keep retry behavior bounded and explicit.
-3. Avoid unbounded concurrency.
-4. Make export paths deterministic: `./artifacts/{run_id}/sources_raw.json`.
-
-## 10. Change Management
-
-When you learn something useful for future agent tasks:
-1. Update this file in the same PR/commit.
-2. Keep updates concrete and repository-specific.
-3. Remove stale instructions rather than layering duplicates.
+1. Prefer small, reviewable commits.
+2. Do not leave stale docs after behavior changes.
+3. Keep archive docs in `archive/`; do not treat them as active source of truth.
