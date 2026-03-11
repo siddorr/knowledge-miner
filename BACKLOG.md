@@ -269,7 +269,7 @@ Decision lock (approved):
 - Show stale-data indicator on polling failures.
 - Preserve user filter/pagination state across refreshes.
 
-4. [ ] P0 - Implement core user actions in UI
+4. [x] P0 - Implement core user actions in UI
 - Start Discovery run.
 - Start Acquisition run (`retry_failed_only` supported).
 - Start Parse run (`retry_failed_only` supported).

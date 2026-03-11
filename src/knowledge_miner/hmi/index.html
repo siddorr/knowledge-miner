@@ -83,6 +83,41 @@
 
     <section id="discovery" class="panel">
       <h2>Discovery Detail</h2>
+      <form id="startDiscoveryForm" class="row">
+        <label>
+          Seed queries (comma-separated)
+          <input id="startDiscoverySeeds" type="text" placeholder="upw, semiconductor, toc" required>
+        </label>
+        <label>
+          Max iterations
+          <select id="startDiscoveryMaxIterations">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6" selected>6</option>
+          </select>
+        </label>
+        <button type="submit">Start Discovery</button>
+      </form>
+      <div class="row compact">
+        <button id="downloadSourcesRawBtn" type="button">Export sources_raw</button>
+      </div>
+      <form id="sourceReviewForm" class="row">
+        <label>
+          Source ID
+          <input id="reviewSourceId" type="text" placeholder="source id">
+        </label>
+        <label>
+          Decision
+          <select id="reviewDecision">
+            <option value="accept">accept</option>
+            <option value="reject">reject</option>
+          </select>
+        </label>
+        <button type="submit">Submit Review</button>
+      </form>
       <form id="discoveryForm" class="row">
         <label>
           Run ID
@@ -124,6 +159,23 @@
 
     <section id="acquisition" class="panel">
       <h2>Acquisition Detail</h2>
+      <form id="startAcqForm" class="row">
+        <label>
+          Discovery Run ID
+          <input id="startAcqRunId" type="text" placeholder="run_..." required>
+        </label>
+        <label>
+          Retry failed only
+          <select id="startAcqRetry">
+            <option value="false" selected>false</option>
+            <option value="true">true</option>
+          </select>
+        </label>
+        <button type="submit">Start Acquisition</button>
+      </form>
+      <div class="row compact">
+        <button id="downloadManifestBtn" type="button">Export acquisition manifest</button>
+      </div>
       <form id="acqForm" class="row">
         <label>
           Acquisition Run ID
@@ -156,6 +208,20 @@
 
     <section id="parse" class="panel">
       <h2>Parse Detail</h2>
+      <form id="startParseForm" class="row">
+        <label>
+          Acquisition Run ID
+          <input id="startParseAcqRunId" type="text" placeholder="acq_..." required>
+        </label>
+        <label>
+          Retry failed only
+          <select id="startParseRetry">
+            <option value="false" selected>false</option>
+            <option value="true">true</option>
+          </select>
+        </label>
+        <button type="submit">Start Parse</button>
+      </form>
       <form id="parseForm" class="row">
         <label>
           Parse Run ID

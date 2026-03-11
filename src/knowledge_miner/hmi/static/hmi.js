@@ -82,6 +82,55 @@ async function apiGet(path) {
   return res.json();
 }
 
+async function apiPost(path, payload) {
+  requiredKey();
+  const res = await fetch(path, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${state.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body.detail || detail;
+    } catch (_err) {
+      // ignore json parse errors
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+async function apiDownload(path, filename) {
+  requiredKey();
+  const res = await fetch(path, {
+    headers: { Authorization: `Bearer ${state.apiKey}` },
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body.detail || detail;
+    } catch (_err) {
+      // ignore json parse errors
+    }
+    throw new Error(detail);
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 function summaryForRun(phase, payload) {
   if (phase === "discovery") {
     return `iter=${payload.current_iteration}, accepted=${payload.accepted_total}, expanded=${payload.expanded_candidates_total}`;
@@ -90,6 +139,18 @@ function summaryForRun(phase, payload) {
     return `downloaded=${payload.downloaded_total}, partial=${payload.partial_total}, failed=${payload.failed_total}`;
   }
   return `parsed=${payload.parsed_total}, failed=${payload.failed_total}, chunks=${payload.chunked_total}`;
+}
+
+function upsertRunRow(phase, runId, payload) {
+  const idx = state.runRows.findIndex((r) => r.phase === phase && r.id === runId);
+  const row = {
+    phase,
+    id: runId,
+    status: payload.status,
+    summary: summaryForRun(phase, payload),
+  };
+  if (idx >= 0) state.runRows[idx] = row;
+  else state.runRows.unshift(row);
 }
 
 function renderRunsTable() {
@@ -150,15 +211,7 @@ async function lookupRun(event) {
 
   try {
     const payload = await apiGet(endpoint);
-    const idx = state.runRows.findIndex((r) => r.phase === phase && r.id === runId);
-    const row = {
-      phase,
-      id: runId,
-      status: payload.status,
-      summary: summaryForRun(phase, payload),
-    };
-    if (idx >= 0) state.runRows[idx] = row;
-    else state.runRows.unshift(row);
+    upsertRunRow(phase, runId, payload);
     renderRunsTable();
     schedulePoll();
   } catch (err) {
@@ -189,6 +242,9 @@ async function loadDiscoveryData() {
       `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`,
     ),
   ]);
+
+  upsertRunRow("discovery", runId, run);
+  renderRunsTable();
 
   el("discoveryMetrics").textContent = JSON.stringify(
     {
@@ -241,6 +297,9 @@ async function loadAcquisitionData() {
     apiGet(`/v1/acquisition/runs/${encodeURIComponent(runId)}/items?limit=${limit}&offset=${offset}`),
   ]);
 
+  upsertRunRow("acquisition", runId, run);
+  renderRunsTable();
+
   el("acqMetrics").textContent = JSON.stringify(
     {
       acq_run_id: run.acq_run_id,
@@ -292,6 +351,9 @@ async function loadParseData() {
     apiGet(`/v1/parse/runs/${encodeURIComponent(runId)}/chunks?limit=${chunksLimit}&offset=${chunksOffset}`),
   ]);
 
+  upsertRunRow("parse", runId, run);
+  renderRunsTable();
+
   el("parseMetrics").textContent = JSON.stringify(
     {
       parse_run_id: run.parse_run_id,
@@ -340,6 +402,109 @@ async function loadParse(event) {
     schedulePoll();
   } catch (err) {
     setText("parseError", `Load failed: ${err.message}`);
+  }
+}
+
+async function startDiscovery(event) {
+  event.preventDefault();
+  setText("discoveryError", "");
+  try {
+    const rawSeeds = el("startDiscoverySeeds").value;
+    const seedQueries = rawSeeds.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!seedQueries.length) throw new Error("provide at least one seed query");
+    const maxIterations = Number(el("startDiscoveryMaxIterations").value);
+    const result = await apiPost("/v1/discovery/runs", {
+      seed_queries: seedQueries,
+      max_iterations: maxIterations,
+    });
+    el("discoveryRunId").value = result.run_id;
+    upsertRunRow("discovery", result.run_id, { status: result.status, current_iteration: 0, accepted_total: 0, expanded_candidates_total: 0 });
+    renderRunsTable();
+    await loadDiscoveryData();
+    schedulePoll();
+  } catch (err) {
+    setText("discoveryError", `Start failed: ${err.message}`);
+  }
+}
+
+async function startAcquisition(event) {
+  event.preventDefault();
+  setText("acqError", "");
+  try {
+    const runId = el("startAcqRunId").value.trim();
+    if (!runId) throw new Error("discovery run id is required");
+    const retryFailedOnly = el("startAcqRetry").value === "true";
+    const result = await apiPost("/v1/acquisition/runs", {
+      run_id: runId,
+      retry_failed_only: retryFailedOnly,
+    });
+    el("acqRunId").value = result.acq_run_id;
+    upsertRunRow("acquisition", result.acq_run_id, { status: result.status, downloaded_total: 0, partial_total: 0, failed_total: 0 });
+    renderRunsTable();
+    await loadAcquisitionData();
+    schedulePoll();
+  } catch (err) {
+    setText("acqError", `Start failed: ${err.message}`);
+  }
+}
+
+async function startParse(event) {
+  event.preventDefault();
+  setText("parseError", "");
+  try {
+    const acqRunId = el("startParseAcqRunId").value.trim();
+    if (!acqRunId) throw new Error("acquisition run id is required");
+    const retryFailedOnly = el("startParseRetry").value === "true";
+    const result = await apiPost("/v1/parse/runs", {
+      acq_run_id: acqRunId,
+      retry_failed_only: retryFailedOnly,
+    });
+    el("parseRunId").value = result.parse_run_id;
+    upsertRunRow("parse", result.parse_run_id, { status: result.status, parsed_total: 0, failed_total: 0, chunked_total: 0 });
+    renderRunsTable();
+    await loadParseData();
+    schedulePoll();
+  } catch (err) {
+    setText("parseError", `Start failed: ${err.message}`);
+  }
+}
+
+async function submitReview(event) {
+  event.preventDefault();
+  setText("discoveryError", "");
+  try {
+    const sourceId = el("reviewSourceId").value.trim();
+    const decision = el("reviewDecision").value;
+    if (!sourceId) throw new Error("source id is required");
+    await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision });
+    if (state.view.discovery.loaded) {
+      await loadDiscoveryData();
+    }
+    schedulePoll();
+  } catch (err) {
+    setText("discoveryError", `Review failed: ${err.message}`);
+  }
+}
+
+async function exportSourcesRaw() {
+  setText("discoveryError", "");
+  try {
+    const runId = el("discoveryRunId").value.trim();
+    if (!runId) throw new Error("discovery run id is required");
+    await apiDownload(`/v1/exports/sources_raw?run_id=${encodeURIComponent(runId)}`, `sources_raw_${runId}.json`);
+  } catch (err) {
+    setText("discoveryError", `Export failed: ${err.message}`);
+  }
+}
+
+async function exportManifest() {
+  setText("acqError", "");
+  try {
+    const acqRunId = el("acqRunId").value.trim();
+    if (!acqRunId) throw new Error("acquisition run id is required");
+    await apiDownload(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manifest`, `manifest_${acqRunId}.json`);
+  } catch (err) {
+    setText("acqError", `Export failed: ${err.message}`);
   }
 }
 
@@ -477,8 +642,17 @@ function init() {
   el("runLookupForm").addEventListener("submit", lookupRun);
   el("runFilterPhase").addEventListener("change", renderRunsTable);
   el("runFilterStatus").addEventListener("change", renderRunsTable);
+
+  el("startDiscoveryForm").addEventListener("submit", startDiscovery);
+  el("sourceReviewForm").addEventListener("submit", submitReview);
+  el("downloadSourcesRawBtn").addEventListener("click", exportSourcesRaw);
   el("discoveryForm").addEventListener("submit", loadDiscovery);
+
+  el("startAcqForm").addEventListener("submit", startAcquisition);
+  el("downloadManifestBtn").addEventListener("click", exportManifest);
   el("acqForm").addEventListener("submit", loadAcquisition);
+
+  el("startParseForm").addEventListener("submit", startParse);
   el("parseForm").addEventListener("submit", loadParse);
 
   attachPaginationHandlers();

@@ -19,6 +19,10 @@ def test_hmi_shell_route_and_navigation():
     assert "Manual Recovery" in body
     assert "Runs Dashboard" in body
     assert "/hmi/static/hmi.js" in body
+    assert "Start Discovery" in body
+    assert "Start Acquisition" in body
+    assert "Start Parse" in body
+    assert "Submit Review" in body
 
 
 def test_hmi_static_css_served():
