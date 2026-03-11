@@ -1,5 +1,8 @@
 # HMI Plan - Task-First UX (Implemented Baseline)
 
+Canonical note:
+1. `HMI_PLAN.md` and `UI_UX_DETAILED_SPEC.md` use the same single navigation model (`Dashboard`, `Discover`, `Review`, `Documents`, `Search`, `Advanced`).
+
 ## Summary
 
 HMI must present user tasks, not pipeline internals.

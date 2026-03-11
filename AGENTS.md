@@ -9,6 +9,8 @@ Before making changes:
 2. Confirm task scope against implemented phases:
    - Discovery pipeline (v1 baseline)
    - Acquisition pipeline (Phase 2 extension)
+   - Parse/search pipeline (Phase 3 extension)
+   - Task-first HMI (Phase 4.2)
 3. Write a short task plan and execute in small, testable steps.
 4. Prefer editing existing files over adding new abstractions.
 
@@ -36,12 +38,16 @@ In scope:
 - Acquisition run execution (PDF-first with HTML fallback, manifest, retries/resume)
 
 Out of scope:
-- Full-text parsing
 - Knowledge graph
 - Topic clustering
-- UI features
+- Automated report generation
 
 Do not introduce out-of-scope features unless explicitly requested.
+
+UI/HMI features are in scope when they align with:
+1. `HMI_PLAN.md` (navigation/UX behavior)
+2. `UI_UX_DETAILED_SPEC.md` (detailed UI contract)
+3. existing API contracts and tests
 
 ## 4. Architecture Rules
 

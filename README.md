@@ -1,26 +1,31 @@
-# UPW Literature Discovery Engine
+# UPW Knowledge Miner
 
-Automated literature discovery for Ultrapure Water (UPW) systems in semiconductor manufacturing.
+Knowledge Miner is an end-to-end literature workflow for Ultrapure Water (UPW) in semiconductor manufacturing.  
+It runs from discovery to actionable review and document handling in one product.
 
-## v1 Scope
-
-In scope:
-1. Search query execution
-2. Citation expansion (forward and backward)
-3. Abstract retrieval and relevance scoring
-4. Deduplication
-5. Iterative query generation
-6. Corpus storage and export
-
-Implemented extension beyond v1 baseline:
-1. Phase 2 document acquisition (PDF-first, HTML fallback)
-2. Acquisition API and manifest artifact generation
-3. Phase 3 full-text parsing and chunk search APIs
-4. Phase 4.2 task-first HMI (`Dashboard -> Discover -> Review -> Documents -> Search`)
+Current product capabilities:
+1. Discovery pipeline:
+- search connectors
+- citation expansion (forward/backward)
+- AI-first relevance decisions with human review override
+- deduplication and iterative query refinement
+2. Acquisition pipeline:
+- PDF-first retrieval with HTML fallback
+- legal OA/source resolution chain
+- retries/resume + manual recovery support
+- manifest and artifact metadata export
+3. Parse and search pipeline:
+- full-text parsing/chunking
+- parse-run APIs
+- chunk-level search
+4. Task-first HMI:
+- `Dashboard -> Discover -> Review -> Documents -> Search`
+- `Advanced` section for technical IDs, diagnostics, and operator controls
 
 Still out of scope:
-1. Knowledge graph and clustering
-2. Automated manual-report generation
+1. Knowledge graph/entity-relationship extraction
+2. Topic clustering
+3. Automated narrative report generation
 
 ## v1 Targets
 
