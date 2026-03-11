@@ -12,8 +12,12 @@ In scope:
 5. Iterative query generation
 6. Corpus storage and export
 
-Out of scope:
-1. PDF download and parsing
+Implemented extension beyond v1 baseline:
+1. Phase 2 document acquisition (PDF-first, HTML fallback)
+2. Acquisition API and manifest artifact generation
+
+Still out of scope:
+1. Full-text parsing
 2. Knowledge graph and clustering
 3. UI for manual report generation
 
@@ -48,3 +52,25 @@ uvicorn knowledge_miner.main:app --reload
 
 Use header:
 - `Authorization: Bearer dev-token`
+
+## Real Provider Search
+
+To run against real providers instead of mock data:
+
+```bash
+cd /home/garik/Documents/git/knowledge-miner
+cp .env.example .env
+# edit .env and set BRAVE_API_KEY / SEMANTIC_SCHOLAR_API_KEY
+set -a
+source .env
+set +a
+```
+
+Required settings:
+1. `USE_MOCK_CONNECTORS=false`
+2. `BRAVE_API_KEY=<your_key>`
+3. `SEMANTIC_SCHOLAR_API_KEY=<your_key>` (optional but recommended)
+
+Note:
+1. OpenAlex does not require an API key.
+2. Real-provider mode requires host network access (sandboxed runs may not have DNS/internet).

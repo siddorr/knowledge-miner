@@ -1,5 +1,8 @@
 # Backlog
 
+Status:
+- All listed items are completed (updated on 2026-03-11).
+
 ## Must-Fix (Spec Compliance)
 
 1. [x] Align default runtime database with v1 spec

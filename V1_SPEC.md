@@ -3,6 +3,11 @@
 Status: Approved baseline for implementation
 Date: 2026-03-10
 
+Implementation update (current repository state as of 2026-03-11):
+- v1 baseline is implemented.
+- Phase 2 document acquisition is also implemented in addition to this baseline.
+- For current operational behavior, read `DEVELOPMENT_PLAN.md`, `BACKLOG.md`, and module docs.
+
 ## 1. MVP Boundary
 
 In scope (v1):
@@ -107,6 +112,13 @@ Response `200`:
 ### 3.5 GET `/v1/exports/sources_raw?run_id=...`
 Export normalized artifact.
 
+### 3.6 Acquisition endpoints (implemented extension)
+- `POST /v1/acquisition/runs`
+- `GET /v1/acquisition/runs/{acq_run_id}`
+- `GET /v1/acquisition/runs/{acq_run_id}/items`
+- `GET /v1/acquisition/artifacts/{artifact_id}`
+- `GET /v1/acquisition/runs/{acq_run_id}/manifest`
+
 Errors:
 - `400 invalid_request`
 - `401 unauthorized`
@@ -180,6 +192,11 @@ Canonical source id precedence:
 6. Fallback title/year hash -> `titleyearsha1:<sha1(norm_title|year)>`
 
 Provider IDs are stored in metadata JSON (future field) if available.
+
+Cross-run storage note:
+- Canonical IDs remain the dedup identity.
+- When the same canonical source appears in a different run, storage may apply a run-scoped suffix for primary-key safety:
+  - `<canonical_id>::run:<run_id>`
 
 ## 6. Deduplication Rules
 
@@ -369,4 +386,3 @@ Monitoring:
 Failure recovery:
 - iteration checkpoint persisted in `runs`
 - rerun resumes from last completed iteration
-

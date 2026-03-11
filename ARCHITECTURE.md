@@ -37,6 +37,7 @@ v1 deploys as a single Python service with PostgreSQL and batch-style run execut
 7. Export layer (`sources_raw.json`)
 8. Acquisition worker layer (download jobs, retries, resume)
 9. Artifact storage layer (filesystem paths + DB metadata index)
+10. Observability layer (structured JSON logs, counters, latency histograms)
 
 ## Phase 2 Acquisition Runtime
 
@@ -45,5 +46,15 @@ v1 deploys as a single Python service with PostgreSQL and batch-style run execut
 3. Format policy: PDF preferred, HTML snapshot fallback.
 4. Progress and outcomes persist in acquisition tables.
 5. Manifest endpoint exports complete artifact listing for downstream parsing.
+
+## Observability
+
+Discovery:
+1. Structured logs for provider calls with `run_id`, `iteration`, `provider`, `latency_ms`
+2. Run summary logs with counters and latency histograms
+
+Acquisition:
+1. Structured logs with `acq_run_id`, `source_id`, `domain`, `latency_ms`, `status`
+2. Acquisition summary logs with counters (`attempted`, `downloaded`, `partial`, `failed`, `skipped`, `retries`, `api_errors`)
 
 See `V1_SPEC.md` for detailed contracts.

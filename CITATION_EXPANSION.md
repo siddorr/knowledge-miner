@@ -18,6 +18,7 @@ max citations per paper = 50
 2. Has DOI
 3. Newer publication year
 4. Higher keyword overlap with UPW domain terms
+5. Deterministic tie-break by normalized title and canonical target id
 
 ## Pagination
 

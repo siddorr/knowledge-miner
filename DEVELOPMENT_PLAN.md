@@ -30,16 +30,18 @@ Phase 5 - Review and export
 - `sources_raw.json` export endpoint
 - run metrics and basic monitoring counters
 
+Status:
+- Completed (implemented and tested)
+
 ## Post-v1 Backlog (Out of Scope for v1)
 
-1. PDF acquisition and storage
-2. Full-text parsing
-3. Entity and relationship extraction
-4. Knowledge graph
-5. Topic clustering
-6. Manual generation tooling
+1. Full-text parsing
+2. Entity and relationship extraction
+3. Knowledge graph
+4. Topic clustering
+5. Manual generation tooling
 
-## Phase 2 - Document Acquisition (Planned)
+## Phase 2 - Document Acquisition (Implemented)
 
 Goal:
 - Download article files for accepted sources and persist acquisition status/artifacts for later parsing stages.
@@ -49,7 +51,7 @@ Policy choices:
 - Storage: local filesystem + DB index
 - Formats: PDF + HTML
 
-Planned API:
+Implemented API:
 1. `POST /v1/acquisition/runs`
 - Start acquisition for a completed discovery run.
 2. `GET /v1/acquisition/runs/{acq_run_id}`
@@ -61,7 +63,7 @@ Planned API:
 5. `GET /v1/acquisition/runs/{acq_run_id}/manifest`
 - Acquisition manifest export.
 
-Planned data model:
+Implemented data model:
 1. `acquisition_runs`
 - run status and counters (`queued|running|completed|failed`).
 2. `acquisition_items`
@@ -69,13 +71,14 @@ Planned data model:
 3. `artifacts`
 - file kind (`pdf|html`), path, checksum, size, MIME.
 
-Execution rules:
+Implemented execution rules:
 1. Resolve candidate URLs from source URL + DOI/provider hints.
 2. Prefer PDF; fallback to HTML snapshot.
 3. Retry transient failures (`3 attempts`, `1/2/4s`).
 4. Support resume and `retry_failed_only`.
 
-Acceptance targets:
+Implemented guarantees:
 1. Deterministic artifact paths under `ARTIFACTS_DIR`.
 2. Checksums and size for all saved files.
 3. Manifest consistency with DB state.
+4. Structured acquisition observability logs and counters.

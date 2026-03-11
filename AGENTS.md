@@ -6,7 +6,9 @@ This file is the operating guide for AI coding agents working in this repository
 
 Before making changes:
 1. Read `V1_SPEC.md` first.
-2. Confirm task scope is v1 (Phase 1 only).
+2. Confirm task scope against implemented phases:
+   - Discovery pipeline (v1 baseline)
+   - Acquisition pipeline (Phase 2 extension)
 3. Write a short task plan and execute in small, testable steps.
 4. Prefer editing existing files over adding new abstractions.
 
@@ -31,9 +33,10 @@ In scope:
 - Deduplication
 - Iterative query refinement
 - Corpus export
+- Acquisition run execution (PDF-first with HTML fallback, manifest, retries/resume)
 
 Out of scope:
-- PDF/full-text ingestion
+- Full-text parsing
 - Knowledge graph
 - Topic clustering
 - UI features
@@ -71,6 +74,7 @@ For logic changes, add/adjust tests for:
 2. dedup precedence and merge behavior
 3. iteration stop-condition calculation
 4. export schema conformance
+5. acquisition status transitions and manifest/artifact parity
 
 Minimum validation before handoff:
 1. `python3 -m compileall src tests`
@@ -96,4 +100,3 @@ When you learn something useful for future agent tasks:
 1. Update this file in the same PR/commit.
 2. Keep updates concrete and repository-specific.
 3. Remove stale instructions rather than layering duplicates.
-

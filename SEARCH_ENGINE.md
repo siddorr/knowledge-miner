@@ -22,6 +22,7 @@ Patents
 2. No broad crawling; max depth 1 from search result URL
 3. Retry policy: 3 attempts with 1s/2s/4s backoff for 429 and 5xx
 4. Save provider provenance for each source
+5. In real-provider mode, set `USE_MOCK_CONNECTORS=false` and provide API keys as needed
 
 ## Output
 
@@ -52,3 +53,7 @@ Canonical id precedence:
 4. Patent id
 5. URL hash
 6. Title-year hash
+
+Collision behavior:
+- If a canonical source ID already exists in another run, ingestion stores the new record with a run-scoped ID suffix:
+  - `<canonical_id>::run:<run_id>`

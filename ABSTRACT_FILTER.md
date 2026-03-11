@@ -54,3 +54,9 @@ Scoring text input:
 2. Human review endpoint: `POST /v1/sources/{source_id}/review`
 3. Decision values: `accept` or `reject`
 4. Human decision is final for v1 (`human_accept` or `human_reject`)
+
+## AI Override Runtime Signal
+
+Run status includes:
+1. `ai_filter_active` (`true` when AI override is enabled and token is configured)
+2. `ai_filter_warning` (set when heuristic-only mode is active)
