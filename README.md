@@ -39,6 +39,7 @@ Supporting docs:
 5. `ITERATION_PROCESS.md`
 6. `DATA_SCHEMA.md`
 7. `DEVELOPMENT_PLAN.md`
+8. `HMI_PLAN.md`
 
 ## Quick Start
 
@@ -74,3 +75,26 @@ Required settings:
 Note:
 1. OpenAlex does not require an API key.
 2. Real-provider mode requires host network access (sandboxed runs may not have DNS/internet).
+
+## Discovery Visibility (Planned Extension)
+
+For operations dashboard and review workflows, discovery visibility is being extended as follows:
+
+1. `GET /v1/discovery/runs/{run_id}` will include:
+- `seed_queries` (original search words used to start the run)
+
+2. `GET /v1/discovery/runs/{run_id}/sources` will support:
+- `status=accepted|rejected|needs_review|all`
+- Backward-compatible default remains accepted-only when `status` is omitted
+
+3. Dashboard default source view:
+- `accepted + needs_review`
+- with quick toggles for `accepted/rejected/needs_review/all`
+
+## AI-First Filtering Policy (Planned Extension)
+
+1. AI is the primary source of automatic relevance decisions.
+2. Heuristic scoring is always computed, but used as recommendation metadata.
+3. If AI call fails for a candidate, final decision is `needs_review` (not auto-accept/reject).
+4. If AI is unavailable at run start (`USE_AI_FILTER=false` or missing `AI_API_KEY`), run is still allowed and candidates default to `needs_review` with heuristic recommendations.
+5. Human review remains the final authority (`POST /v1/sources/{source_id}/review`).

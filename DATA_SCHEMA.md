@@ -19,6 +19,10 @@
 - `relevance_score NUMERIC(5,2) NOT NULL`
 - `accepted BOOLEAN NOT NULL`
 - `review_status TEXT NOT NULL` (`auto_accept|auto_reject|needs_review|human_accept|human_reject`)
+- `final_decision TEXT NULL` (`auto_accept|auto_reject|needs_review|human_accept|human_reject`)
+- `decision_source TEXT NULL` (`ai|fallback_heuristic|policy_no_ai|human_review`)
+- `heuristic_recommendation TEXT NULL` (`auto_accept|auto_reject|needs_review`)
+- `heuristic_score NUMERIC(5,2) NULL`
 - `ai_decision TEXT NULL`
 - `ai_confidence NUMERIC(4,3) NULL`
 - `parent_source_id TEXT NULL`
@@ -34,6 +38,9 @@ Indexes:
 
 Note:
 - Canonical IDs can be run-scoped (`<canonical>::run:<run_id>`) when a canonical source already exists in another run.
+- Backward compatibility mapping:
+  - `accepted` and `review_status` remain legacy-compatible summary fields.
+  - `final_decision` + `decision_source` define authoritative decision provenance in AI-first policy mode.
 
 ## citation_edges table
 

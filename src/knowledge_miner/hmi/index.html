@@ -9,8 +9,15 @@
 <body>
   <header class="topbar">
     <h1>Knowledge Miner Ops Dashboard</h1>
-    <p>Single-pane operations shell for discovery, acquisition, parse, and search.</p>
+    <p>Read-only operations views for discovery, acquisition, parse, and search context.</p>
   </header>
+
+  <section class="authbar">
+    <label for="apiKeyInput">API Key</label>
+    <input id="apiKeyInput" type="password" placeholder="Bearer token (e.g. dev-token)">
+    <button id="saveApiKeyBtn" type="button">Save Key</button>
+    <span id="authState" class="muted">Key not set</span>
+  </section>
 
   <nav class="nav" aria-label="Primary">
     <a href="#runs">Runs</a>
@@ -21,31 +28,139 @@
     <a href="#manual-recovery">Manual Recovery</a>
   </nav>
 
-  <main class="grid">
+  <main class="stack">
     <section id="runs" class="panel">
-      <h2>Runs</h2>
-      <p>Track run status by phase and open run details.</p>
+      <h2>Runs Dashboard</h2>
+      <form id="runLookupForm" class="row">
+        <label>
+          Phase
+          <select id="runPhaseSelect">
+            <option value="discovery">Discovery</option>
+            <option value="acquisition">Acquisition</option>
+            <option value="parse">Parse</option>
+          </select>
+        </label>
+        <label>
+          Run ID
+          <input id="runIdInput" type="text" placeholder="run_... / acq_... / parse_..." required>
+        </label>
+        <button type="submit">Lookup</button>
+      </form>
+      <div class="row">
+        <label>
+          Filter Phase
+          <select id="runFilterPhase">
+            <option value="all">All</option>
+            <option value="discovery">Discovery</option>
+            <option value="acquisition">Acquisition</option>
+            <option value="parse">Parse</option>
+          </select>
+        </label>
+        <label>
+          Filter Status
+          <select id="runFilterStatus">
+            <option value="all">All</option>
+            <option value="queued">queued</option>
+            <option value="running">running</option>
+            <option value="completed">completed</option>
+            <option value="failed">failed</option>
+          </select>
+        </label>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Phase</th><th>Run ID</th><th>Status</th><th>Summary</th></tr></thead>
+          <tbody id="runsTable"></tbody>
+        </table>
+      </div>
+      <p id="runsError" class="error"></p>
     </section>
+
     <section id="discovery" class="panel">
-      <h2>Discovery</h2>
-      <p>Inspect discovered sources and acceptance decisions.</p>
+      <h2>Discovery Detail</h2>
+      <form id="discoveryForm" class="row">
+        <label>
+          Run ID
+          <input id="discoveryRunId" type="text" placeholder="run_..." required>
+        </label>
+        <label>
+          Source Status
+          <select id="discoveryStatusFilter">
+            <option value="accepted">accepted</option>
+            <option value="rejected">rejected</option>
+            <option value="needs_review">needs_review</option>
+            <option value="all">all</option>
+          </select>
+        </label>
+        <button type="submit">Load</button>
+      </form>
+      <pre id="discoveryMetrics" class="metrics">No data loaded.</pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Score</th><th>Type</th><th>Source</th></tr></thead>
+          <tbody id="discoverySources"></tbody>
+        </table>
+      </div>
+      <p id="discoveryError" class="error"></p>
     </section>
+
     <section id="acquisition" class="panel">
-      <h2>Acquisition</h2>
-      <p>Review download results, partials, and failures.</p>
+      <h2>Acquisition Detail</h2>
+      <form id="acqForm" class="row">
+        <label>
+          Acquisition Run ID
+          <input id="acqRunId" type="text" placeholder="acq_..." required>
+        </label>
+        <button type="submit">Load</button>
+      </form>
+      <pre id="acqMetrics" class="metrics">No data loaded.</pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Item ID</th><th>Source ID</th><th>Status</th><th>Attempts</th><th>Selected URL</th><th>Error</th></tr></thead>
+          <tbody id="acqItems"></tbody>
+        </table>
+      </div>
+      <p id="acqError" class="error"></p>
     </section>
+
     <section id="parse" class="panel">
-      <h2>Parse</h2>
-      <p>Monitor parsed documents, chunk counts, and parse artifacts.</p>
+      <h2>Parse Detail</h2>
+      <form id="parseForm" class="row">
+        <label>
+          Parse Run ID
+          <input id="parseRunId" type="text" placeholder="parse_..." required>
+        </label>
+        <button type="submit">Load</button>
+      </form>
+      <pre id="parseMetrics" class="metrics">No data loaded.</pre>
+      <h3>Documents</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Document ID</th><th>Status</th><th>Decision</th><th>Confidence</th><th>Parser</th><th>Chars</th></tr></thead>
+          <tbody id="parseDocuments"></tbody>
+        </table>
+      </div>
+      <h3>Chunks</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Chunk ID</th><th>Document</th><th>Idx</th><th>Decision</th><th>Confidence</th><th>Range</th></tr></thead>
+          <tbody id="parseChunks"></tbody>
+        </table>
+      </div>
+      <p id="parseError" class="error"></p>
     </section>
+
     <section id="search" class="panel">
       <h2>Search</h2>
-      <p>Query parsed corpus and inspect evidence snippets.</p>
+      <p class="muted">Search explorer is implemented in the next task.</p>
     </section>
+
     <section id="manual-recovery" class="panel">
       <h2>Manual Recovery</h2>
-      <p>Queue and track manual ingestion recovery actions.</p>
+      <p class="muted">Manual recovery UI is implemented in a later task.</p>
     </section>
   </main>
+
+  <script src="/hmi/static/hmi.js" defer></script>
 </body>
 </html>

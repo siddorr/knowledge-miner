@@ -98,6 +98,7 @@ def get_run_status(
     return RunStatusResponse(
         run_id=run.id,
         status=run.status,
+        seed_queries=run.seed_queries,
         current_iteration=run.current_iteration,
         accepted_total=run.accepted_total,
         expanded_candidates_total=run.expanded_candidates_total,
@@ -114,6 +115,7 @@ def list_sources(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     type: str | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
     min_score: float | None = Query(default=None, ge=0),
     _: str = Depends(require_api_key),
     __: None = Depends(require_rate_limit),
@@ -123,7 +125,18 @@ def list_sources(
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
 
-    stmt = select(Source).where(Source.run_id == run_id, Source.accepted.is_(True))
+    stmt = select(Source).where(Source.run_id == run_id)
+    effective_status = (status_filter or "accepted").strip().lower()
+    if effective_status == "accepted":
+        stmt = stmt.where(Source.accepted.is_(True))
+    elif effective_status == "rejected":
+        stmt = stmt.where(Source.accepted.is_(False), Source.review_status != "needs_review")
+    elif effective_status == "needs_review":
+        stmt = stmt.where(Source.review_status == "needs_review")
+    elif effective_status == "all":
+        pass
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_request")
     if type is not None:
         stmt = stmt.where(Source.type == type)
     if min_score is not None:

@@ -16,6 +16,7 @@ class RunCreateResponse(BaseModel):
 class RunStatusResponse(BaseModel):
     run_id: str
     status: str
+    seed_queries: list[str]
     current_iteration: int
     accepted_total: int
     expanded_candidates_total: int

@@ -197,7 +197,7 @@ Decision lock (proposed baseline):
   - reason code and human-readable rationale
 - Expose clear warning when AI is disabled or token missing.
 
-6. [ ] P1 - Add evidence extraction and output artifacts
+6. [x] P1 - Add evidence extraction and output artifacts
 - Extract evidence snippets for accepted/reviewed documents with character-span provenance.
 - Generate run-level artifacts:
   - `parsed_corpus.json`
@@ -205,7 +205,7 @@ Decision lock (proposed baseline):
   - `findings_report.json`
 - Ensure artifact entries match DB records and are reproducible.
 
-7. [ ] P1 - Add tests and observability for Phase 3
+7. [x] P1 - Add tests and observability for Phase 3
 - Unit tests:
   - parser selection/fallback
   - chunk boundary determinism
@@ -253,7 +253,7 @@ Decision lock (approved):
 - Runs dashboard with phase/status filters and run lookup.
 - Discovery detail view:
   - run metrics
-  - accepted sources list
+  - sources list with statuses
   - AI heuristic warning visibility
 - Acquisition detail view:
   - counters and item statuses
@@ -304,8 +304,66 @@ Decision lock (approved):
   - Discovery -> Acquisition -> Parse -> Search
   - failed acquisition -> manual recovery queue -> CSV export -> manual upload registration
 
+9. [ ] P0 - Extend discovery APIs for visualization parity
+- `GET /v1/discovery/runs/{run_id}`:
+  - include `seed_queries` in response
+- `GET /v1/discovery/runs/{run_id}/sources`:
+  - add `status=accepted|rejected|needs_review|all`
+  - keep backward compatible default (`accepted` when omitted)
+
+10. [ ] P1 - Set discovery dashboard default source visibility
+- Default table view: `accepted + needs_review`
+- Add quick toggles:
+  - `accepted`
+  - `rejected`
+  - `needs_review`
+  - `all`
+- Persist selected filter across polling refresh.
+
+11. [ ] P1 - Add tests for discovery visibility behavior
+- API tests for `status` filter:
+  - accepted only
+  - rejected only
+  - needs_review only
+  - all
+- API test verifies `seed_queries` is returned by run status.
+- UI test verifies default view shows `accepted + needs_review`.
+
 Definition of done for Phase 4:
 1. A user can execute the core operational flow from browser without curl.
 2. All HMI actions map to API results without hidden client-only state.
 3. Manual recovery is operational: queue visibility, CSV export, manual upload registration.
 4. Polling/status/error UX is stable and understandable for mixed technical/non-technical users.
+
+## Phase 4.1 Implementation Tasks (AI-First Decision Policy Rollout)
+
+Goal:
+- Make AI the primary decision-maker while keeping heuristic as recommendation-only fallback context.
+
+1. [ ] P0 - Switch discovery decision engine to AI-first
+- Final auto decision source: AI classifier.
+- On per-candidate AI failure/timeout: final decision = `needs_review`.
+- If AI unavailable at run start: run allowed, all candidates default to `needs_review`.
+
+2. [ ] P0 - Add decision provenance fields to source model/API
+- `final_decision`
+- `decision_source` (`ai|fallback_heuristic|policy_no_ai|human_review`)
+- `heuristic_recommendation`
+- `heuristic_score`
+- Preserve backward compatibility fields (`accepted`, `review_status`).
+
+3. [ ] P0 - Update discovery/export contracts
+- `/v1/discovery/runs/{run_id}/sources` returns decision-trace fields.
+- Export payload includes decision provenance and heuristic recommendation context.
+
+4. [ ] P1 - Add tests for AI-first policy
+- AI success -> final decision from AI.
+- AI runtime failure -> final `needs_review`, decision source `fallback_heuristic`.
+- AI disabled/missing token -> final `needs_review`, decision source `policy_no_ai`.
+- Human review override -> decision source `human_review`.
+
+Definition of done for Phase 4.1:
+1. Heuristic no longer performs final auto-accept/auto-reject in AI-first mode.
+2. AI failures are handled gracefully with `needs_review` fallback.
+3. API and exports expose decision provenance clearly.
+4. Legacy consumers using `accepted`/`review_status` remain functional.

@@ -39,6 +39,19 @@ v1 deploys as a single Python service with PostgreSQL and batch-style run execut
 9. Artifact storage layer (filesystem paths + DB metadata index)
 10. Observability layer (structured JSON logs, counters, latency histograms)
 
+## Decision Engine Policy (AI-First)
+
+1. Heuristic scoring is always computed first as recommendation metadata.
+2. AI classifier is the primary auto-decision source for candidate relevance.
+3. If AI decision is valid, final decision follows AI output.
+4. If AI call fails or times out for a candidate, final decision is forced to `needs_review`.
+5. If AI is unavailable at run start (`USE_AI_FILTER=false` or token missing), run is allowed and all candidates default to `needs_review`.
+6. Human review (`accept`/`reject`) remains final override for v1.
+
+Invariants:
+1. Heuristic does not directly auto-accept/auto-reject in AI-first mode.
+2. AI runtime degradation never hard-fails the full discovery run by itself; affected candidates are routed to review.
+
 ## Phase 2 Acquisition Runtime
 
 1. `POST /v1/acquisition/runs` queues acquisition for a completed discovery run.
