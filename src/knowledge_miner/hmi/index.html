@@ -28,6 +28,11 @@
     <a href="#manual-recovery">Manual Recovery</a>
   </nav>
 
+  <section class="pollbar">
+    <strong>Polling:</strong>
+    <span id="pollState" class="poll-ok">Idle (set API key, load a section).</span>
+  </section>
+
   <main class="stack">
     <section id="runs" class="panel">
       <h2>Runs Dashboard</h2>
@@ -92,8 +97,21 @@
             <option value="all">all</option>
           </select>
         </label>
+        <label>
+          Limit
+          <select id="discoveryLimit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
         <button type="submit">Load</button>
       </form>
+      <div class="row compact">
+        <button id="discoveryPrev" type="button">Prev</button>
+        <button id="discoveryNext" type="button">Next</button>
+        <span id="discoveryPage" class="muted">offset=0</span>
+      </div>
       <pre id="discoveryMetrics" class="metrics">No data loaded.</pre>
       <div class="table-wrap">
         <table>
@@ -111,8 +129,21 @@
           Acquisition Run ID
           <input id="acqRunId" type="text" placeholder="acq_..." required>
         </label>
+        <label>
+          Limit
+          <select id="acqLimit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
         <button type="submit">Load</button>
       </form>
+      <div class="row compact">
+        <button id="acqPrev" type="button">Prev</button>
+        <button id="acqNext" type="button">Next</button>
+        <span id="acqPage" class="muted">offset=0</span>
+      </div>
       <pre id="acqMetrics" class="metrics">No data loaded.</pre>
       <div class="table-wrap">
         <table>
@@ -130,10 +161,31 @@
           Parse Run ID
           <input id="parseRunId" type="text" placeholder="parse_..." required>
         </label>
+        <label>
+          Docs limit
+          <select id="parseDocsLimit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <label>
+          Chunks limit
+          <select id="parseChunksLimit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
         <button type="submit">Load</button>
       </form>
       <pre id="parseMetrics" class="metrics">No data loaded.</pre>
       <h3>Documents</h3>
+      <div class="row compact">
+        <button id="parseDocsPrev" type="button">Prev</button>
+        <button id="parseDocsNext" type="button">Next</button>
+        <span id="parseDocsPage" class="muted">offset=0</span>
+      </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Document ID</th><th>Status</th><th>Decision</th><th>Confidence</th><th>Parser</th><th>Chars</th></tr></thead>
@@ -141,6 +193,11 @@
         </table>
       </div>
       <h3>Chunks</h3>
+      <div class="row compact">
+        <button id="parseChunksPrev" type="button">Prev</button>
+        <button id="parseChunksNext" type="button">Next</button>
+        <span id="parseChunksPage" class="muted">offset=0</span>
+      </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Chunk ID</th><th>Document</th><th>Idx</th><th>Decision</th><th>Confidence</th><th>Range</th></tr></thead>

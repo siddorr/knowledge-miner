@@ -238,7 +238,7 @@ Decision lock (approved):
 - Live updates: auto-refresh polling
 - Actions: retry + export + review + manual upload registration
 
-1. [ ] P0 - Add FastAPI-hosted HMI shell
+1. [x] P0 - Add FastAPI-hosted HMI shell
 - Serve static assets and base dashboard route.
 - Keep one deployable app (API + UI).
 - Add basic navigation:
@@ -249,7 +249,7 @@ Decision lock (approved):
   - Search
   - Manual Recovery
 
-2. [ ] P0 - Implement read-only operations screens
+2. [x] P0 - Implement read-only operations screens
 - Runs dashboard with phase/status filters and run lookup.
 - Discovery detail view:
   - run metrics
@@ -263,7 +263,7 @@ Decision lock (approved):
   - parsed document list
   - chunks list
 
-3. [ ] P0 - Implement polling and runtime UX behaviors
+3. [x] P0 - Implement polling and runtime UX behaviors
 - Auto-refresh every 5s on active tab; 15s in background.
 - Stop polling when run status is terminal (`completed`, `failed`).
 - Show stale-data indicator on polling failures.
