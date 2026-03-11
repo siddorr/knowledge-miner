@@ -60,6 +60,14 @@ class Source(Base):
             "review_status IN ('auto_accept','auto_reject','needs_review','human_accept','human_reject')",
             name="ck_sources_review_status_values",
         ),
+        CheckConstraint(
+            "final_decision IN ('auto_accept','auto_reject','needs_review','human_accept','human_reject')",
+            name="ck_sources_final_decision_values",
+        ),
+        CheckConstraint(
+            "decision_source IN ('ai','fallback_heuristic','policy_no_ai','human_review')",
+            name="ck_sources_decision_source_values",
+        ),
         Index("ix_sources_run_id_iteration", "run_id", "iteration"),
         Index("ix_sources_run_id_accepted", "run_id", "accepted"),
         Index("ix_sources_doi", "doi"),
@@ -85,6 +93,10 @@ class Source(Base):
     relevance_score: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
     accepted: Mapped[bool] = mapped_column(Boolean, nullable=False)
     review_status: Mapped[str] = mapped_column(String, nullable=False)
+    final_decision: Mapped[str] = mapped_column(String, nullable=False, default="needs_review")
+    decision_source: Mapped[str] = mapped_column(String, nullable=False, default="policy_no_ai")
+    heuristic_recommendation: Mapped[str] = mapped_column(String, nullable=False, default="needs_review")
+    heuristic_score: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False, default=0.0)
     ai_decision: Mapped[str | None] = mapped_column(String, nullable=True)
     ai_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
     parent_source_id: Mapped[str | None] = mapped_column(String, nullable=True)

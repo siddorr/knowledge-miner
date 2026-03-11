@@ -7,6 +7,7 @@ import time
 from fastapi import Depends, HTTPException, status
 
 from .auth import require_api_key
+from .config import settings
 
 
 @dataclass
@@ -31,6 +32,7 @@ rate_limiter = InMemoryRateLimiter(limit=60, window_seconds=60)
 
 
 def require_rate_limit(token: str = Depends(require_api_key)) -> None:
+    if not settings.auth_enabled:
+        return
     if not rate_limiter.check(token):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate_limited")
-

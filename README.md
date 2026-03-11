@@ -51,8 +51,9 @@ pip install -e .[dev]
 uvicorn knowledge_miner.main:app --reload
 ```
 
-Use header:
-- `Authorization: Bearer dev-token`
+Auth modes:
+1. Default local/internal mode: auth disabled (`AUTH_ENABLED=false`), no header required.
+2. Secured mode: set `AUTH_ENABLED=true`, then send `Authorization: Bearer <API_TOKEN>`.
 
 ## Real Provider Search
 
@@ -88,7 +89,7 @@ The service writes persistent rotating logs to file (and stdout) using:
 Example:
 1. `tail -f /home/garik/Documents/git/knowledge-miner/logs/knowledge_miner.log`
 
-## Discovery Visibility (Planned Extension)
+## Discovery Visibility
 
 For operations dashboard and review workflows, discovery visibility is being extended as follows:
 
@@ -103,7 +104,7 @@ For operations dashboard and review workflows, discovery visibility is being ext
 - `accepted + needs_review`
 - with quick toggles for `accepted/rejected/needs_review/all`
 
-## AI-First Filtering Policy (Planned Extension)
+## AI-First Filtering Policy
 
 1. AI is the primary source of automatic relevance decisions.
 2. Heuristic scoring is always computed, but used as recommendation metadata.

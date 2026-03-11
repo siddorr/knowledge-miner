@@ -19,6 +19,7 @@ def _default_database_url() -> str:
 class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
     database_url: str = _default_database_url()
+    auth_enabled: bool = os.getenv("AUTH_ENABLED", "false").lower() == "true"
     api_token: str = os.getenv("API_TOKEN", "dev-token")
     hmi_api_token: str | None = os.getenv("HMI_API_TOKEN")
     artifacts_dir: str = os.getenv("ARTIFACTS_DIR", "./artifacts")

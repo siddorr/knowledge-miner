@@ -1,6 +1,7 @@
 const POLL_ACTIVE_MS = 5000;
 const POLL_BACKGROUND_MS = 15000;
 const SYSTEM_TOKEN = typeof window !== "undefined" ? window.__KM_HMI_DEFAULT_TOKEN__ || null : null;
+const AUTH_ENABLED = typeof window !== "undefined" ? window.__KM_HMI_AUTH_ENABLED__ !== false : true;
 
 const state = {
   apiKey: "",
@@ -35,9 +36,17 @@ function escapeHtml(text) {
 }
 
 function requiredKey() {
+  if (!AUTH_ENABLED) return;
   if (!state.apiKey) {
     throw new Error("API key is required");
   }
+}
+
+function authHeaders() {
+  if (!AUTH_ENABLED || !state.apiKey) {
+    return {};
+  }
+  return { Authorization: `Bearer ${state.apiKey}` };
 }
 
 function isTerminalStatus(status) {
@@ -68,7 +77,7 @@ function schedulePoll() {
 
 async function apiGet(path) {
   requiredKey();
-  const res = await fetch(path, { headers: { Authorization: `Bearer ${state.apiKey}` } });
+  const res = await fetch(path, { headers: authHeaders() });
   if (!res.ok) {
     let detail = `${res.status}`;
     try {
@@ -86,7 +95,7 @@ async function apiPost(path, payload) {
   requiredKey();
   const res = await fetch(path, {
     method: "POST",
-    headers: { Authorization: `Bearer ${state.apiKey}`, "Content-Type": "application/json" },
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
@@ -104,7 +113,7 @@ async function apiPost(path, payload) {
 
 async function apiDownload(path, filename) {
   requiredKey();
-  const res = await fetch(path, { headers: { Authorization: `Bearer ${state.apiKey}` } });
+  const res = await fetch(path, { headers: authHeaders() });
   if (!res.ok) {
     let detail = `${res.status}`;
     try {
@@ -779,6 +788,10 @@ async function runPollCycle() {
 }
 
 function setApiStateText() {
+  if (!AUTH_ENABLED) {
+    setText("authState", "Auth disabled");
+    return;
+  }
   if (!state.apiKey) {
     setText("authState", "Key not set");
     return;
@@ -899,6 +912,12 @@ function attachPaginationHandlers() {
 
 function init() {
   const keyInput = el("apiKeyInput");
+  const authBar = document.querySelector(".authbar");
+  if (!AUTH_ENABLED) {
+    if (authBar) authBar.style.display = "none";
+    state.apiKey = "";
+    state.tokenSource = "none";
+  } else {
   const manualToken = localStorage.getItem("km_api_key");
   if (manualToken) {
     state.apiKey = manualToken;
@@ -910,27 +929,30 @@ function init() {
     state.apiKey = "";
     state.tokenSource = "none";
   }
+  }
 
   keyInput.value = state.apiKey;
   setApiStateText();
 
-  el("saveApiKeyBtn").addEventListener("click", () => {
-    state.apiKey = keyInput.value.trim();
-    if (state.apiKey) {
-      localStorage.setItem("km_api_key", state.apiKey);
-      state.tokenSource = "manual";
-    } else {
-      localStorage.removeItem("km_api_key");
-      if (SYSTEM_TOKEN) {
-        state.apiKey = SYSTEM_TOKEN;
-        state.tokenSource = "system";
-        keyInput.value = state.apiKey;
+  if (AUTH_ENABLED) {
+    el("saveApiKeyBtn").addEventListener("click", () => {
+      state.apiKey = keyInput.value.trim();
+      if (state.apiKey) {
+        localStorage.setItem("km_api_key", state.apiKey);
+        state.tokenSource = "manual";
       } else {
-        state.tokenSource = "none";
+        localStorage.removeItem("km_api_key");
+        if (SYSTEM_TOKEN) {
+          state.apiKey = SYSTEM_TOKEN;
+          state.tokenSource = "system";
+          keyInput.value = state.apiKey;
+        } else {
+          state.tokenSource = "none";
+        }
       }
-    }
-    setApiStateText();
-  });
+      setApiStateText();
+    });
+  }
 
   el("runLookupForm").addEventListener("submit", lookupRun);
   el("runFilterPhase").addEventListener("change", renderRunsTable);

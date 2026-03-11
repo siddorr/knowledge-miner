@@ -94,6 +94,7 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
                 iteration,
                 candidates,
                 ai_filter=ai_filter,
+                ai_policy_no_ai=not bool(run.ai_filter_active),
                 observability=observability,
             )
             citation_candidates, citation_edges = _expand_citations_for_iteration(
@@ -112,6 +113,7 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
                     iteration,
                     citation_candidates,
                     ai_filter=ai_filter,
+                    ai_policy_no_ai=not bool(run.ai_filter_active),
                     observability=observability,
                 )
                 run.expanded_candidates_total = int(run.expanded_candidates_total) + len(citation_candidates)
@@ -163,9 +165,12 @@ def review_source(db: Session, source: Source, decision: str) -> Source:
     if normalized == "accept":
         source.accepted = True
         source.review_status = "human_accept"
+        source.final_decision = "human_accept"
     else:
         source.accepted = False
         source.review_status = "human_reject"
+        source.final_decision = "human_reject"
+    source.decision_source = "human_review"
     source.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(source)
@@ -198,6 +203,10 @@ def export_sources_raw(db: Session, run_id: str) -> Path:
                 "relevance_score": float(s.relevance_score),
                 "accepted": s.accepted,
                 "review_status": s.review_status,
+                "final_decision": s.final_decision,
+                "decision_source": s.decision_source,
+                "heuristic_recommendation": s.heuristic_recommendation,
+                "heuristic_score": float(s.heuristic_score),
                 "parent_source": s.parent_source_id,
                 "provenance_history": s.provenance_history,
             }
@@ -395,6 +404,7 @@ def _ingest_candidates(
     candidates: Iterable[dict],
     *,
     ai_filter: AIRelevanceFilter | None = None,
+    ai_policy_no_ai: bool = False,
     observability: RunObservability | None = None,
 ) -> int:
     new_accepted_unique = 0
@@ -428,22 +438,30 @@ def _ingest_candidates(
             continue
 
         score = score_text(c["title"], c.get("abstract"))
-        accepted, review_status = decision_from_score(score)
+        _, heuristic_recommendation = decision_from_score(score)
+        review_status = "needs_review"
+        decision_source = "policy_no_ai" if ai_policy_no_ai else "fallback_heuristic"
         ai_decision = None
         ai_confidence = None
-        if ai_filter is not None:
+        if not ai_policy_no_ai and ai_filter is not None:
             ai_result = ai_filter.evaluate(
                 title=c["title"],
                 abstract=c.get("abstract"),
                 base_score=score,
-                base_decision=review_status,
+                base_decision=heuristic_recommendation,
             )
             if ai_result is not None:
-                if ai_result.confidence >= settings.ai_min_confidence_override:
-                    review_status = ai_result.decision
-                    accepted = review_status == "auto_accept"
-                    ai_decision = ai_result.decision
-                    ai_confidence = ai_result.confidence
+                review_status = ai_result.decision
+                decision_source = "ai"
+                ai_decision = ai_result.decision
+                ai_confidence = ai_result.confidence
+            else:
+                review_status = "needs_review"
+                decision_source = "fallback_heuristic"
+        elif not ai_policy_no_ai and ai_filter is None:
+            decision_source = "fallback_heuristic"
+
+        accepted = review_status == "auto_accept"
         if accepted:
             new_accepted_unique += 1
             if observability is not None:
@@ -469,6 +487,10 @@ def _ingest_candidates(
             relevance_score=score,
             accepted=accepted,
             review_status=review_status,
+            final_decision=review_status,
+            decision_source=decision_source,
+            heuristic_recommendation=heuristic_recommendation,
+            heuristic_score=score,
             ai_decision=ai_decision,
             ai_confidence=ai_confidence,
             parent_source_id=c.get("parent_source_id"),

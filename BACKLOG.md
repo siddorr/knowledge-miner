@@ -1,11 +1,11 @@
 # Backlog
 
 Status:
-- In progress: remaining items exist in Phase 4+ HMI and AI-first rollout plans (updated on 2026-03-11).
+- In progress: next priorities are post-Phase-4.1 enhancements and deployment hardening (updated on 2026-03-11).
 
 ## High Priority
 
-1. [ ] P0 - Remove required app access token for local/internal usage
+1. [x] P0 - Remove required app access token for local/internal usage
 - Goal: API/HMI should work without mandatory `Authorization: Bearer ...` token.
 - Tasks:
   - Make API auth optional via config switch (default: auth disabled).
@@ -380,23 +380,23 @@ Definition of done for Phase 4:
 Goal:
 - Make AI the primary decision-maker while keeping heuristic as recommendation-only fallback context.
 
-1. [ ] P0 - Switch discovery decision engine to AI-first
+1. [x] P0 - Switch discovery decision engine to AI-first
 - Final auto decision source: AI classifier.
 - On per-candidate AI failure/timeout: final decision = `needs_review`.
 - If AI unavailable at run start: run allowed, all candidates default to `needs_review`.
 
-2. [ ] P0 - Add decision provenance fields to source model/API
+2. [x] P0 - Add decision provenance fields to source model/API
 - `final_decision`
 - `decision_source` (`ai|fallback_heuristic|policy_no_ai|human_review`)
 - `heuristic_recommendation`
 - `heuristic_score`
 - Preserve backward compatibility fields (`accepted`, `review_status`).
 
-3. [ ] P0 - Update discovery/export contracts
+3. [x] P0 - Update discovery/export contracts
 - `/v1/discovery/runs/{run_id}/sources` returns decision-trace fields.
 - Export payload includes decision provenance and heuristic recommendation context.
 
-4. [ ] P1 - Add tests for AI-first policy
+4. [x] P1 - Add tests for AI-first policy
 - AI success -> final decision from AI.
 - AI runtime failure -> final `needs_review`, decision source `fallback_heuristic`.
 - AI disabled/missing token -> final `needs_review`, decision source `policy_no_ai`.

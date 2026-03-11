@@ -107,7 +107,9 @@ Discovery visualization API additions:
 
 ## UX/Behavior Defaults
 
-1. No dedicated auth screen in v1; local/dev token model is used.
+1. No dedicated auth screen in v1; behavior follows API auth mode.
+- `AUTH_ENABLED=false`: token controls are hidden and requests run without auth header.
+- `AUTH_ENABLED=true`: token controls are shown with system-token prefill + manual override.
 2. Polling intervals:
 - 5s when page is visible and run is active.
 - 15s when hidden.
@@ -158,5 +160,5 @@ Discovery visualization API additions:
 ## Assumptions
 
 1. Primary deployment is local/internal at first.
-2. Existing token auth remains unchanged for v1 HMI.
+2. Auth is optional by deployment mode (`AUTH_ENABLED`), with UI parity for both modes.
 3. API-first behavior is authoritative; UI must not infer unsupported states.

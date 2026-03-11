@@ -48,6 +48,8 @@ def test_review_source_accept():
         updated = review_source(db, source, "accept")
         assert updated.accepted is True
         assert updated.review_status == "human_accept"
+        assert updated.final_decision == "human_accept"
+        assert updated.decision_source == "human_review"
 
 
 def test_export_sources_raw_file_created():
@@ -94,8 +96,8 @@ def test_ai_filter_override_in_ingest():
         assert source.ai_decision == "needs_review"
 
 
-def test_ai_filter_low_confidence_does_not_override():
-    class LowConfidenceAIFilter:
+def test_ai_filter_decision_is_authoritative_in_ai_first_mode():
+    class StubAIFilter:
         def evaluate(self, *, title, abstract, base_score, base_decision):  # noqa: ANN001
             return AIRelevanceResult(decision="auto_reject", confidence=0.2, reason="low confidence")
 
@@ -119,24 +121,41 @@ def test_ai_filter_low_confidence_does_not_override():
                 "parent_source_id": None,
             }
         ]
-        _ingest_candidates(db, run.id, 1, candidates, ai_filter=LowConfidenceAIFilter())
+        _ingest_candidates(db, run.id, 1, candidates, ai_filter=StubAIFilter())
         source = db.scalars(select(Source).where(Source.run_id == run.id).limit(1)).first()
         assert source is not None
-        # Heuristic remains in effect; low-confidence AI proposal must not override.
-        assert source.review_status == "auto_accept"
-        assert source.accepted is True
-        assert source.ai_decision is None
+        assert source.review_status == "auto_reject"
+        assert source.final_decision == "auto_reject"
+        assert source.decision_source == "ai"
+        assert source.accepted is False
+        assert source.ai_decision == "auto_reject"
 
 
-def test_run_execution_persists_citation_edges():
-    with SessionLocal() as db:
-        run = create_run(db, ["ultrapure water semiconductor"], max_iterations=1)
-        execute_run(db, run)
-        db.refresh(run)
-        edge_count = db.query(CitationEdge).filter(CitationEdge.run_id == run.id).count()
-        assert edge_count > 0
-        assert run.citation_edges_total > 0
-        assert run.expanded_candidates_total > 0
+def test_run_execution_persists_citation_edges(monkeypatch):
+    original_use_ai = settings.use_ai_filter
+    original_key = settings.ai_api_key
+    try:
+        object.__setattr__(settings, "use_ai_filter", True)
+        object.__setattr__(settings, "ai_api_key", "token")
+        monkeypatch.setattr(
+            "knowledge_miner.ai_filter.AIRelevanceFilter.evaluate",
+            lambda self, *, title, abstract, base_score, base_decision: AIRelevanceResult(  # noqa: ARG005
+                decision="auto_accept",
+                confidence=0.95,
+                reason="test",
+            ),
+        )
+        with SessionLocal() as db:
+            run = create_run(db, ["ultrapure water semiconductor"], max_iterations=1)
+            execute_run(db, run)
+            db.refresh(run)
+            edge_count = db.query(CitationEdge).filter(CitationEdge.run_id == run.id).count()
+            assert edge_count > 0
+            assert run.citation_edges_total > 0
+            assert run.expanded_candidates_total > 0
+    finally:
+        object.__setattr__(settings, "use_ai_filter", original_use_ai)
+        object.__setattr__(settings, "ai_api_key", original_key)
 
 
 def test_run_metrics_fields_default_on_create():
@@ -219,12 +238,81 @@ def test_export_includes_provenance_history():
                 "parent_source_id": None,
             }
         ]
-        _ingest_candidates(db, run.id, 1, candidates)
+        class StubAIFilter:
+            def evaluate(self, *, title, abstract, base_score, base_decision):  # noqa: ANN001
+                return AIRelevanceResult(decision="auto_accept", confidence=0.9, reason="match")
+
+        _ingest_candidates(db, run.id, 1, candidates, ai_filter=StubAIFilter())
         path = export_sources_raw(db, run.id)
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["sources"]
         assert "provenance_history" in payload["sources"][0]
         assert len(payload["sources"][0]["provenance_history"]) == 1
+        assert payload["sources"][0]["decision_source"] == "ai"
+
+
+def test_ai_runtime_failure_sets_needs_review_with_fallback_source():
+    class FailingAIFilter:
+        def evaluate(self, *, title, abstract, base_score, base_decision):  # noqa: ANN001
+            return None
+
+    with SessionLocal() as db:
+        run = create_run(db, ["upw"], max_iterations=1)
+        candidates = [
+            {
+                "title": "UPW process control for semiconductor wafer cleaning",
+                "year": 2021,
+                "url": f"https://example.org/test-ai-fallback/{run.id}",
+                "doi": None,
+                "abstract": "ultrapure water UPW semiconductor RO EDI UV254",
+                "source": "openalex",
+                "source_native_id": f"oa_test_fallback_{run.id}",
+                "openalex_id": f"oa_test_fallback_{run.id}",
+                "semantic_scholar_id": None,
+                "patent_office": None,
+                "patent_number": None,
+                "type": "academic",
+                "discovery_method": "seed_search",
+                "parent_source_id": None,
+            }
+        ]
+        _ingest_candidates(db, run.id, 1, candidates, ai_filter=FailingAIFilter(), ai_policy_no_ai=False)
+        source = db.scalars(select(Source).where(Source.run_id == run.id).limit(1)).first()
+        assert source is not None
+        assert source.final_decision == "needs_review"
+        assert source.decision_source == "fallback_heuristic"
+
+
+def test_ai_policy_no_ai_sets_needs_review_and_policy_source():
+    class StubAIFilter:
+        def evaluate(self, *, title, abstract, base_score, base_decision):  # noqa: ANN001
+            return AIRelevanceResult(decision="auto_accept", confidence=0.99, reason="ignored")
+
+    with SessionLocal() as db:
+        run = create_run(db, ["upw"], max_iterations=1)
+        candidates = [
+            {
+                "title": "UPW process control for semiconductor wafer cleaning",
+                "year": 2021,
+                "url": f"https://example.org/test-policy-no-ai/{run.id}",
+                "doi": None,
+                "abstract": "ultrapure water UPW semiconductor RO EDI UV254",
+                "source": "openalex",
+                "source_native_id": f"oa_test_policy_no_ai_{run.id}",
+                "openalex_id": f"oa_test_policy_no_ai_{run.id}",
+                "semantic_scholar_id": None,
+                "patent_office": None,
+                "patent_number": None,
+                "type": "academic",
+                "discovery_method": "seed_search",
+                "parent_source_id": None,
+            }
+        ]
+        _ingest_candidates(db, run.id, 1, candidates, ai_filter=StubAIFilter(), ai_policy_no_ai=True)
+        source = db.scalars(select(Source).where(Source.run_id == run.id).limit(1)).first()
+        assert source is not None
+        assert source.final_decision == "needs_review"
+        assert source.decision_source == "policy_no_ai"
 
 
 def test_citation_ranking_prioritizes_abstract_doi_recency_overlap():

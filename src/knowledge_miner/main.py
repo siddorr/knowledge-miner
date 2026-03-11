@@ -87,8 +87,9 @@ def health() -> dict[str, str]:
 @app.get("/hmi")
 def hmi_shell() -> HTMLResponse:
     template = (HMI_DIR / "index.html").read_text(encoding="utf-8")
-    token_json = json.dumps(settings.hmi_api_token) if settings.hmi_api_token else "null"
-    html = template.replace("__HMI_DEFAULT_TOKEN_JSON__", token_json)
+    token_json = json.dumps(settings.hmi_api_token) if settings.auth_enabled and settings.hmi_api_token else "null"
+    auth_enabled_json = "true" if settings.auth_enabled else "false"
+    html = template.replace("__HMI_DEFAULT_TOKEN_JSON__", token_json).replace("__HMI_AUTH_ENABLED__", auth_enabled_json)
     return HTMLResponse(content=html)
 
 
@@ -180,6 +181,10 @@ def list_sources(
                 relevance_score=float(s.relevance_score),
                 accepted=s.accepted,
                 review_status=s.review_status,
+                final_decision=s.final_decision,
+                decision_source=s.decision_source,
+                heuristic_recommendation=s.heuristic_recommendation,
+                heuristic_score=float(s.heuristic_score),
                 parent_source=s.parent_source_id,
             )
             for s in page

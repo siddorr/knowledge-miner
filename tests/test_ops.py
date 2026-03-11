@@ -1,4 +1,9 @@
+from fastapi import HTTPException
+
+from knowledge_miner.auth import require_api_key
+from knowledge_miner.config import settings
 from knowledge_miner.rate_limit import InMemoryRateLimiter
+from knowledge_miner.rate_limit import require_rate_limit
 from knowledge_miner.retry import retry_call
 
 
@@ -52,3 +57,37 @@ def test_retry_call_respects_non_retryable():
         pass
     assert state["n"] == 1
 
+
+def test_require_api_key_allows_when_auth_disabled():
+    original_auth = settings.auth_enabled
+    try:
+        object.__setattr__(settings, "auth_enabled", False)
+        assert require_api_key(None) == "auth_disabled"
+    finally:
+        object.__setattr__(settings, "auth_enabled", original_auth)
+
+
+def test_require_api_key_validates_when_auth_enabled():
+    original_auth = settings.auth_enabled
+    original_token = settings.api_token
+    try:
+        object.__setattr__(settings, "auth_enabled", True)
+        object.__setattr__(settings, "api_token", "token-1")
+        assert require_api_key("Bearer token-1") == "token-1"
+        try:
+            require_api_key(None)
+            assert False, "expected HTTPException"
+        except HTTPException as exc:
+            assert exc.status_code == 401
+    finally:
+        object.__setattr__(settings, "auth_enabled", original_auth)
+        object.__setattr__(settings, "api_token", original_token)
+
+
+def test_require_rate_limit_noop_when_auth_disabled():
+    original_auth = settings.auth_enabled
+    try:
+        object.__setattr__(settings, "auth_enabled", False)
+        require_rate_limit("any")
+    finally:
+        object.__setattr__(settings, "auth_enabled", original_auth)

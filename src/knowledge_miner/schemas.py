@@ -51,6 +51,10 @@ class SourceOut(BaseModel):
     relevance_score: float
     accepted: bool
     review_status: str
+    final_decision: str
+    decision_source: str
+    heuristic_recommendation: str
+    heuristic_score: float
     parent_source: str | None
 
 

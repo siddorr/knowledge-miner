@@ -55,7 +55,9 @@ def test_hmi_static_js_served():
 
 def test_hmi_prefills_system_token_when_configured():
     original = settings.hmi_api_token
+    original_auth = settings.auth_enabled
     object.__setattr__(settings, "hmi_api_token", "sys-token-123")
+    object.__setattr__(settings, "auth_enabled", True)
     try:
         client = TestClient(app)
         response = client.get("/hmi")
@@ -64,3 +66,4 @@ def test_hmi_prefills_system_token_when_configured():
         assert 'window.__KM_HMI_DEFAULT_TOKEN__ = "sys-token-123";' in body
     finally:
         object.__setattr__(settings, "hmi_api_token", original)
+        object.__setattr__(settings, "auth_enabled", original_auth)
