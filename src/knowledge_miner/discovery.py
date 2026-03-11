@@ -62,31 +62,35 @@ def execute_run_by_id(run_id: str) -> None:
 
 def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None) -> None:
     observability = RunObservability()
+    run_id = run.id
+    max_iterations = int(run.max_iterations)
+    queries = list(run.seed_queries)
+    ai_warning = run.ai_filter_warning
+    current_iteration = 0
     try:
         run.status = "running"
         db.commit()
-        if run.ai_filter_warning:
+        if ai_warning:
             observability.record_provider_call(
-                run_id=run.id,
+                run_id=run_id,
                 iteration=0,
                 provider="ai_filter",
                 operation="runtime_warning",
                 latency_ms=0.0,
                 ok=False,
-                error=run.ai_filter_warning,
+                error=ai_warning,
             )
 
-        queries = list(run.seed_queries)
         low_yield_streak = 0
         ai_filter = AIRelevanceFilter()
 
         active_connectors = connectors or build_connectors()
         connectors_by_name = {c.name: c for c in active_connectors}
-        for iteration in range(1, run.max_iterations + 1):
-            candidates = _collect_candidates(run.id, queries, iteration, active_connectors, observability=observability)
+        for iteration in range(1, max_iterations + 1):
+            candidates = _collect_candidates(run_id, queries, iteration, active_connectors, observability=observability)
             new_accepted_unique = _ingest_candidates(
                 db,
-                run.id,
+                run_id,
                 iteration,
                 candidates,
                 ai_filter=ai_filter,
@@ -94,7 +98,7 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
             )
             citation_candidates, citation_edges = _expand_citations_for_iteration(
                 db,
-                run.id,
+                run_id,
                 iteration,
                 connectors_by_name,
                 per_direction_limit=settings.citation_expansion_limit_per_direction,
@@ -104,25 +108,27 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
             if citation_candidates:
                 new_accepted_unique += _ingest_candidates(
                     db,
-                    run.id,
+                    run_id,
                     iteration,
                     citation_candidates,
                     ai_filter=ai_filter,
                     observability=observability,
                 )
-                run.expanded_candidates_total += len(citation_candidates)
+                run.expanded_candidates_total = int(run.expanded_candidates_total) + len(citation_candidates)
             if citation_edges:
-                persisted_edges = _persist_citation_edges(db, run.id, iteration, citation_edges)
-                run.citation_edges_total += persisted_edges
-            accepted_total = _count_accepted(db, run.id)
+                persisted_edges = _persist_citation_edges(db, run_id, iteration, citation_edges)
+                run.citation_edges_total = int(run.citation_edges_total) + persisted_edges
+            accepted_total = _count_accepted(db, run_id)
 
-            _store_keywords_for_iteration(db, run.id, iteration)
+            _store_keywords_for_iteration(db, run_id, iteration)
             run.current_iteration = iteration
+            current_iteration = iteration
             run.accepted_total = accepted_total
-            run.new_accept_rate = (new_accepted_unique / accepted_total) if accepted_total else 0.0
+            new_accept_rate = (new_accepted_unique / accepted_total) if accepted_total else 0.0
+            run.new_accept_rate = new_accept_rate
             db.commit()
 
-            if accepted_total > 0 and run.new_accept_rate < 0.05:
+            if accepted_total > 0 and new_accept_rate < 0.05:
                 low_yield_streak += 1
             else:
                 low_yield_streak = 0
@@ -130,20 +136,22 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
             if low_yield_streak >= 2:
                 break
 
-            queries = _next_iteration_queries(db, run.id, iteration)
+            queries = _next_iteration_queries(db, run_id, iteration)
 
         run.status = "completed"
         run.updated_at = datetime.now(UTC)
         db.commit()
-        observability.emit_run_summary(run_id=run.id, status=run.status, current_iteration=run.current_iteration)
+        observability.emit_run_summary(run_id=run_id, status=run.status, current_iteration=current_iteration)
     except Exception as exc:  # pragma: no cover - defensive failure path
         db.rollback()
-        run.status = "failed"
-        run.error_message = str(exc)
-        run.updated_at = datetime.now(UTC)
-        db.commit()
+        db_run = db.get(Run, run_id)
+        if db_run is not None:
+            db_run.status = "failed"
+            db_run.error_message = str(exc)
+            db_run.updated_at = datetime.now(UTC)
+            db.commit()
         observability.inc("api_errors")
-        observability.emit_run_summary(run_id=run.id, status=run.status, current_iteration=run.current_iteration)
+        observability.emit_run_summary(run_id=run_id, status="failed", current_iteration=current_iteration)
         raise
 
 
