@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import hashlib
 from pathlib import Path
 import threading
+import time
 from typing import NamedTuple
 from urllib.parse import urlparse
 import uuid
@@ -27,12 +28,31 @@ def create_acquisition_run(db: Session, discovery_run_id: str, *, retry_failed_o
     accepted_sources = db.scalars(
         select(Source).where(Source.run_id == discovery_run_id, Source.accepted.is_(True)).order_by(Source.id.asc())
     ).all()
+    selected_sources = accepted_sources
+    if retry_failed_only:
+        prev_run = db.scalars(
+            select(AcquisitionRun)
+            .where(AcquisitionRun.discovery_run_id == discovery_run_id)
+            .order_by(AcquisitionRun.created_at.desc(), AcquisitionRun.id.desc())
+        ).first()
+        if prev_run is not None:
+            failed_source_ids = set(
+                db.scalars(
+                    select(AcquisitionItem.source_id).where(
+                        AcquisitionItem.acq_run_id == prev_run.id,
+                        AcquisitionItem.status == "failed",
+                    )
+                ).all()
+            )
+            selected_sources = [source for source in accepted_sources if source.id in failed_source_ids]
+        else:
+            selected_sources = []
     acq_run = AcquisitionRun(
         id=f"acq_{uuid.uuid4().hex[:12]}",
         discovery_run_id=discovery_run_id,
         retry_failed_only=retry_failed_only,
         status="queued",
-        total_sources=len(accepted_sources),
+        total_sources=len(selected_sources),
         downloaded_total=0,
         partial_total=0,
         failed_total=0,
@@ -41,7 +61,7 @@ def create_acquisition_run(db: Session, discovery_run_id: str, *, retry_failed_o
     db.add(acq_run)
     db.flush()
 
-    for source in accepted_sources:
+    for source in selected_sources:
         db.add(
             AcquisitionItem(
                 id=f"acq_item_{uuid.uuid4().hex[:12]}",
@@ -84,6 +104,10 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         failed_total = 0
         skipped_total = 0
         for item in items:
+            if run.retry_failed_only and item.status in {"downloaded", "partial", "skipped"}:
+                skipped_total += 1
+                continue
+
             source = db.get(Source, item.source_id)
             if source is None:
                 item.status = "failed"
@@ -168,8 +192,8 @@ def _acquire_source_content(source: Source) -> AcquisitionOutcome:
     html_fallback: AcquisitionOutcome | None = None
     last_error = "download_failed"
     for url in pdf_first:
-        attempts += 1
-        result = _download_url(url, timeout_seconds=timeout_seconds, max_bytes=max_bytes)
+        result, call_attempts = _download_with_retries(url, timeout_seconds=timeout_seconds, max_bytes=max_bytes)
+        attempts += call_attempts
         if result.kind == "pdf":
             return AcquisitionOutcome(
                 kind="pdf",
@@ -201,6 +225,29 @@ def _acquire_source_content(source: Source) -> AcquisitionOutcome:
             error="pdf_unavailable_html_fallback",
         )
     return AcquisitionOutcome(kind=None, mime_type=None, content=None, url=None, attempts=attempts, error=last_error)
+
+
+def _download_with_retries(
+    url: str,
+    *,
+    timeout_seconds: float,
+    max_bytes: int,
+    delays: tuple[float, ...] = (1.0, 2.0, 4.0),
+    sleep=time.sleep,
+) -> tuple[DownloadResult, int]:
+    attempts = 0
+    last = DownloadResult(kind=None, mime_type=None, content=None, url=url, error="download_failed", retryable=False)
+    for index in range(max(1, len(delays))):
+        attempts += 1
+        result = _download_url(url, timeout_seconds=timeout_seconds, max_bytes=max_bytes)
+        last = result
+        if result.kind is not None:
+            return result, attempts
+        if not result.retryable:
+            return result, attempts
+        if index < len(delays) - 1:
+            sleep(delays[index])
+    return last, attempts
 
 
 def _resolve_candidate_urls(source: Source) -> list[str]:
@@ -265,6 +312,7 @@ class DownloadResult(NamedTuple):
     content: bytes | None
     url: str
     error: str | None
+    retryable: bool
 
 
 def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> DownloadResult:
@@ -272,29 +320,66 @@ def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> Downlo
         with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
             response = client.get(url)
     except httpx.RequestError:
-        return DownloadResult(kind=None, mime_type=None, content=None, url=url, error="network_error")
+        return DownloadResult(kind=None, mime_type=None, content=None, url=url, error="network_error", retryable=True)
 
+    if response.status_code == 429 or 500 <= response.status_code <= 599:
+        return DownloadResult(
+            kind=None,
+            mime_type=None,
+            content=None,
+            url=str(response.url),
+            error=f"http_{response.status_code}",
+            retryable=True,
+        )
     if response.status_code >= 400:
-        return DownloadResult(kind=None, mime_type=None, content=None, url=str(response.url), error="http_error")
+        return DownloadResult(
+            kind=None,
+            mime_type=None,
+            content=None,
+            url=str(response.url),
+            error=f"http_{response.status_code}",
+            retryable=False,
+        )
 
     content = response.content
     if len(content) > max_bytes:
-        return DownloadResult(kind=None, mime_type=None, content=None, url=str(response.url), error="file_too_large")
+        return DownloadResult(
+            kind=None,
+            mime_type=None,
+            content=None,
+            url=str(response.url),
+            error="file_too_large",
+            retryable=False,
+        )
 
     raw_mime = response.headers.get("Content-Type", "")
     mime = raw_mime.split(";")[0].strip().lower() if raw_mime else None
     if mime == "application/pdf":
-        return DownloadResult(kind="pdf", mime_type=mime, content=content, url=str(response.url), error=None)
+        return DownloadResult(kind="pdf", mime_type=mime, content=content, url=str(response.url), error=None, retryable=False)
     if mime in {"text/html", "application/xhtml+xml"}:
-        return DownloadResult(kind="html", mime_type=mime, content=content, url=str(response.url), error=None)
+        return DownloadResult(kind="html", mime_type=mime, content=content, url=str(response.url), error=None, retryable=False)
 
     # Fallback sniffing when providers omit proper content-type.
     if content.startswith(b"%PDF"):
-        return DownloadResult(kind="pdf", mime_type="application/pdf", content=content, url=str(response.url), error=None)
+        return DownloadResult(
+            kind="pdf",
+            mime_type="application/pdf",
+            content=content,
+            url=str(response.url),
+            error=None,
+            retryable=False,
+        )
     if content[:1024].lower().find(b"<html") >= 0:
-        return DownloadResult(kind="html", mime_type="text/html", content=content, url=str(response.url), error=None)
+        return DownloadResult(kind="html", mime_type="text/html", content=content, url=str(response.url), error=None, retryable=False)
 
-    return DownloadResult(kind=None, mime_type=mime, content=None, url=str(response.url), error="unsupported_content_type")
+    return DownloadResult(
+        kind=None,
+        mime_type=mime,
+        content=None,
+        url=str(response.url),
+        error="unsupported_content_type",
+        retryable=False,
+    )
 
 
 def build_manifest_payload(db: Session, acq_run_id: str) -> dict:

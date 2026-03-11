@@ -77,7 +77,7 @@ Decision lock (approved):
 - File validation (content-type, size limits)
 - SHA256 checksuming
 
-4. [ ] P0 - Add retry/resume behavior
+4. [x] P0 - Add retry/resume behavior
 - Per-download retry policy (`3 attempts`, `1/2/4s`)
 - `retry_failed_only` mode
 - Skip already-successful items on resume

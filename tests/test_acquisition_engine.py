@@ -104,6 +104,7 @@ def test_execute_acquisition_run_downloads_pdf(monkeypatch, tmp_path):
                 content=b"%PDF-1.4 test",
                 url=url,
                 error=None,
+                retryable=False,
             )
 
         monkeypatch.setattr(acquisition, "_download_url", fake_download)
@@ -142,13 +143,21 @@ def test_execute_acquisition_run_falls_back_to_html(monkeypatch, tmp_path):
         def fake_download(url: str, *, timeout_seconds: float, max_bytes: int):  # noqa: ANN001
             del timeout_seconds, max_bytes
             if url.startswith("https://doi.org/"):
-                return acquisition.DownloadResult(kind=None, mime_type=None, content=None, url=url, error="http_error")
+                return acquisition.DownloadResult(
+                    kind=None,
+                    mime_type=None,
+                    content=None,
+                    url=url,
+                    error="http_404",
+                    retryable=False,
+                )
             return acquisition.DownloadResult(
                 kind="html",
                 mime_type="text/html",
                 content=b"<html><body>ok</body></html>",
                 url=url,
                 error=None,
+                retryable=False,
             )
 
         monkeypatch.setattr(acquisition, "_download_url", fake_download)
@@ -162,3 +171,55 @@ def test_execute_acquisition_run_falls_back_to_html(monkeypatch, tmp_path):
             assert run.failed_total == 0
     finally:
         object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
+def test_download_with_retries_retries_transient(monkeypatch):
+    state = {"n": 0}
+
+    def fake_download(url: str, *, timeout_seconds: float, max_bytes: int):  # noqa: ANN001
+        del url, timeout_seconds, max_bytes
+        state["n"] += 1
+        if state["n"] < 3:
+            return acquisition.DownloadResult(
+                kind=None,
+                mime_type=None,
+                content=None,
+                url="https://x",
+                error="network_error",
+                retryable=True,
+            )
+        return acquisition.DownloadResult(
+            kind="pdf",
+            mime_type="application/pdf",
+            content=b"%PDF-1.4",
+            url="https://x",
+            error=None,
+            retryable=False,
+        )
+
+    monkeypatch.setattr(acquisition, "_download_url", fake_download)
+    result, attempts = acquisition._download_with_retries(  # noqa: SLF001
+        "https://x",
+        timeout_seconds=1.0,
+        max_bytes=1000,
+        delays=(0.0, 0.0, 0.0),
+        sleep=lambda _: None,
+    )
+    assert result.kind == "pdf"
+    assert attempts == 3
+
+
+def test_retry_failed_only_selects_only_failed_sources(monkeypatch):
+    run_id, source_id = _seed_completed_run("https://publisher.example/paper.pdf")
+    with SessionLocal() as db:
+        first = acquisition.create_acquisition_run(db, run_id, retry_failed_only=False)
+        first_item = db.scalars(select(AcquisitionItem).where(AcquisitionItem.acq_run_id == first.id)).first()
+        assert first_item is not None
+        first_item.status = "failed"
+        db.commit()
+
+        second = acquisition.create_acquisition_run(db, run_id, retry_failed_only=True)
+        second_items = db.scalars(select(AcquisitionItem).where(AcquisitionItem.acq_run_id == second.id)).all()
+        assert len(second_items) == 1
+        assert second_items[0].source_id == source_id
+        assert second.retry_failed_only is True
