@@ -115,6 +115,7 @@ Contains:
 13. Live updates use server push with reconnect and bounded fallback refresh when disconnected/active.
 14. Background refresh uses leader-tab model to avoid duplicate polling across multiple tabs.
 15. Duplicate in-flight GET requests for identical endpoint+params are deduplicated per tab.
+16. Advanced page includes session controls: `Save Session`, `Load Session`, history list, delete, and auto-restore toggle.
 
 ## State and Status Presentation
 

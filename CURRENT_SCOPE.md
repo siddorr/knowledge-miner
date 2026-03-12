@@ -19,6 +19,7 @@ Knowledge Miner is an end-to-end UPW literature workflow for semiconductor manuf
 12. UI refresh model is event-driven (SSE) with fallback polling only when needed.
 13. Review pane auto-populates on entry/context changes with debounced refresh.
 14. HMI hot-read mitigation includes in-tab GET dedup and leader-tab coordination for background refresh.
+15. Session persistence supports explicit Save/Load, session history, and auto-restore toggle.
 
 ## In Scope
 

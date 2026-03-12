@@ -80,6 +80,10 @@ def test_hmi_shell_route_and_navigation():
     assert "AI Filter Settings" in body
     assert "Load AI Settings" in body
     assert "Save AI Settings" in body
+    assert "Session State" in body
+    assert "Save Session" in body
+    assert "Load Session" in body
+    assert "Auto-restore latest" in body
     assert "AI Filter" in body
     assert "Global Search" in body
     assert "Parse Run ID Override" in body
@@ -162,6 +166,8 @@ def test_hmi_static_js_served():
     assert "Hidden tab: periodic refresh paused." in body
     assert "inflightGet" in body
     assert "BroadcastChannel" in body
+    assert "captureSessionState" in body
+    assert "loadSelectedSession" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

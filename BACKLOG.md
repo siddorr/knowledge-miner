@@ -7,6 +7,7 @@ Status:
 - Updated on 2026-03-12: Auth wording clarity (#18) and live-update/fallback refresh model (#19) are implemented.
 - Updated on 2026-03-12: Review pane now auto-populates without manual load action (#20).
 - Updated on 2026-03-12: LAN access workflow docs (#21) and HMI request-storm reduction controls (#22) are implemented.
+- Updated on 2026-03-12: Session save/load workflow (#23) is implemented with auto-restore and history.
 
 ## High Priority
 
@@ -1175,7 +1176,7 @@ Definition of done for Phase 4.3:
 
 ## New Requests
 
-1. [ ] P0 - Save and load sessions
+1. [x] P0 - Save and load sessions
 - Add explicit `Save Session` and `Load Session` UX so operators can stop and resume work without re-entering context.
 - Persist at minimum:
   - active topic

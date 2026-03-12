@@ -2,6 +2,8 @@ const POLL_ACTIVE_MS = 5000;
 const POLL_BACKGROUND_MS = 15000;
 const POLL_DISCONNECTED_IDLE_MS = 30000;
 const TELEMETRY_INPUT_DEBOUNCE_MS = 400;
+const SESSIONS_STORAGE_KEY = "km_hmi_sessions_v1";
+const SESSIONS_AUTO_RESTORE_KEY = "km_hmi_sessions_auto_restore";
 const LEADER_STALE_MS = 6000;
 const LEADER_HEARTBEAT_MS = 2000;
 const LEADER_STORAGE_KEY = "km_hmi_leader";
@@ -80,6 +82,10 @@ const state = {
     isLeader: true,
     heartbeatTimer: null,
     channel: null,
+  },
+  sessions: {
+    items: [],
+    autoRestore: true,
   },
 };
 
@@ -493,6 +499,202 @@ function setContext(patch) {
   state.context = { ...state.context, ...patch };
   const out = el("globalContext");
   if (out) out.textContent = JSON.stringify(state.context, null, 2);
+}
+
+function loadSessionsFromStorage() {
+  try {
+    const raw = localStorage.getItem(SESSIONS_STORAGE_KEY);
+    if (!raw) {
+      state.sessions.items = [];
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error("invalid_session_format");
+    state.sessions.items = parsed.filter((row) => row && typeof row.id === "string" && row.state);
+  } catch (_err) {
+    state.sessions.items = [];
+    localStorage.removeItem(SESSIONS_STORAGE_KEY);
+    setText("sessionState", "Session store was corrupted and has been reset.");
+  }
+}
+
+function saveSessionsToStorage() {
+  localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(state.sessions.items.slice(0, 20)));
+}
+
+function sessionSummaryLabel(item) {
+  const stamp = item.updated_at ? new Date(item.updated_at).toLocaleString() : "-";
+  const name = item.name || "unnamed";
+  return `${name} (${stamp})`;
+}
+
+function renderSessionHistory() {
+  const select = el("sessionHistorySelect");
+  if (!select) return;
+  const items = state.sessions.items || [];
+  if (!items.length) {
+    select.innerHTML = '<option value="">No saved sessions</option>';
+    setText("sessionState", "No saved sessions.");
+    return;
+  }
+  select.innerHTML = items
+    .map((item, idx) => `<option value="${escapeHtml(item.id)}"${idx === 0 ? " selected" : ""}>${escapeHtml(sessionSummaryLabel(item))}</option>`)
+    .join("");
+  setText("sessionState", `Saved sessions: ${items.length}`);
+}
+
+function captureSessionState() {
+  return {
+    section: activeSection(),
+    latest: { ...state.latest },
+    build: {
+      activeTopicId: state.build.activeTopicId,
+      activeTab: state.build.activeTab,
+      topics: state.build.topics,
+      stagedSourcesByTopic: Object.fromEntries(
+        Object.entries(state.build.stagedSourcesByTopic).map(([k, v]) => [k, Array.from(v || [])]),
+      ),
+      topicQueriesByTopic: state.build.topicQueriesByTopic,
+    },
+    review: {
+      offset: state.review.offset,
+      statusFilter: el("reviewStatusFilter")?.value || "pending",
+      limit: el("reviewLimit")?.value || "50",
+      selected: Array.from(state.review.selected),
+    },
+    documents: {
+      offset: state.documents.offset,
+      queueFilter: el("documentsQueueFilter")?.value || "awaiting",
+      limit: el("documentsLimit")?.value || "50",
+      selected: Array.from(state.documents.selected),
+      acqRunIdInput: el("documentsAcqRunIdInput")?.value || "",
+      manualSourceId: el("manualUploadSourceId")?.value || "",
+    },
+    library: {
+      query: el("searchQuery")?.value || "",
+      limit: el("searchLimit")?.value || "20",
+      topicFilter: el("libraryTopicFilter")?.value || "",
+      yearFilter: el("libraryYearFilter")?.value || "",
+      docsFilter: el("libraryDocsFilter")?.value || "all",
+      parsedFilter: el("libraryParsedFilter")?.value || "all",
+      parseRunIdInput: el("searchParseRunIdInput")?.value || "",
+    },
+    ids: {
+      discoverRunIdInput: el("discoverRunIdInput")?.value || "",
+      reviewRunIdInput: el("reviewRunIdInput")?.value || "",
+      startAcqRunId: el("startAcqRunId")?.value || "",
+      startParseAcqRunId: el("startParseAcqRunId")?.value || "",
+    },
+  };
+}
+
+function applySessionState(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") throw new Error("invalid_session_payload");
+  const section = snapshot.section || "build";
+  state.latest.discovery = snapshot.latest?.discovery || "";
+  state.latest.acquisition = snapshot.latest?.acquisition || "";
+  state.latest.parse = snapshot.latest?.parse || "";
+  setText("latestDiscoveryId", state.latest.discovery || "-");
+  setText("latestAcqId", state.latest.acquisition || "-");
+  setText("latestParseId", state.latest.parse || "-");
+
+  if (snapshot.build) {
+    state.build.activeTopicId = snapshot.build.activeTopicId || state.build.activeTopicId;
+    state.build.activeTab = snapshot.build.activeTab || state.build.activeTab;
+    if (Array.isArray(snapshot.build.topics) && snapshot.build.topics.length) state.build.topics = snapshot.build.topics;
+    if (snapshot.build.stagedSourcesByTopic && typeof snapshot.build.stagedSourcesByTopic === "object") {
+      state.build.stagedSourcesByTopic = Object.fromEntries(
+        Object.entries(snapshot.build.stagedSourcesByTopic).map(([k, v]) => [k, Array.from(v || [])]),
+      );
+      state.build.sourceKeysByTopic = Object.fromEntries(
+        Object.entries(state.build.stagedSourcesByTopic).map(([k, values]) => [k, new Set(values.map((raw) => sourceFingerprint(raw)))]),
+      );
+    }
+    if (snapshot.build.topicQueriesByTopic && typeof snapshot.build.topicQueriesByTopic === "object") {
+      state.build.topicQueriesByTopic = snapshot.build.topicQueriesByTopic;
+    }
+  }
+
+  state.review.offset = Number(snapshot.review?.offset || 0);
+  state.review.selected = new Set((snapshot.review?.selected || []).map((id) => String(id)));
+  if (el("reviewStatusFilter")) el("reviewStatusFilter").value = snapshot.review?.statusFilter || "pending";
+  if (el("reviewLimit")) el("reviewLimit").value = snapshot.review?.limit || "50";
+
+  state.documents.offset = Number(snapshot.documents?.offset || 0);
+  state.documents.selected = new Set((snapshot.documents?.selected || []).map((id) => String(id)));
+  if (el("documentsQueueFilter")) el("documentsQueueFilter").value = snapshot.documents?.queueFilter || "awaiting";
+  if (el("documentsLimit")) el("documentsLimit").value = snapshot.documents?.limit || "50";
+  if (el("documentsAcqRunIdInput")) el("documentsAcqRunIdInput").value = snapshot.documents?.acqRunIdInput || "";
+  if (el("manualUploadSourceId")) el("manualUploadSourceId").value = snapshot.documents?.manualSourceId || "";
+
+  if (el("searchQuery")) el("searchQuery").value = snapshot.library?.query || "";
+  if (el("searchLimit")) el("searchLimit").value = snapshot.library?.limit || "20";
+  if (el("libraryTopicFilter")) el("libraryTopicFilter").value = snapshot.library?.topicFilter || "";
+  if (el("libraryYearFilter")) el("libraryYearFilter").value = snapshot.library?.yearFilter || "";
+  if (el("libraryDocsFilter")) el("libraryDocsFilter").value = snapshot.library?.docsFilter || "all";
+  if (el("libraryParsedFilter")) el("libraryParsedFilter").value = snapshot.library?.parsedFilter || "all";
+  if (el("searchParseRunIdInput")) el("searchParseRunIdInput").value = snapshot.library?.parseRunIdInput || "";
+
+  if (el("discoverRunIdInput")) el("discoverRunIdInput").value = snapshot.ids?.discoverRunIdInput || state.latest.discovery || "";
+  if (el("reviewRunIdInput")) el("reviewRunIdInput").value = snapshot.ids?.reviewRunIdInput || state.latest.discovery || "";
+  if (el("startAcqRunId")) el("startAcqRunId").value = snapshot.ids?.startAcqRunId || state.latest.discovery || "";
+  if (el("startParseAcqRunId")) el("startParseAcqRunId").value = snapshot.ids?.startParseAcqRunId || state.latest.acquisition || "";
+
+  if (["build", "review", "documents", "library", "advanced", "discover"].includes(section)) {
+    window.location.hash = `#${section}`;
+  }
+  renderBuildTopics();
+  setBuildTab(state.build.activeTab);
+}
+
+function saveCurrentSession() {
+  const id = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const name = (el("sessionNameInput")?.value || "").trim();
+  const snapshot = {
+    id,
+    name: name || `Session ${new Date().toLocaleString()}`,
+    updated_at: new Date().toISOString(),
+    state: captureSessionState(),
+  };
+  state.sessions.items = [snapshot, ...state.sessions.items].slice(0, 20);
+  saveSessionsToStorage();
+  renderSessionHistory();
+  setText("sessionState", `Session saved: ${snapshot.name}`);
+}
+
+async function loadSelectedSession() {
+  const select = el("sessionHistorySelect");
+  const id = select?.value || "";
+  const item = state.sessions.items.find((row) => row.id === id);
+  if (!item) {
+    setText("sessionState", "Select a saved session first.");
+    return;
+  }
+  try {
+    applySessionState(item.state);
+    await loadDashboard();
+    if (activeSection() === "review") scheduleReviewAutoLoad("session_restore");
+    if (activeSection() === "documents") await loadDocuments();
+    if (activeSection() === "library") await runSearch();
+    setText("sessionState", `Session loaded: ${item.name}`);
+  } catch (err) {
+    setText("sessionState", `Session load failed: ${err.message}`);
+  }
+}
+
+function deleteSelectedSession() {
+  const select = el("sessionHistorySelect");
+  const id = select?.value || "";
+  if (!id) {
+    setText("sessionState", "Select a saved session first.");
+    return;
+  }
+  const before = state.sessions.items.length;
+  state.sessions.items = state.sessions.items.filter((row) => row.id !== id);
+  saveSessionsToStorage();
+  renderSessionHistory();
+  if (state.sessions.items.length === before) setText("sessionState", "Session not found.");
+  else setText("sessionState", "Session deleted.");
 }
 
 function activeSection() {
@@ -2579,12 +2781,34 @@ function initPagination() {
   });
 }
 
+function initSessionPersistence() {
+  loadSessionsFromStorage();
+  const autoRestoreSaved = localStorage.getItem(SESSIONS_AUTO_RESTORE_KEY);
+  state.sessions.autoRestore = autoRestoreSaved == null ? true : autoRestoreSaved === "true";
+  const checkbox = el("autoRestoreSession");
+  if (checkbox) checkbox.checked = state.sessions.autoRestore;
+  renderSessionHistory();
+
+  addListener("saveSessionBtn", "click", saveCurrentSession);
+  addListener("loadSessionBtn", "click", () => {
+    loadSelectedSession().catch((err) => setText("sessionState", `Session load failed: ${err.message}`));
+  });
+  addListener("deleteSessionBtn", "click", deleteSelectedSession);
+  addListener("autoRestoreSession", "change", () => {
+    const enabled = !!el("autoRestoreSession").checked;
+    state.sessions.autoRestore = enabled;
+    localStorage.setItem(SESSIONS_AUTO_RESTORE_KEY, enabled ? "true" : "false");
+    setText("sessionState", enabled ? "Auto-restore enabled." : "Auto-restore disabled.");
+  });
+}
+
 function init() {
   if (!window.location.hash) {
     window.location.hash = `#${activeSection()}`;
   }
   initMultiTabSync();
   initAuth();
+  initSessionPersistence();
   initTelemetry();
   updateSectionVisibility();
 
@@ -2721,6 +2945,15 @@ function init() {
   setBuildTab(state.build.activeTab);
   (async () => {
     try {
+      if (state.sessions.autoRestore && state.sessions.items.length > 0) {
+        const latest = state.sessions.items[0];
+        try {
+          applySessionState(latest.state);
+          setText("sessionState", `Auto-restored: ${latest.name}`);
+        } catch (_err) {
+          setText("sessionState", "Auto-restore skipped due to invalid saved state.");
+        }
+      }
       const sys = await loadSystemStatus();
       if ((sys?.db_run_count || 0) === 0) resetStaleRunContext("init_db_run_count_zero");
       else await loadDashboard();

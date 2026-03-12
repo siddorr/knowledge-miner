@@ -117,6 +117,8 @@ def test_hmi_first_time_flow_labels_and_no_required_manual_ids():
     assert "Queue auto-loads when you open Review or change filters." in body
     assert "Refresh Review Queue" in body
     assert "View Issues" in body
+    assert "Save Session" in body
+    assert "Load Session" in body
     assert "Library" in body
     assert "Technical details" in body
     assert "Max iterations" not in body
