@@ -88,6 +88,17 @@ function setButtonBusy(id, busy) {
   if (node) node.disabled = busy;
 }
 
+function setButtonRunning(id, busy) {
+  const node = el(id);
+  if (!node) return;
+  if (busy) {
+    if (!node.dataset.originalLabel) node.dataset.originalLabel = node.textContent || "";
+    node.textContent = "Running...";
+  } else if (node.dataset.originalLabel) {
+    node.textContent = node.dataset.originalLabel;
+  }
+}
+
 function setGlobalBusy(phase, busy) {
   if (busy) state.busy.count += 1;
   else state.busy.count = Math.max(0, state.busy.count - 1);
@@ -107,7 +118,10 @@ function setGlobalBusy(phase, busy) {
 
 async function runBusy(phase, buttonIds, fn) {
   setGlobalBusy(phase, true);
-  for (const id of buttonIds || []) setButtonBusy(id, true);
+  for (const id of buttonIds || []) {
+    setButtonBusy(id, true);
+    setButtonRunning(id, true);
+  }
   try {
     const out = await fn();
     emitTelemetryEvent("change", document.body, `action:${phase}:complete`);
@@ -116,7 +130,10 @@ async function runBusy(phase, buttonIds, fn) {
     emitTelemetryEvent("change", document.body, `action:${phase}:fail`);
     throw err;
   } finally {
-    for (const id of buttonIds || []) setButtonBusy(id, false);
+    for (const id of buttonIds || []) {
+      setButtonBusy(id, false);
+      setButtonRunning(id, false);
+    }
     setGlobalBusy(phase, false);
   }
 }
@@ -458,6 +475,23 @@ function renderTable(tbodyId, rows, cols) {
     return;
   }
   tbody.innerHTML = rows.join("");
+}
+
+function updateReviewSelectionControls() {
+  const hasRows = state.review.items.length > 0;
+  setButtonBusy("reviewSelectAllBtn", !hasRows);
+  setButtonBusy("reviewDeselectAllBtn", !hasRows);
+  const hasSelection = state.review.selected.size > 0;
+  setButtonBusy("reviewBatchAcceptBtn", !hasSelection);
+  setButtonBusy("reviewBatchRejectBtn", !hasSelection);
+}
+
+function updateDocumentsSelectionControls() {
+  const hasRows = state.documents.items.length > 0;
+  setButtonBusy("documentsSelectAllBtn", !hasRows);
+  setButtonBusy("documentsDeselectAllBtn", !hasRows);
+  const hasSelection = state.documents.selected.size > 0;
+  setButtonBusy("documentsCopySelectedBtn", !hasSelection);
 }
 
 function activeTopic() {
@@ -883,6 +917,7 @@ async function loadReview() {
     5,
   );
   state.review.loaded = true;
+  updateReviewSelectionControls();
   return true;
 }
 
@@ -897,7 +932,9 @@ async function loadDocuments() {
     state.documents.discoveryRunId = discoveryRunId || "";
     if (!discoveryRunId) {
       setText("documentsState", "No active runs found. Start from Build -> Run Discovery.");
+      state.documents.items = [];
       renderTable("documentsRows", [], 4);
+      updateDocumentsSelectionControls();
       return true;
     }
     let approvedPayload;
@@ -949,6 +986,7 @@ async function loadDocuments() {
       setText("documentsDetails", "No approved sources yet. Continue review decisions first.");
     }
     state.documents.loaded = true;
+    updateDocumentsSelectionControls();
     return true;
   }
   let itemsPayload;
@@ -1009,7 +1047,16 @@ async function loadDocuments() {
     filtered.map((item) => {
       const openUrl = item.selected_url || item.source_url || "";
       const checked = state.documents.selected.has(item.source_id) ? " checked" : "";
-      return `<tr><td><input type="checkbox" class="documents-select" data-source-id="${escapeHtml(item.source_id)}"${checked}></td><td><button type="button" class="documents-action" data-action="select" data-source-id="${escapeHtml(item.source_id)}">${escapeHtml(item.title || "")}</button></td><td>${escapeHtml(item.problem)}</td><td><button type="button" class="documents-action" data-action="retry" data-source-id="${escapeHtml(item.source_id)}" data-discovery-run-id="${escapeHtml(run.discovery_run_id)}">Retry</button> <button type="button" class="documents-action" data-action="upload" data-source-id="${escapeHtml(item.source_id)}">Upload PDF</button> <button type="button" class="documents-action" data-action="manual-complete" data-source-id="${escapeHtml(item.source_id)}">Manual Complete</button> ${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : ""}</td></tr>`;
+      const openLink = openUrl ? ` <a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : "";
+      let nextStep = "Awaiting processing";
+      if (item.status === "failed" || item.status === "partial") {
+        nextStep = `<button type="button" class="documents-action" data-action="upload" data-source-id="${escapeHtml(item.source_id)}">Upload PDF</button>`;
+      } else if (item.status === "skipped" && item.reason_code !== "manual_complete") {
+        nextStep = `<button type="button" class="documents-action" data-action="manual-complete" data-source-id="${escapeHtml(item.source_id)}">Manual Complete</button>`;
+      } else if (item.status === "downloaded") {
+        nextStep = "Acquired";
+      }
+      return `<tr><td><input type="checkbox" class="documents-select" data-source-id="${escapeHtml(item.source_id)}"${checked}></td><td><button type="button" class="documents-action" data-action="select" data-source-id="${escapeHtml(item.source_id)}">${escapeHtml(item.title || "")}</button></td><td>${escapeHtml(item.problem)}</td><td>${nextStep}${openLink}</td></tr>`;
     }),
     4,
   );
@@ -1023,6 +1070,7 @@ async function loadDocuments() {
     }
   }
   state.documents.loaded = true;
+  updateDocumentsSelectionControls();
   return true;
 }
 
@@ -1140,7 +1188,7 @@ async function runSearch(event) {
   if (event) event.preventDefault();
   setText("searchError", "");
   try {
-    await runBusy("library_search", [], async () => {
+    await runBusy("library_search", ["searchRunBtn"], async () => {
       const parseRunId = getParseRunId();
       if (!parseRunId) throw new Error("parse run id is required");
       const query = el("searchQuery").value.trim();
@@ -1472,6 +1520,7 @@ async function handleReviewAction(event) {
     if (!sourceId) return;
     if (target.checked) state.review.selected.add(sourceId);
     else state.review.selected.delete(sourceId);
+    updateReviewSelectionControls();
     return;
   }
   if (!target.classList.contains("review-action")) return;
@@ -1578,7 +1627,7 @@ async function startAcquisition(event) {
   event.preventDefault();
   setText("acqError", "");
   try {
-    await runBusy("acquisition", [], async () => {
+    await runBusy("acquisition", ["startAcqBtn"], async () => {
       const runId = el("startAcqRunId").value.trim();
       if (!runId) throw new Error("discovery run id is required");
       const retryFailedOnly = el("startAcqRetry").value === "true";
@@ -1596,7 +1645,7 @@ async function startParse(event) {
   event.preventDefault();
   setText("parseError", "");
   try {
-    await runBusy("parse", [], async () => {
+    await runBusy("parse", ["startParseBtn"], async () => {
       const acqRunId = el("startParseAcqRunId").value.trim();
       if (!acqRunId) throw new Error("acquisition run id is required");
       const retryFailedOnly = el("startParseRetry").value === "true";
@@ -1618,6 +1667,7 @@ async function handleDocumentsAction(event) {
     if (!sourceId) return;
     if (target.checked) state.documents.selected.add(sourceId);
     else state.documents.selected.delete(sourceId);
+    updateDocumentsSelectionControls();
     return;
   }
   if (!target.classList.contains("documents-action")) return;
@@ -1740,9 +1790,15 @@ async function documentsAcquirePending() {
     setText("documentsError", "Discovery run context is required.");
     return;
   }
+  emitTelemetryEvent("submit", el("documentsAcquirePendingBtn") || document.body, `action:process_approved_docs:start run_id=${runId}`);
   try {
     const next = await runBusy("acquisition", ["documentsAcquirePendingBtn"], async () =>
       apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: false }),
+    );
+    emitTelemetryEvent(
+      "change",
+      el("documentsAcquirePendingBtn") || document.body,
+      `action:process_approved_docs:success run_id=${runId} acq_run_id=${next.acq_run_id} accepted_count=${state.dashboard.accepted_waiting_docs}`,
     );
     setLatestId("acquisition", next.acq_run_id);
     el("documentsAcqRunIdInput").value = next.acq_run_id;
@@ -1750,6 +1806,11 @@ async function documentsAcquirePending() {
     await loadDocuments();
     await loadDashboard();
   } catch (err) {
+    emitTelemetryEvent(
+      "change",
+      el("documentsAcquirePendingBtn") || document.body,
+      `action:process_approved_docs:error run_id=${runId} error=${String(err.message || "unknown")}`,
+    );
     setText("documentsError", `Process approved docs failed: ${err.message}`);
   }
 }
@@ -1834,6 +1895,117 @@ async function runGlobalSearch(event) {
   }
 }
 
+function updateFreshness() {
+  setText("freshnessState", `Last update: ${new Date().toLocaleTimeString()}`);
+}
+
+async function refreshRunProgress() {
+  const progressNode = el("statusProgressBar");
+  if (!progressNode) return;
+  let payload = null;
+  try {
+    if (state.latest.parse) payload = await apiGet(`/v1/parse/runs/${encodeURIComponent(state.latest.parse)}`);
+    else if (state.latest.acquisition) payload = await apiGet(`/v1/acquisition/runs/${encodeURIComponent(state.latest.acquisition)}`);
+    else if (state.latest.discovery) payload = await apiGet(`/v1/discovery/runs/${encodeURIComponent(state.latest.discovery)}`);
+  } catch (err) {
+    if (String(err.message || "").includes("run_not_found")) {
+      resetStaleRunContext("progress_run_not_found");
+      return;
+    }
+    return;
+  }
+  if (!payload) {
+    progressNode.value = 0;
+    return;
+  }
+  const percent = Number(payload.percent ?? 0);
+  if (Number.isFinite(percent)) progressNode.value = Math.max(0, Math.min(100, percent));
+  if (["queued", "running", "waiting_user"].includes(String(payload.stage_status || ""))) {
+    const message = payload.message || `${payload.current_stage || "run"} ${payload.stage_status || ""}`;
+    const banner = el("inProgressBanner");
+    if (banner) banner.hidden = false;
+    setText("inProgressState", `${message} (${payload.completed || 0}/${payload.total || 0})`);
+  } else if (state.busy.count === 0) {
+    const banner = el("inProgressBanner");
+    if (banner) banner.hidden = true;
+  }
+}
+
+function selectAllReviewRows() {
+  for (const row of state.review.items) state.review.selected.add(row.id);
+  setText("reviewState", `Selected ${state.review.items.length} rows.`);
+  loadReview().catch(() => {});
+}
+
+function deselectAllReviewRows() {
+  state.review.selected.clear();
+  setText("reviewState", "Selection cleared.");
+  loadReview().catch(() => {});
+}
+
+function selectAllDocumentsRows() {
+  for (const row of state.documents.items) state.documents.selected.add(row.source_id);
+  setText("documentsState", `Selected ${state.documents.items.length} rows.`);
+  loadDocuments().catch(() => {});
+}
+
+function deselectAllDocumentsRows() {
+  state.documents.selected.clear();
+  setText("documentsState", "Selection cleared.");
+  loadDocuments().catch(() => {});
+}
+
+function toggleBatchUploadPanel() {
+  const panel = el("batchUploadForm");
+  if (!panel) return;
+  panel.hidden = !panel.hidden;
+}
+
+async function uploadBatchDocuments(event) {
+  event.preventDefault();
+  setText("documentsError", "");
+  const acqRunId = getAcqRunId();
+  if (!acqRunId) {
+    setText("documentsError", "acquisition run id is required");
+    return;
+  }
+  const input = el("batchUploadFiles");
+  const files = input?.files ? Array.from(input.files) : [];
+  if (!files.length) {
+    setText("documentsError", "Select at least one file.");
+    return;
+  }
+  try {
+    const payload = await runBusy("batch_upload", ["batchUploadSubmitBtn"], async () => {
+      const form = new FormData();
+      for (const file of files) form.append("files", file);
+      requiredKey();
+      const res = await fetch(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-upload-batch`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: form,
+      });
+      if (!res.ok) {
+        let detail = `${res.status}`;
+        try {
+          const body = await res.json();
+          detail = body.detail || detail;
+        } catch (_err) {
+          // ignore
+        }
+        throw new Error(detail);
+      }
+      return res.json();
+    });
+    setText("batchUploadResults", JSON.stringify(payload, null, 2));
+    setText("documentsState", `Batch upload complete: matched=${payload.matched}, unmatched=${payload.unmatched}, ambiguous=${payload.ambiguous}`);
+    await loadDocuments();
+    await loadDashboard();
+  } catch (err) {
+    setText("documentsError", `Batch upload failed: ${err.message}`);
+  }
+}
+
 async function handleSearchAction(event) {
   const target = event.target;
   if (!(target instanceof HTMLElement) || !target.classList.contains("search-action")) return;
@@ -1866,11 +2038,14 @@ async function runPollCycle() {
     const sys = await loadSystemStatus();
     if ((sys?.db_run_count || 0) === 0) {
       resetStaleRunContext("db_run_count_zero");
+      updateFreshness();
       setPollState(`Auto-refreshing #${section} every ${Math.round(interval / 1000)}s.`);
       schedulePoll();
       return;
     }
     await refreshCurrentSection();
+    await refreshRunProgress();
+    updateFreshness();
     setPollState(`Auto-refreshing #${section} every ${Math.round(interval / 1000)}s.`);
   } catch (err) {
     setPollState(`Stale data in #${section}: ${err.message}`, true);
@@ -2052,12 +2227,16 @@ function init() {
   addListener("reviewRows", "change", handleReviewAction);
   addListener("reviewBatchAcceptBtn", "click", () => applyReviewDecisionToSelected("accept"));
   addListener("reviewBatchRejectBtn", "click", () => applyReviewDecisionToSelected("reject"));
+  addListener("reviewSelectAllBtn", "click", selectAllReviewRows);
+  addListener("reviewDeselectAllBtn", "click", deselectAllReviewRows);
 
   addListener("documentsForm", "submit", async (event) => {
     event.preventDefault();
     state.documents.offset = 0;
     try {
-      await loadDocuments();
+      await runBusy("documents_view", ["documentsViewIssuesBtn"], async () => {
+        await loadDocuments();
+      });
     } catch (err) {
       setText("documentsError", `Load failed: ${err.message}`);
     }
@@ -2067,6 +2246,10 @@ function init() {
   addListener("documentsAcquirePendingBtn", "click", documentsAcquirePending);
   addListener("documentsRetryFailedBtn", "click", documentsRetryFailed);
   addListener("documentsCopySelectedBtn", "click", documentsCopySelected);
+  addListener("documentsSelectAllBtn", "click", selectAllDocumentsRows);
+  addListener("documentsDeselectAllBtn", "click", deselectAllDocumentsRows);
+  addListener("openBatchUploadBtn", "click", toggleBatchUploadPanel);
+  addListener("batchUploadForm", "submit", uploadBatchDocuments);
   addListener("manualUploadForm", "submit", registerManualUpload);
   addListener("manualExportCsvBtn", "click", exportManualCsv);
 
@@ -2116,6 +2299,8 @@ function init() {
       const sys = await loadSystemStatus();
       if ((sys?.db_run_count || 0) === 0) resetStaleRunContext("init_db_run_count_zero");
       else await loadDashboard();
+      await refreshRunProgress();
+      updateFreshness();
     } catch (_err) {
       // keep shell interactive even when status bootstrap fails
     }

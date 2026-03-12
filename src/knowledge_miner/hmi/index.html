@@ -16,11 +16,13 @@
     <strong>Polling:</strong>
     <span id="pollState" class="poll-ok">Idle.</span>
     <span id="systemBadges" class="muted">System status not loaded.</span>
+    <span id="freshnessState" class="muted">Last update: -</span>
   </section>
 
   <section id="inProgressBanner" class="pollbar" aria-live="polite" hidden>
     <strong>Work in progress:</strong>
     <span id="inProgressState" class="muted">Idle</span>
+    <progress id="statusProgressBar" max="100" value="0"></progress>
   </section>
 
   <nav class="nav" aria-label="Primary">
@@ -290,18 +292,26 @@
             <option value="100">100</option>
           </select>
         </label>
-        <button type="submit">Load Download Issues</button>
+        <button id="documentsViewIssuesBtn" type="submit">View Issues</button>
         <button id="documentsAcquirePendingBtn" type="button">Process Approved Docs</button>
-        <button id="documentsRetryFailedBtn" type="button">Retry Failed</button>
-        <button id="documentsCopySelectedBtn" type="button">Copy Selected DOI/URL</button>
-        <button id="documentsSelectAllBtn" type="button">Select All</button>
-        <button id="documentsDeselectAllBtn" type="button">Deselect All</button>
-        <button id="manualExportCsvBtn" type="button">Export CSV</button>
+        <button id="openBatchUploadBtn" type="button">Upload PDF Batch</button>
       </form>
+      <form id="batchUploadForm" class="row" hidden>
+        <label>
+          PDF Batch
+          <input id="batchUploadFiles" type="file" accept=".pdf,.html,.htm,application/pdf,text/html" multiple>
+        </label>
+        <button id="batchUploadSubmitBtn" type="submit">Start Batch Upload</button>
+      </form>
+      <pre id="batchUploadResults" class="metrics">No batch upload yet.</pre>
       <div class="row compact">
         <button id="documentsPrev" type="button">Prev</button>
         <button id="documentsNext" type="button">Next</button>
         <span id="documentsPage" class="muted">offset=0</span>
+      </div>
+      <div class="row compact">
+        <button id="documentsSelectAllBtn" type="button">Select All</button>
+        <button id="documentsDeselectAllBtn" type="button">Deselect All</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -320,7 +330,12 @@
       </form>
       <p id="documentsState" class="muted"></p>
       <details>
-        <summary>Technical details</summary>
+        <summary>More</summary>
+        <div class="row compact">
+          <button id="documentsRetryFailedBtn" type="button">Retry Failed</button>
+          <button id="documentsCopySelectedBtn" type="button">Copy Selected DOI/URL</button>
+          <button id="manualExportCsvBtn" type="button">Export CSV</button>
+        </div>
         <label>
           Acquisition Run ID Override
           <input id="documentsAcqRunIdInput" type="text" placeholder="acq_...">
@@ -354,7 +369,7 @@
             <option value="100">100</option>
           </select>
         </label>
-        <button type="submit">Load Library</button>
+        <button id="searchRunBtn" type="submit">Load Library</button>
       </form>
       <form id="libraryFilterForm" class="row">
         <label>
@@ -533,7 +548,7 @@
               <option value="true">true</option>
             </select>
           </label>
-          <button type="submit">Start Acquisition</button>
+          <button id="startAcqBtn" type="submit">Start Acquisition</button>
           <button id="downloadManifestBtn" type="button">Export acquisition manifest</button>
         </form>
         <p id="acqError" class="error"></p>
@@ -550,7 +565,7 @@
               <option value="true">true</option>
             </select>
           </label>
-          <button type="submit">Start Parse</button>
+          <button id="startParseBtn" type="submit">Start Parse</button>
         </form>
         <p id="parseError" class="error"></p>
         <div class="row compact">

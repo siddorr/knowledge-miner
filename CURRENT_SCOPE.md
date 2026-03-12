@@ -11,6 +11,8 @@ Knowledge Miner is an end-to-end UPW literature workflow for semiconductor manuf
 4. Document acquisition (PDF-first, HTML fallback) with legal-source resolution and manual recovery.
 5. Full-text parsing/chunking and searchable corpus.
 6. Task-first HMI (`Build -> Review -> Documents -> Library`) with `Advanced` technical controls.
+7. Documents UX simplification (`Process Approved Docs`, `View Issues`, `Upload PDF Batch`) plus `Select All/Deselect All`.
+8. Canonical progress contract in run status APIs (`current_stage`, `stage_status`, `completed/total`, `percent`, freshness cues in HMI).
 
 ## In Scope
 
@@ -38,6 +40,8 @@ Knowledge Miner is an end-to-end UPW literature workflow for semiconductor manuf
 - task-first HMI pages
 - advanced diagnostics/settings
 - structured logging and run-level observability
+- global and per-action busy/progress indicators
+- batch manual-upload recovery with auto DOI/title matching
 
 ## Out of Scope
 

@@ -28,6 +28,14 @@ class RunStatusResponse(BaseModel):
     ai_filter_effective_enabled: bool
     ai_filter_config_source: str
     new_accept_rate: float | None
+    current_stage: str
+    stage_status: str
+    completed: int
+    total: int
+    percent: float | None
+    message: str
+    started_at: str | None
+    updated_at: str | None
 
 
 class SourceReviewRequest(BaseModel):
@@ -91,6 +99,14 @@ class AcquisitionRunStatusResponse(BaseModel):
     failed_total: int
     skipped_total: int
     error_message: str | None
+    current_stage: str
+    stage_status: str
+    completed: int
+    total: int
+    percent: float | None
+    message: str
+    started_at: str | None
+    updated_at: str | None
 
 
 class AcquisitionItemOut(BaseModel):
@@ -176,6 +192,22 @@ class ManualCompleteRequest(BaseModel):
     source_id: str = Field(min_length=1)
 
 
+class BatchUploadMatchOut(BaseModel):
+    filename: str
+    status: str
+    source_id: str | None = None
+    score: float | None = None
+    reason: str | None = None
+
+
+class BatchUploadResponse(BaseModel):
+    acq_run_id: str
+    matched: int
+    unmatched: int
+    ambiguous: int
+    items: list[BatchUploadMatchOut]
+
+
 class ParseRunCreateRequest(BaseModel):
     acq_run_id: str = Field(min_length=1)
     retry_failed_only: bool = False
@@ -198,6 +230,14 @@ class ParseRunStatusResponse(BaseModel):
     failed_total: int
     chunked_total: int
     error_message: str | None
+    current_stage: str
+    stage_status: str
+    completed: int
+    total: int
+    percent: float | None
+    message: str
+    started_at: str | None
+    updated_at: str | None
 
 
 class ParsedDocumentOut(BaseModel):

@@ -61,7 +61,7 @@ class Settings:
     brave_base_url: str = os.getenv("BRAVE_BASE_URL", "https://api.search.brave.com")
     brave_api_key: str | None = _optional_env("BRAVE_API_KEY")
     use_ai_filter: bool = _as_bool(os.getenv("USE_AI_FILTER"), default=False)
-    ai_api_key: str | None = _optional_env("AI_API_KEY")
+    ai_api_key: str | None = _optional_env("AI_API_KEY") or _optional_env("OPENAI_API_KEY")
     ai_model: str = os.getenv("AI_MODEL", "gpt-4o-mini")
     ai_base_url: str = os.getenv("AI_BASE_URL", "https://api.openai.com/v1")
     ai_timeout_seconds: float = float(os.getenv("AI_TIMEOUT_SECONDS", "20"))

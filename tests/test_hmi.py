@@ -65,7 +65,10 @@ def test_hmi_shell_route_and_navigation():
     assert "Context:" in body
     assert "__KM_HMI_DEFAULT_TOKEN__" in body
     assert "__KM_HMI_LAUNCH_SECTION__" in body
-    assert "Load Download Issues" in body
+    assert "View Issues" in body
+    assert "Upload PDF Batch" in body
+    assert "statusProgressBar" in body
+    assert "freshnessState" in body
     assert "Export CSV" in body
     assert "Upload PDF" in body
     assert "AI Filter Settings" in body

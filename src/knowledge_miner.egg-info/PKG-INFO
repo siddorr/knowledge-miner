@@ -5,51 +5,28 @@ Summary: UPW literature discovery engine
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 Requires-Dist: fastapi>=0.115.0
+Requires-Dist: python-multipart>=0.0.9
 Requires-Dist: uvicorn>=0.30.0
 Requires-Dist: sqlalchemy>=2.0.0
 Requires-Dist: pydantic>=2.7.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: psycopg[binary]>=3.1.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0.0; extra == "dev"
 Requires-Dist: httpx>=0.27.0; extra == "dev"
 Requires-Dist: alembic>=1.13.0; extra == "dev"
 
-# UPW Literature Discovery Engine
+# UPW Knowledge Miner
 
-Automated literature discovery for Ultrapure Water (UPW) systems in semiconductor manufacturing.
+Knowledge Miner is an end-to-end literature workflow for Ultrapure Water (UPW) in semiconductor manufacturing.
 
-## v1 Scope
-
-In scope:
-1. Search query execution
-2. Citation expansion (forward and backward)
-3. Abstract retrieval and relevance scoring
-4. Deduplication
-5. Iterative query generation
-6. Corpus storage and export
-
-Out of scope:
-1. PDF download and parsing
-2. Knowledge graph and clustering
-3. UI for manual report generation
-
-## v1 Targets
-
-1. 2000+ accepted unique sources within 6 iterations
-2. Precision@50 >= 0.80 (human spot check)
-3. Accepted duplicate rate <= 2%
-
-## Source of Truth
-
-Primary implementation contract: `V1_SPEC.md`.
-
-Supporting docs:
-1. `ARCHITECTURE.md`
-2. `SEARCH_ENGINE.md`
-3. `CITATION_EXPANSION.md`
-4. `ABSTRACT_FILTER.md`
-5. `ITERATION_PROCESS.md`
-6. `DATA_SCHEMA.md`
-7. `DEVELOPMENT_PLAN.md`
+Current product includes:
+1. Discovery across research/web sources with citation expansion and deduplication.
+2. AI-first relevance decisioning with human review override.
+3. Document acquisition (PDF-first, HTML fallback) with manual recovery tools.
+4. Full-text parse/chunk processing and search.
+5. Task-first HMI workflow for operators.
+6. Direct Review -> Documents transition (no manual "send to documents" step).
 
 ## Quick Start
 
@@ -61,5 +38,59 @@ pip install -e .[dev]
 uvicorn knowledge_miner.main:app --reload
 ```
 
-Use header:
-- `Authorization: Bearer dev-token`
+Open:
+1. API docs: `http://127.0.0.1:8000/docs`
+2. HMI: `http://127.0.0.1:8000/hmi`
+
+## Repository Documentation Layout
+
+Source of truth docs:
+1. `README.md` - entry point
+2. `CURRENT_SCOPE.md` - what exists now, scope boundaries, near-term direction
+3. `ARCHITECTURE.md` - system components, data flow, runtime boundaries
+4. `UI_SPEC.md` - canonical user workflow and HMI behavior contract (Build/Review/Documents/Library/Advanced)
+5. `PIPELINE_RULES.md` - discovery/decision/iteration rules
+6. `DATA_SCHEMA.md` - data model and constraints
+7. `BACKLOG.md` - active implementation tasks
+8. `AGENTS.md` - contributor/AI operating rules
+
+Archived legacy docs are in `archive/`.
+UI navigation/source-of-truth model is defined only in `UI_SPEC.md`; archived UI docs are explicitly deprecated.
+Imported UX source (`Downloads/Knowledge_Miner_GUI_Spec.docx`) is reflected in `UI_SPEC.md` and tracked via `BACKLOG.md` Phase 4.3 tasks.
+
+## Runtime Modes
+
+Auth modes:
+1. Local/internal default: `AUTH_ENABLED=false` (no token required).
+2. Secured mode: `AUTH_ENABLED=true` and `Authorization: Bearer <API_TOKEN>`.
+
+AI filtering:
+1. AI-first policy is runtime-configurable via API/HMI settings.
+2. If AI is unavailable, candidates route to `needs_review`.
+
+## Real Provider Search
+
+To use real providers instead of mock connectors:
+
+```bash
+cp .env.example .env
+# set USE_MOCK_CONNECTORS=false and provider keys
+set -a
+source .env
+set +a
+```
+
+Typical settings:
+1. `USE_MOCK_CONNECTORS=false`
+2. `BRAVE_API_KEY=<key>`
+3. `SEMANTIC_SCHOLAR_API_KEY=<key>` (optional but recommended)
+
+## Logs and Runtime State
+
+1. Persistent logs default to `./logs/knowledge_miner.log`.
+2. Runtime lock files are stored under `./runtime/`.
+3. Artifacts are stored under `./artifacts/`.
+
+## Current Priorities
+
+Use `BACKLOG.md` for authoritative task priority and execution status.

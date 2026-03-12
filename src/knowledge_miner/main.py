@@ -13,7 +13,7 @@ from contextlib import suppress
 from uuid import uuid4
 from urllib.parse import urlparse
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
@@ -55,6 +55,8 @@ from .schemas import (
     ManualUploadRequest,
     ManualUploadResponse,
     ManualCompleteRequest,
+    BatchUploadResponse,
+    BatchUploadMatchOut,
     DocumentChunksListResponse,
     DocumentChunkOut,
     ParsedDocumentOut,
@@ -240,6 +242,40 @@ def _sanitize_hmi_value_preview(value: str | None) -> str | None:
     if len(trimmed) > 120:
         return f"{trimmed[:120]}..."
     return trimmed
+
+
+def _iso_or_none(value) -> str | None:
+    if value is None:
+        return None
+    try:
+        return value.isoformat()
+    except Exception:
+        return None
+
+
+def _stage_status(status: str) -> str:
+    normalized = (status or "").strip().lower()
+    if normalized == "queued":
+        return "queued"
+    if normalized == "running":
+        return "running"
+    if normalized == "completed":
+        return "completed"
+    if normalized == "failed":
+        return "failed"
+    return "idle"
+
+
+def _extract_doi(text: str) -> str | None:
+    match = re.search(r"(10\.\d{4,9}/[-._;()/:a-z0-9]+)", text.lower())
+    if not match:
+        return None
+    return match.group(1).rstrip(").,;")
+
+
+def _title_tokens(value: str) -> set[str]:
+    parts = re.split(r"[^a-z0-9]+", value.lower())
+    return {part for part in parts if len(part) >= 3}
 
 
 @app.get("/v1/system/status", response_model=SystemStatusResponse)
@@ -645,6 +681,25 @@ def get_run_status(
     if run is None:
         logger.warning("run_not_found %s", _not_found_diagnostics(db, run_id=run_id))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    pending_review = db.scalar(
+        select(func.count()).select_from(Source).where(Source.run_id == run_id, Source.review_status == "needs_review")
+    ) or 0
+    stage_status = _stage_status(run.status)
+    if stage_status == "completed" and pending_review > 0:
+        stage_status = "waiting_user"
+    total_steps = max(int(run.max_iterations or 0), 1)
+    completed_steps = min(int(run.current_iteration or 0), total_steps)
+    percent = round((completed_steps / total_steps) * 100.0, 1) if total_steps > 0 else None
+    if stage_status == "queued":
+        message = "Queued to start source discovery."
+    elif stage_status == "running":
+        message = "Searching sources and evaluating relevance."
+    elif stage_status == "waiting_user":
+        message = "Waiting for review decisions."
+    elif stage_status == "failed":
+        message = run.error_message or "Discovery failed."
+    else:
+        message = "Discovery completed."
     ai_filter_effective_enabled = bool(run.ai_filter_active and settings.ai_api_key)
     return RunStatusResponse(
         run_id=run.id,
@@ -659,6 +714,14 @@ def get_run_status(
         ai_filter_effective_enabled=ai_filter_effective_enabled,
         ai_filter_config_source="run",
         new_accept_rate=float(run.new_accept_rate) if run.new_accept_rate is not None else None,
+        current_stage="discovery",
+        stage_status=stage_status,
+        completed=completed_steps,
+        total=total_steps,
+        percent=percent,
+        message=message,
+        started_at=_iso_or_none(run.created_at),
+        updated_at=_iso_or_none(run.updated_at),
     )
 
 
@@ -803,6 +866,19 @@ def get_acq_run_status(
     run = db.get(AcquisitionRun, acq_run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    total = max(int(run.total_sources or 0), 1)
+    completed = int((run.downloaded_total or 0) + (run.partial_total or 0) + (run.failed_total or 0) + (run.skipped_total or 0))
+    completed = min(completed, total)
+    percent = round((completed / total) * 100.0, 1) if total > 0 else None
+    stage_status = _stage_status(run.status)
+    if stage_status == "queued":
+        message = "Queued to process approved documents."
+    elif stage_status == "running":
+        message = "Processing approved documents and retrieving files."
+    elif stage_status == "failed":
+        message = run.error_message or "Acquisition failed."
+    else:
+        message = "Acquisition completed."
     return AcquisitionRunStatusResponse(
         acq_run_id=run.id,
         discovery_run_id=run.discovery_run_id,
@@ -814,6 +890,14 @@ def get_acq_run_status(
         failed_total=run.failed_total,
         skipped_total=run.skipped_total,
         error_message=run.error_message,
+        current_stage="acquisition",
+        stage_status=stage_status,
+        completed=completed,
+        total=total,
+        percent=percent,
+        message=message,
+        started_at=_iso_or_none(run.created_at),
+        updated_at=_iso_or_none(run.updated_at),
     )
 
 
@@ -998,6 +1082,125 @@ def manual_complete_registration(
     }
 
 
+@app.post("/v1/acquisition/runs/{acq_run_id}/manual-upload-batch", response_model=BatchUploadResponse)
+def manual_upload_batch(
+    acq_run_id: str,
+    files: list[UploadFile] = File(...),
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> BatchUploadResponse:
+    run = db.get(AcquisitionRun, acq_run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    rows = db.execute(
+        select(AcquisitionItem, Source)
+        .join(Source, Source.id == AcquisitionItem.source_id)
+        .where(AcquisitionItem.acq_run_id == acq_run_id, AcquisitionItem.status != "downloaded")
+    ).all()
+    candidates = [
+        {
+            "source_id": source.id,
+            "title": source.title or "",
+            "doi": (source.doi or "").lower().strip(),
+            "tokens": _title_tokens(source.title or ""),
+        }
+        for item, source in rows
+    ]
+    items: list[BatchUploadMatchOut] = []
+    matched = 0
+    unmatched = 0
+    ambiguous = 0
+
+    for upload in files:
+        filename = upload.filename or "unknown"
+        content = upload.file.read()
+        checksum = hashlib.sha256(content).hexdigest() if content else ""
+        existing = (
+            db.scalars(select(Artifact.id).where(Artifact.acq_run_id == acq_run_id, Artifact.checksum_sha256 == checksum).limit(1)).first()
+            if checksum
+            else None
+        )
+        if existing:
+            items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason="duplicate_checksum"))
+            unmatched += 1
+            continue
+
+        preview = content[:4096].decode("latin-1", errors="ignore").lower() if content else ""
+        doi = _extract_doi(f"{filename} {preview}") or ""
+        if doi:
+            doi_hits = [row for row in candidates if row["doi"] and row["doi"] == doi]
+            if len(doi_hits) == 1:
+                target = doi_hits[0]
+                try:
+                    register_manual_upload(
+                        db,
+                        acq_run_id=acq_run_id,
+                        source_id=target["source_id"],
+                        filename=filename,
+                        content_type=upload.content_type,
+                        content=content,
+                    )
+                    items.append(BatchUploadMatchOut(filename=filename, status="matched", source_id=target["source_id"], score=1.0, reason="doi_exact"))
+                    matched += 1
+                except ValueError as exc:
+                    items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason=str(exc)))
+                    unmatched += 1
+                continue
+            if len(doi_hits) > 1:
+                items.append(BatchUploadMatchOut(filename=filename, status="ambiguous", reason="multiple_doi_matches"))
+                ambiguous += 1
+                continue
+
+        file_tokens = _title_tokens(Path(filename).stem)
+        scored: list[tuple[float, dict]] = []
+        for candidate in candidates:
+            if not file_tokens or not candidate["tokens"]:
+                continue
+            overlap = len(file_tokens & candidate["tokens"])
+            if overlap == 0:
+                continue
+            denom = max(len(file_tokens), len(candidate["tokens"]))
+            score = overlap / denom
+            if score >= 0.5:
+                scored.append((score, candidate))
+        scored.sort(key=lambda row: row[0], reverse=True)
+        if not scored:
+            items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason="no_match"))
+            unmatched += 1
+            continue
+        if len(scored) > 1 and abs(scored[0][0] - scored[1][0]) < 0.1:
+            items.append(BatchUploadMatchOut(filename=filename, status="ambiguous", reason="title_match_conflict"))
+            ambiguous += 1
+            continue
+
+        best_score, best = scored[0]
+        try:
+            register_manual_upload(
+                db,
+                acq_run_id=acq_run_id,
+                source_id=best["source_id"],
+                filename=filename,
+                content_type=upload.content_type,
+                content=content,
+            )
+            items.append(
+                BatchUploadMatchOut(
+                    filename=filename,
+                    status="matched",
+                    source_id=best["source_id"],
+                    score=round(float(best_score), 3),
+                    reason="title_similarity",
+                )
+            )
+            matched += 1
+        except ValueError as exc:
+            items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason=str(exc)))
+            unmatched += 1
+
+    return BatchUploadResponse(acq_run_id=acq_run_id, matched=matched, unmatched=unmatched, ambiguous=ambiguous, items=items)
+
+
 @app.get("/v1/acquisition/artifacts/{artifact_id}", response_model=ArtifactOut)
 def get_artifact(
     artifact_id: str,
@@ -1063,6 +1266,19 @@ def get_parse_status(
     run = db.get(ParseRun, parse_run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    total = max(int(run.total_documents or 0), 1)
+    completed = int((run.parsed_total or 0) + (run.failed_total or 0))
+    completed = min(completed, total)
+    percent = round((completed / total) * 100.0, 1) if total > 0 else None
+    stage_status = _stage_status(run.status)
+    if stage_status == "queued":
+        message = "Queued to parse documents."
+    elif stage_status == "running":
+        message = "Parsing and chunking documents."
+    elif stage_status == "failed":
+        message = run.error_message or "Parse failed."
+    else:
+        message = "Parse completed."
     return ParseRunStatusResponse(
         parse_run_id=run.id,
         acq_run_id=run.acq_run_id,
@@ -1075,6 +1291,14 @@ def get_parse_status(
         failed_total=run.failed_total,
         chunked_total=run.chunked_total,
         error_message=run.error_message,
+        current_stage="parse",
+        stage_status=stage_status,
+        completed=completed,
+        total=total,
+        percent=percent,
+        message=message,
+        started_at=_iso_or_none(run.created_at),
+        updated_at=_iso_or_none(run.updated_at),
     )
 
 

@@ -185,6 +185,14 @@ def test_acquisition_status_items_manifest_endpoints(monkeypatch):
     status_body = status_resp.json()
     assert status_body["acq_run_id"] == acq_run_id
     assert status_body["discovery_run_id"] == run_id
+    assert status_body["current_stage"] == "acquisition"
+    assert status_body["stage_status"] in {"queued", "running", "completed", "failed"}
+    assert status_body["completed"] >= 0
+    assert status_body["total"] >= 1
+    assert 0 <= status_body["percent"] <= 100
+    assert status_body["message"]
+    assert status_body["started_at"] is not None
+    assert status_body["updated_at"] is not None
 
     items_resp = client.get(f"/v1/acquisition/runs/{acq_run_id}/items", headers=_auth_headers())
     assert items_resp.status_code == 200
@@ -381,3 +389,28 @@ def test_manual_complete_endpoint_persists_item_state():
     items = client.get(f"/v1/acquisition/runs/{acq_run_id}/items", headers=_auth_headers())
     assert items.status_code == 200
     assert items.json()["items"][0]["status"] == "skipped"
+
+
+def test_manual_upload_batch_auto_matches_by_doi(tmp_path: Path):
+    acq_run_id, source_id = _seed_manual_recovery_case()
+    original_artifacts_dir = settings.artifacts_dir
+    object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+    try:
+        client = TestClient(app)
+        files = [
+            ("files", ("matched.pdf", b"%PDF-1.4 DOI 10.1000/test-acq", "application/pdf")),
+            ("files", ("unknown.pdf", b"%PDF-1.4 no match token", "application/pdf")),
+        ]
+        resp = client.post(
+            f"/v1/acquisition/runs/{acq_run_id}/manual-upload-batch",
+            files=files,
+            headers=_auth_headers(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["matched"] == 1
+        assert body["unmatched"] == 1
+        assert body["ambiguous"] == 0
+        assert any(row["source_id"] == source_id and row["status"] == "matched" for row in body["items"])
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)

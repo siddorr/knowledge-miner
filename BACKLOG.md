@@ -2,6 +2,7 @@
 
 Status:
 - Updated on 2026-03-11: Phase 4.2 task-first HMI rebuild checklist is complete; next priorities are post-HMI hardening and deployment readiness.
+- Updated on 2026-03-12: P0/P1 UX backlog items #11-#15 are implemented and verified in API/HMI/tests.
 
 ## High Priority
 
@@ -206,17 +207,33 @@ Status:
 
 11. [x] P0 - Remove manual send step: approved documents should be processed directly
 - Goal: operator should not need `Send ... to Documents`; approved sources should be immediately processable by acquisition.
+- Current gap:
+  - Runtime/HMI still exposes `Send Selected Accepted to Documents` and `Acquire Pending` as a two-step flow.
 - Tasks:
-  - Remove dependency on manual transfer action between Review and Documents.
-  - Make acquisition consume approved sources directly from run context (all approved or explicitly selected scope).
-  - Update Review UI action labels/workflow to reflect direct processing.
-  - Ensure Documents queue is populated from approved sources without extra sync button.
+  - Replace review send action with one primary action: `Download Documents` / `Process Approved Docs`.
+  - On click, start acquisition directly from active discovery `run_id` using current accepted snapshot:
+    - API call: `POST /v1/acquisition/runs` with `run_id`, `retry_failed_only=false`
+    - no `selected_source_ids` required for default operator path.
+  - Keep optional selected-only mode behind secondary action (advanced) if needed, but remove it from default UX path.
+  - Remove/retire `reviewBatchSendDocsBtn` from standard flow.
+  - Rename `Acquire Pending` to `Process Approved Docs` and make semantics explicit:
+    - processes all currently accepted sources in active run.
+  - Auto-route user to Documents after action start and auto-bind latest `acq_run_id`.
+  - Add operator-facing confirmation text:
+    - `Started download for N accepted sources`.
+  - Ensure Documents queue auto-loads for new acquisition run without extra manual sync.
+  - Preserve telemetry and add new events:
+    - `action:process_approved_docs:start|success|error`
+    - include `run_id`, `acq_run_id`, `accepted_count`.
   - Update docs (`UI_SPEC.md`, `CURRENT_SCOPE.md`, `README.md`) to reflect simplified flow.
 - Tests:
-  - integration test: approve source -> acquisition item becomes available without manual send action.
-  - UI test: operator can proceed from approval to acquisition in one clear step.
+  - integration test: approve source -> one click starts acquisition run and creates acquisition items.
+  - UI test: no `Send ... to Documents` button in default flow.
+  - UI test: `Process Approved Docs` starts run for all accepted sources in active run.
+  - regression test: existing retry-failed flow still works.
+  - telemetry test: `process_approved_docs` events emitted with run/acq IDs.
 
-12. [ ] P1 - Batch PDF upload with auto-scan and auto-match to required documents
+12. [x] P1 - Batch PDF upload with auto-scan and auto-match to required documents
 - Goal: operator can upload a folder/batch of PDFs once; app scans files and automatically picks documents needed by current acquisition queue.
 - Tasks:
   - Add batch upload endpoint (multiple files) for acquisition/manual recovery.
@@ -237,7 +254,7 @@ Status:
   - unit tests for DOI/title-based matching and ambiguity handling.
   - regression test for existing single-file upload behavior.
 
-13. [ ] P0 - Simplify Documents pane actions for end users
+13. [x] P0 - Simplify Documents pane actions for end users
 - Goal: reduce operator confusion by keeping only essential actions in Documents pane; move technical controls out of default flow.
 - Tasks:
   - Keep minimal primary actions in Documents:
@@ -259,7 +276,7 @@ Status:
   - UI regression test: minimal action set visible in Documents default view.
   - usability smoke test: approve -> acquire -> resolve issue path with no extra technical steps.
 
-14. [ ] P0 - Make app "thinking/progress" state obvious to operator
+14. [x] P0 - Make app "thinking/progress" state obvious to operator
 - Goal: user must immediately understand whether the app is working, how far it is, and what to do next.
 - Tasks:
   - Define and expose canonical run states: `idle`, `queued`, `running`, `waiting_user`, `completed`, `failed`.
@@ -284,7 +301,7 @@ Status:
   - API integration test: progress fields update monotonically through run stages.
   - UX acceptance check: first-time user can answer "is it working?" and "how far is it?" without reading docs.
 
-15. [ ] P1 - Add `Select All / Deselect All` to checkbox-based HMI lists
+15. [x] P1 - Add `Select All / Deselect All` to checkbox-based HMI lists
 - Goal: operator can quickly manage bulk selection without clicking each row manually.
 - Scope:
   - Review table (`Accept/Reject` batch workflow)

@@ -118,6 +118,14 @@ def test_parse_endpoints_basic(monkeypatch, tmp_path):
     assert status.json()["status"] == "completed"
     assert status.json()["ai_filter_active"] is False
     assert status.json()["ai_filter_warning"] is not None
+    assert status.json()["current_stage"] == "parse"
+    assert status.json()["stage_status"] in {"queued", "running", "completed", "failed"}
+    assert status.json()["completed"] >= 0
+    assert status.json()["total"] >= 1
+    assert 0 <= status.json()["percent"] <= 100
+    assert status.json()["message"]
+    assert status.json()["started_at"] is not None
+    assert status.json()["updated_at"] is not None
 
     docs = client.get(f"/v1/parse/runs/{parse_run_id}/documents", headers=_auth_headers())
     assert docs.status_code == 200

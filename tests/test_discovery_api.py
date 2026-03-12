@@ -124,6 +124,14 @@ def test_discovery_run_status_includes_seed_queries():
     assert body["seed_queries"] == ["upw", "semiconductor"]
     assert "ai_filter_effective_enabled" in body
     assert body["ai_filter_config_source"] == "run"
+    assert body["current_stage"] == "discovery"
+    assert body["stage_status"] in {"completed", "waiting_user"}
+    assert body["completed"] >= 0
+    assert body["total"] >= 1
+    assert 0 <= body["percent"] <= 100
+    assert body["message"]
+    assert body["started_at"] is not None
+    assert body["updated_at"] is not None
 
 
 def test_discovery_sources_status_filter():

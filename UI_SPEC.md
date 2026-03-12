@@ -64,12 +64,11 @@ Must include:
 1. Acquisition queue with `Awaiting`, `Acquired`, `Failed`, `Manual Recovery`.
 2. Queue can be populated directly from approved review sources before acquisition run creation.
 3. Primary action label: `Process Approved Docs`.
-4. Actions per row:
-- `Retry`
-- `Upload PDF`
-- `Open source`
-5. Batch copy for selected DOI/URL.
-6. CSV export and manual upload workflow.
+4. Secondary visible action: `View Issues`.
+5. Batch upload action: `Upload PDF Batch` with match result summary (`matched/unmatched/ambiguous`).
+6. Actions per row: one recommended next step based on status (`Upload PDF`, `Manual Complete`, `Acquired`, `Awaiting processing`) and optional `Open source`.
+7. `Select All` / `Deselect All` controls for checkbox rows.
+8. Technical actions (`Retry Failed`, `Copy Selected DOI/URL`, `Export CSV`) are hidden under `More`.
 
 ## Library
 
@@ -103,6 +102,8 @@ Contains:
 6. HMI emits fire-and-forget telemetry events for click/change/input/submit/navigate actions.
 7. Telemetry never blocks user actions and redacts sensitive values by default.
 8. Copy buttons are required for DOI/title/URL/citation/query/error and selected DOI/URL sets.
+9. Status freshness text (`Last update`) and progress bars are visible during long-running operations.
+10. Run state is exposed with canonical values: `idle`, `queued`, `running`, `waiting_user`, `completed`, `failed`.
 
 ## State and Status Presentation
 

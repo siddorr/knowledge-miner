@@ -6,9 +6,10 @@ Current product includes:
 1. Discovery across research/web sources with citation expansion and deduplication.
 2. AI-first relevance decisioning with human review override.
 3. Document acquisition (PDF-first, HTML fallback) with manual recovery tools.
-4. Full-text parse/chunk processing and search.
-5. Task-first HMI workflow for operators.
-6. Direct Review -> Documents transition (no manual "send to documents" step).
+4. Batch PDF upload with auto-match to pending acquisition items.
+5. Full-text parse/chunk processing and search.
+6. Task-first HMI workflow for operators with visible progress/freshness state.
+7. Direct Review -> Documents transition (no manual "send to documents" step).
 
 ## Quick Start
 
