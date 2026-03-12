@@ -13,6 +13,8 @@ Knowledge Miner is an end-to-end UPW literature workflow for semiconductor manuf
 6. Task-first HMI (`Build -> Review -> Documents -> Library`) with `Advanced` technical controls.
 7. Documents UX simplification (`Process Approved Docs`, `View Issues`, `Upload PDF Batch`) plus `Select All/Deselect All`.
 8. Canonical progress contract in run status APIs (`current_stage`, `stage_status`, `completed/total`, `percent`, freshness cues in HMI).
+9. Discovery execution is operator-driven and single-step (`one trigger = one iteration`).
+10. Pagination controls appear only when a list has multiple pages.
 
 ## In Scope
 

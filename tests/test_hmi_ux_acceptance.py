@@ -111,8 +111,11 @@ def test_hmi_first_time_flow_labels_and_no_required_manual_ids():
     assert response.status_code == 200
     body = response.text
     assert "First-time-user flow: Build -> Review -> Documents -> Library." in body
-    assert "Run Discovery" in body
+    assert "Run One Iteration" in body
+    assert "Run Next Citation Iteration" in body
+    assert "Search New Keywords" in body
     assert "Load Review Queue" in body
     assert "View Issues" in body
     assert "Library" in body
     assert "Technical details" in body
+    assert "Max iterations" not in body

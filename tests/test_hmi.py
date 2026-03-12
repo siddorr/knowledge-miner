@@ -45,6 +45,8 @@ def test_hmi_shell_route_and_navigation():
     assert "Advanced" in body
     assert "reviewNavBadge" in body
     assert "documentsNavBadge" in body
+    assert "reviewPaginationRow" in body
+    assert "documentsPaginationRow" in body
     assert "UPW Knowledge Miner" in body
     assert "inProgressBanner" in body
     assert "inProgressState" in body
@@ -54,7 +56,9 @@ def test_hmi_shell_route_and_navigation():
     assert "statusNextActionBtn" in body
     assert "useLatestRunBtn" in body
     assert "/hmi/static/hmi.js" in body
-    assert "Run Discovery" in body
+    assert "Run One Iteration" in body
+    assert "Run Next Citation Iteration" in body
+    assert "Search New Keywords" in body
     assert "Load Review Queue" in body
     assert "Start Acquisition" in body
     assert "Start Parse" in body
@@ -65,6 +69,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Context:" in body
     assert "__KM_HMI_DEFAULT_TOKEN__" in body
     assert "__KM_HMI_LAUNCH_SECTION__" in body
+    assert "Max iterations" not in body
     assert "View Issues" in body
     assert "Upload PDF Batch" in body
     assert "statusProgressBar" in body
@@ -144,6 +149,8 @@ def test_hmi_static_js_served():
     assert "documentsAcquirePending" in body
     assert "documentsRetryFailed" in body
     assert "documentsCopySelected" in body
+    assert "paginationState" in body
+    assert "applyPaginationControls" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

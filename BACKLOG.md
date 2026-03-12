@@ -3,6 +3,7 @@
 Status:
 - Updated on 2026-03-11: Phase 4.2 task-first HMI rebuild checklist is complete; next priorities are post-HMI hardening and deployment readiness.
 - Updated on 2026-03-12: P0/P1 UX backlog items #11-#15 are implemented and verified in API/HMI/tests.
+- Updated on 2026-03-12: Discovery iteration control (#16) and conditional pagination behavior (#17) are implemented.
 
 ## High Priority
 
@@ -316,6 +317,78 @@ Status:
   - UI test: `Select All` checks all visible rows and enables batch actions.
   - UI test: `Deselect All` clears all visible rows and disables selection-dependent actions.
   - UI regression test: selection behavior remains correct after `Prev/Next` and filter changes.
+
+16. [x] P0 - Make discovery iterations fully operator-driven (single-step execution)
+- Goal: execute one discovery iteration per user action and require explicit user request for each next step.
+- Required behavior:
+  - `Run Discovery` performs exactly one iteration.
+  - No automatic loop via `max_iterations`.
+  - Next citation-based expansion runs only when user explicitly requests it.
+  - User can run new keyword search at any moment in workflow.
+- Tasks:
+  - Remove `Max iterations` from default HMI flow.
+  - Add explicit controls:
+    - `Run One Iteration`
+    - `Run Next Citation Iteration`
+    - `Search New Keywords`
+  - Update discovery execution contract to honor single-iteration execution only.
+  - Preserve run lineage/history between manual iterations.
+  - Ensure citations-based next iteration uses current approved corpus as input.
+  - Update docs (`UI_SPEC.md`, `CURRENT_SCOPE.md`, `README.md`) to reflect manual iteration control.
+- Tests:
+  - integration test: one trigger -> one iteration executed.
+  - UI test: no `Max iterations` control in default flow.
+  - integration test: citation iteration does not run until explicit user action.
+  - UI test: keyword search can be launched at any time (Build/Review/Documents context).
+
+17. [x] P1 - Show pagination controls only when needed
+- Goal: reduce UI noise and confusion by showing `Prev/Next` only when pagination is applicable.
+- Required behavior:
+  - If queue/list is empty, hide or disable `Prev` and `Next`.
+  - If total results fit on one page, hide or disable `Prev` and `Next`.
+  - `Prev` disabled on first page; `Next` disabled on last page.
+- Scope:
+  - Review queue pagination
+  - Documents queue pagination
+  - Any additional paged tables in HMI
+- Tasks:
+  - Add reusable pagination-state helper (`has_items`, `has_prev`, `has_next`, `is_single_page`).
+  - Bind button visibility/disabled state to computed pagination state after each load/filter change.
+  - Add clear empty-state text when no rows are available.
+- Tests:
+  - UI test: empty queue -> no active pagination actions.
+  - UI test: single-page queue -> `Prev/Next` not actionable.
+  - UI test: multi-page queue -> correct button state on first/middle/last page.
+
+18. [ ] P2 - Clarify auth status wording in HMI status strip
+- Goal: use explicit auth wording for operators.
+- Required change:
+  - Replace status token `disabled` with `Auth: No` when app auth is off.
+  - When auth is enabled, show `Auth: Yes`.
+- Tests:
+  - UI test: auth disabled mode shows `Auth: No`.
+  - UI test: auth enabled mode shows `Auth: Yes`.
+
+19. [ ] P1 - Replace fixed 5s polling with on-change refresh model
+- Goal: refresh UI only when something changed, not on constant interval.
+- Preferred solution:
+  - Add server-driven updates (SSE/WebSocket) for run/status/queue changes.
+- Fallback solution:
+  - Hybrid mode: no polling when idle, slower polling only while run is active, immediate refresh after user actions.
+- Scope:
+  - Build/Review/Documents status strip
+  - Run progress and queue tables
+  - latest IDs and counters
+- Tasks:
+  - Define backend event types (`run_started`, `run_progress`, `run_completed`, `queue_updated`, `error`).
+  - Implement subscription endpoint and reconnect strategy.
+  - Update HMI to consume push events and refresh only impacted sections.
+  - Keep bounded fallback polling for environments where push channel is unavailable.
+  - Add clear connection indicator (`Live updates: connected/disconnected`).
+- Tests:
+  - integration test: status/table updates after emitted backend event without interval polling.
+  - UI test: idle state does not issue periodic refresh requests.
+  - UI test: fallback polling activates only during active runs or disconnected push channel.
 
 ## Must-Fix (Spec Compliance)
 

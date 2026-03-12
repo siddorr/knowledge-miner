@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 import knowledge_miner.main as main_module
 from knowledge_miner.config import settings
@@ -132,6 +133,49 @@ def test_discovery_run_status_includes_seed_queries():
     assert body["message"]
     assert body["started_at"] is not None
     assert body["updated_at"] is not None
+
+
+def test_create_discovery_run_forces_single_iteration_contract(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
+    client = TestClient(app)
+    response = client.post(
+        "/v1/discovery/runs",
+        json={"seed_queries": ["upw"], "max_iterations": 6},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+    with SessionLocal() as db:
+        run = db.get(Run, run_id)
+        assert run is not None
+        assert run.max_iterations == 1
+
+
+def test_citation_iteration_runs_only_when_explicitly_requested(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
+    run_id = _seed_run_with_sources()
+    client = TestClient(app)
+
+    with SessionLocal() as db:
+        before = db.scalar(select(func.count()).select_from(Run)) or 0
+    assert before == 1
+
+    create_next = client.post(
+        f"/v1/discovery/runs/{run_id}/next-citation-iteration",
+        json={},
+        headers=_auth_headers(),
+    )
+    assert create_next.status_code == 202
+    next_run_id = create_next.json()["run_id"]
+    assert next_run_id != run_id
+
+    with SessionLocal() as db:
+        after = db.scalar(select(func.count()).select_from(Run)) or 0
+        next_run = db.get(Run, next_run_id)
+        assert next_run is not None
+        assert next_run.max_iterations == 1
+        assert next_run.seed_queries
+    assert after == 2
 
 
 def test_discovery_sources_status_filter():

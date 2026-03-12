@@ -10,6 +10,10 @@ class RunCreateRequest(BaseModel):
     ai_filter_enabled: bool | None = None
 
 
+class CitationIterationRequest(BaseModel):
+    ai_filter_enabled: bool | None = None
+
+
 class RunCreateResponse(BaseModel):
     run_id: str
     status: str

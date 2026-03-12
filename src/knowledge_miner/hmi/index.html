@@ -42,6 +42,13 @@
     <span>Last run: <span id="statusLastRun">none</span></span>
     <button id="useLatestRunBtn" type="button">Use Latest</button>
     <button id="statusNextActionBtn" type="button">Next Action</button>
+    <form id="quickKeywordForm" class="row compact">
+      <label>
+        Search New Keywords
+        <input id="quickKeywordInput" type="text" placeholder="upw membrane fouling, semiconductor rinsing">
+      </label>
+      <button id="quickKeywordSearchBtn" type="submit">Search New Keywords</button>
+    </form>
   </section>
 
   <main class="stack">
@@ -119,17 +126,6 @@
                 <input id="startDiscoverySeeds" type="text" placeholder="upw, semiconductor, toc" required>
               </label>
               <label>
-                Max iterations
-                <select id="startDiscoveryMaxIterations">
-                  <option value="1">1</option>
-                  <option value="2">2</option>
-                  <option value="3">3</option>
-                  <option value="4">4</option>
-                  <option value="5">5</option>
-                  <option value="6" selected>6</option>
-                </select>
-              </label>
-              <label>
                 AI Filter
                 <select id="startDiscoveryAiMode">
                   <option value="default" selected>default</option>
@@ -137,7 +133,8 @@
                   <option value="off">off</option>
                 </select>
               </label>
-              <button id="createSessionBtn" type="submit">Run Discovery</button>
+              <button id="createSessionBtn" type="submit">Run One Iteration</button>
+              <button id="runNextCitationBtn" type="button">Run Next Citation Iteration</button>
             </form>
             <p id="dashboardState" class="muted"></p>
             <div class="table-wrap">
@@ -233,7 +230,7 @@
         <button id="reviewSelectAllBtn" type="button">Select All</button>
         <button id="reviewDeselectAllBtn" type="button">Deselect All</button>
       </div>
-      <div class="row compact">
+      <div id="reviewPaginationRow" class="row compact">
         <button id="reviewPrev" type="button">Prev</button>
         <button id="reviewNext" type="button">Next</button>
         <span id="reviewPage" class="muted">offset=0</span>
@@ -304,7 +301,7 @@
         <button id="batchUploadSubmitBtn" type="submit">Start Batch Upload</button>
       </form>
       <pre id="batchUploadResults" class="metrics">No batch upload yet.</pre>
-      <div class="row compact">
+      <div id="documentsPaginationRow" class="row compact">
         <button id="documentsPrev" type="button">Prev</button>
         <button id="documentsNext" type="button">Next</button>
         <span id="documentsPage" class="muted">offset=0</span>

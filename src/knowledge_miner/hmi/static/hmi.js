@@ -28,9 +28,10 @@ const state = {
       },
     },
   },
-  review: { offset: 0, loaded: false, expanded: new Set(), selected: new Set(), items: [] },
+  review: { offset: 0, total: 0, loaded: false, expanded: new Set(), selected: new Set(), items: [] },
   documents: {
     offset: 0,
+    total: 0,
     loaded: false,
     selectedSourceId: "",
     selected: new Set(),
@@ -477,6 +478,31 @@ function renderTable(tbodyId, rows, cols) {
   tbody.innerHTML = rows.join("");
 }
 
+function paginationState(total, offset, limit) {
+  const safeTotal = Math.max(0, Number(total || 0));
+  const safeLimit = Math.max(1, Number(limit || 1));
+  const safeOffset = Math.max(0, Number(offset || 0));
+  const hasItems = safeTotal > 0;
+  const hasPrev = hasItems && safeOffset > 0;
+  const hasNext = hasItems && safeOffset + safeLimit < safeTotal;
+  return {
+    has_items: hasItems,
+    has_prev: hasPrev,
+    has_next: hasNext,
+    is_single_page: !hasItems || safeTotal <= safeLimit,
+  };
+}
+
+function applyPaginationControls(prefix, total, offset, limit) {
+  const status = paginationState(total, offset, limit);
+  const row = el(`${prefix}PaginationRow`);
+  const prev = el(`${prefix}Prev`);
+  const next = el(`${prefix}Next`);
+  if (row) row.hidden = status.is_single_page;
+  if (prev) prev.disabled = !status.has_prev;
+  if (next) next.disabled = !status.has_next;
+}
+
 function updateReviewSelectionControls() {
   const hasRows = state.review.items.length > 0;
   setButtonBusy("reviewSelectAllBtn", !hasRows);
@@ -870,7 +896,9 @@ async function loadReview() {
   const runId = getDiscoveryRunId();
   if (!runId) {
     setText("reviewState", "No active runs found. Start from Build -> Run Discovery.");
+    state.review.total = 0;
     renderTable("reviewRows", [], 5);
+    applyPaginationControls("review", 0, state.review.offset, Number(el("reviewLimit").value));
     return true;
   }
   const queueFilter = el("reviewStatusFilter").value;
@@ -885,15 +913,24 @@ async function loadReview() {
   } catch (err) {
     if (String(err.message || "").includes("run_not_found")) {
       resetStaleRunContext("review_not_found");
+      state.review.total = 0;
       renderTable("reviewRows", [], 5);
+      applyPaginationControls("review", 0, state.review.offset, limit);
       return true;
     }
     throw err;
   }
   const items = pageRaw.items || [];
+  const total = Number(pageRaw.total || 0);
+  if (total > 0 && offset >= total) {
+    state.review.offset = Math.max(0, Math.floor((total - 1) / limit) * limit);
+    return loadReview();
+  }
   state.review.items = items;
+  state.review.total = total;
   setLatestId("discovery", runId);
-  setText("reviewPage", `offset=${offset}, limit=${limit}, total=${items.length}`);
+  setText("reviewPage", `offset=${state.review.offset}, limit=${limit}, total=${total}`);
+  applyPaginationControls("review", total, state.review.offset, limit);
   try {
     const run = await apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
     if (!items.length && (run.status === "queued" || run.status === "running")) {
@@ -932,8 +969,10 @@ async function loadDocuments() {
     state.documents.discoveryRunId = discoveryRunId || "";
     if (!discoveryRunId) {
       setText("documentsState", "No active runs found. Start from Build -> Run Discovery.");
+      state.documents.total = 0;
       state.documents.items = [];
       renderTable("documentsRows", [], 4);
+      applyPaginationControls("documents", 0, state.documents.offset, limit);
       updateDocumentsSelectionControls();
       return true;
     }
@@ -970,19 +1009,26 @@ async function loadDocuments() {
       if (queueFilter === "manual_recovery") return false;
       return true;
     });
-    state.documents.items = filteredApproved;
+    const total = filteredApproved.length;
+    if (total > 0 && offset >= total) {
+      state.documents.offset = Math.max(0, Math.floor((total - 1) / limit) * limit);
+    }
+    const pageRows = filteredApproved.slice(state.documents.offset, state.documents.offset + limit);
+    state.documents.total = total;
+    state.documents.items = pageRows;
     renderTable(
       "documentsRows",
-      filteredApproved.map((item) => {
+      pageRows.map((item) => {
         const checked = state.documents.selected.has(item.source_id) ? " checked" : "";
         const openUrl = item.source_url || "";
         return `<tr><td><input type="checkbox" class="documents-select" data-source-id="${escapeHtml(item.source_id)}"${checked}></td><td><button type="button" class="documents-action" data-action="select" data-source-id="${escapeHtml(item.source_id)}">${escapeHtml(item.title || "")}</button></td><td>${escapeHtml(item.problem)}</td><td>${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : "-"}</td></tr>`;
       }),
       4,
     );
-    setText("documentsPage", `offset=${offset}, limit=${limit}, total=${filteredApproved.length}`);
-    setText("documentsState", `Approved sources ready: ${filteredApproved.length}. Click Process Approved Docs.`);
-    if (!filteredApproved.length) {
+    setText("documentsPage", `offset=${state.documents.offset}, limit=${limit}, total=${total}`);
+    applyPaginationControls("documents", total, state.documents.offset, limit);
+    setText("documentsState", `Approved sources ready: ${total}. Click Process Approved Docs.`);
+    if (!total) {
       setText("documentsDetails", "No approved sources yet. Continue review decisions first.");
     }
     state.documents.loaded = true;
@@ -994,14 +1040,16 @@ async function loadDocuments() {
   let run;
   try {
     [itemsPayload, queue, run] = await Promise.all([
-      apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/items?limit=${limit}&offset=${offset}`),
-      apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads?limit=${limit}&offset=${offset}`),
+      apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/items?limit=1000&offset=0`),
+      apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads?limit=1000&offset=0`),
       apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}`),
     ]);
   } catch (err) {
     if (String(err.message || "").includes("run_not_found")) {
       resetStaleRunContext("documents_not_found");
+      state.documents.total = 0;
       renderTable("documentsRows", [], 4);
+      applyPaginationControls("documents", 0, state.documents.offset, limit);
       return true;
     }
     throw err;
@@ -1037,14 +1085,20 @@ async function loadDocuments() {
     if (queueFilter === "manual_recovery") return row.status === "failed" || row.status === "partial" || row.status === "skipped";
     return true;
   });
-  state.documents.items = filtered;
+  const total = filtered.length;
+  if (total > 0 && offset >= total) {
+    state.documents.offset = Math.max(0, Math.floor((total - 1) / limit) * limit);
+  }
+  const pageRows = filtered.slice(state.documents.offset, state.documents.offset + limit);
+  state.documents.total = total;
+  state.documents.items = pageRows;
   setLatestId("acquisition", acqRunId);
   upsertRunRow("acquisition", acqRunId, run);
   renderRunsTable();
 
   renderTable(
     "documentsRows",
-    filtered.map((item) => {
+    pageRows.map((item) => {
       const openUrl = item.selected_url || item.source_url || "";
       const checked = state.documents.selected.has(item.source_id) ? " checked" : "";
       const openLink = openUrl ? ` <a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : "";
@@ -1060,9 +1114,10 @@ async function loadDocuments() {
     }),
     4,
   );
-  setText("documentsPage", `offset=${offset}, limit=${limit}, total=${filtered.length}`);
-  setText("documentsState", `Loaded ${filtered.length} items for ${acqRunId}`);
-  if (!filtered.length) {
+  setText("documentsPage", `offset=${state.documents.offset}, limit=${limit}, total=${total}`);
+  applyPaginationControls("documents", total, state.documents.offset, limit);
+  setText("documentsState", `Loaded ${total} items for ${acqRunId}`);
+  if (!total) {
     if (run.status === "queued" || run.status === "running") {
       setText("documentsDetails", "Acquisition is still processing. Items will appear as they are resolved.");
     } else {
@@ -1335,31 +1390,81 @@ async function lookupRun(event) {
   }
 }
 
+function aiModeSelection() {
+  const aiMode = el("startDiscoveryAiMode").value;
+  return aiMode === "default" ? null : aiMode === "on";
+}
+
+async function startDiscoveryWithSeeds(seedQueries, buttonIds = ["createSessionBtn"]) {
+  const aiFilterEnabled = aiModeSelection();
+  const result = await runBusy("discovery", buttonIds, async () =>
+    apiPost("/v1/discovery/runs", {
+      seed_queries: seedQueries,
+      max_iterations: 1,
+      ai_filter_enabled: aiFilterEnabled,
+    }),
+  );
+  setLatestId("discovery", result.run_id);
+  el("discoverRunIdInput").value = result.run_id;
+  el("reviewRunIdInput").value = result.run_id;
+  state.review.offset = 0;
+  state.documents.offset = 0;
+  setText("dashboardState", "Discovery iteration started. IDs are available in Advanced.");
+  await loadDashboard();
+  await loadDiscover();
+  window.location.hash = "#review";
+}
+
 async function startDiscovery(event) {
   event.preventDefault();
   setText("dashboardError", "");
   try {
-    await runBusy("discovery", ["createSessionBtn"], async () => {
-      const raw = el("startDiscoverySeeds").value;
-      const seedQueries = raw.split(",").map((s) => s.trim()).filter(Boolean);
-      if (!seedQueries.length) throw new Error("provide at least one seed query");
-      const aiMode = el("startDiscoveryAiMode").value;
-      const aiFilterEnabled = aiMode === "default" ? null : aiMode === "on";
-      const result = await apiPost("/v1/discovery/runs", {
-        seed_queries: seedQueries,
-        max_iterations: Number(el("startDiscoveryMaxIterations").value),
-        ai_filter_enabled: aiFilterEnabled,
-      });
-      setLatestId("discovery", result.run_id);
-      el("discoverRunIdInput").value = result.run_id;
-      el("reviewRunIdInput").value = result.run_id;
-      setText("dashboardState", "Discovery run started. IDs are available in Advanced.");
-      await loadDashboard();
-      await loadDiscover();
-      window.location.hash = "#review";
-    });
+    const raw = el("startDiscoverySeeds").value;
+    const seedQueries = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!seedQueries.length) throw new Error("provide at least one seed query");
+    await startDiscoveryWithSeeds(seedQueries, ["createSessionBtn"]);
   } catch (err) {
     setText("dashboardError", `Start failed: ${err.message}`);
+  }
+}
+
+async function runNextCitationIteration() {
+  setText("dashboardError", "");
+  const runId = getDiscoveryRunId();
+  if (!runId) {
+    setText("dashboardError", "Discovery run context is required.");
+    return;
+  }
+  try {
+    const aiFilterEnabled = aiModeSelection();
+    const result = await runBusy("discovery", ["runNextCitationBtn"], async () =>
+      apiPost(`/v1/discovery/runs/${encodeURIComponent(runId)}/next-citation-iteration`, {
+        ai_filter_enabled: aiFilterEnabled,
+      }),
+    );
+    setLatestId("discovery", result.run_id);
+    el("discoverRunIdInput").value = result.run_id;
+    el("reviewRunIdInput").value = result.run_id;
+    state.review.offset = 0;
+    setText("dashboardState", "Citation iteration started.");
+    await loadDashboard();
+    await loadDiscover();
+    window.location.hash = "#review";
+  } catch (err) {
+    setText("dashboardError", `Citation iteration failed: ${err.message}`);
+  }
+}
+
+async function searchNewKeywords(event) {
+  if (event) event.preventDefault();
+  setText("dashboardError", "");
+  try {
+    const raw = el("quickKeywordInput").value || el("startDiscoverySeeds").value;
+    const seedQueries = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!seedQueries.length) throw new Error("provide at least one keyword query");
+    await startDiscoveryWithSeeds(seedQueries, ["quickKeywordSearchBtn"]);
+  } catch (err) {
+    setText("dashboardError", `Keyword search failed: ${err.message}`);
   }
 }
 
@@ -2153,6 +2258,8 @@ function initPagination() {
   });
   addListener("reviewNext", "click", async () => {
     const limit = Number(el("reviewLimit").value);
+    const page = paginationState(state.review.total, state.review.offset, limit);
+    if (!page.has_next) return;
     state.review.offset += limit;
     try {
       await loadReview();
@@ -2172,6 +2279,8 @@ function initPagination() {
   });
   addListener("documentsNext", "click", async () => {
     const limit = Number(el("documentsLimit").value);
+    const page = paginationState(state.documents.total, state.documents.offset, limit);
+    if (!page.has_next) return;
     state.documents.offset += limit;
     try {
       await loadDocuments();
@@ -2190,6 +2299,8 @@ function init() {
   updateSectionVisibility();
 
   addListener("startDiscoveryForm", "submit", startDiscovery);
+  addListener("runNextCitationBtn", "click", runNextCitationIteration);
+  addListener("quickKeywordForm", "submit", searchNewKeywords);
   addListener("newTopicBtn", "click", createNewTopic);
   addListener("buildTopicList", "click", handleBuildTopicClick);
   addListener("buildTabAddSources", "click", () => setBuildTab("add-sources"));

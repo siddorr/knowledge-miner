@@ -8,8 +8,9 @@ Current product includes:
 3. Document acquisition (PDF-first, HTML fallback) with manual recovery tools.
 4. Batch PDF upload with auto-match to pending acquisition items.
 5. Full-text parse/chunk processing and search.
-6. Task-first HMI workflow for operators with visible progress/freshness state.
-7. Direct Review -> Documents transition (no manual "send to documents" step).
+6. Operator-driven discovery iterations (`Run One Iteration`, explicit citation iteration, keyword search on demand).
+7. Task-first HMI workflow for operators with visible progress/freshness state and conditional pagination controls.
+8. Direct Review -> Documents transition (no manual "send to documents" step).
 
 ## Quick Start
 

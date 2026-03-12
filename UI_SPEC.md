@@ -40,6 +40,10 @@ Must include:
 3. Manual source addition as first-class action (DOI/URL/citation/bulk).
 4. Query management and run history.
 5. Details panel for selected topic/run.
+6. Discovery controls:
+- `Run One Iteration` (single-step execution)
+- `Run Next Citation Iteration` (explicit, not automatic)
+- `Search New Keywords` (available globally in shell, usable from any workflow stage)
 
 ## Review
 
@@ -104,6 +108,7 @@ Contains:
 8. Copy buttons are required for DOI/title/URL/citation/query/error and selected DOI/URL sets.
 9. Status freshness text (`Last update`) and progress bars are visible during long-running operations.
 10. Run state is exposed with canonical values: `idle`, `queued`, `running`, `waiting_user`, `completed`, `failed`.
+11. Pagination controls are hidden/disabled unless multi-page navigation is applicable.
 
 ## State and Status Presentation
 
