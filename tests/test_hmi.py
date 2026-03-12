@@ -50,6 +50,7 @@ def test_hmi_shell_route_and_navigation():
     assert "UPW Knowledge Miner" in body
     assert "inProgressBanner" in body
     assert "inProgressState" in body
+    assert "liveUpdatesState" in body
     assert "Pending review:" in body
     assert "Accepted waiting docs:" in body
     assert "Document failures:" in body
@@ -151,6 +152,10 @@ def test_hmi_static_js_served():
     assert "documentsCopySelected" in body
     assert "paginationState" in body
     assert "applyPaginationControls" in body
+    assert "Auth: No" in body
+    assert "Auth: Yes" in body
+    assert "openLiveUpdatesChannel" in body
+    assert "Live updates connected. Idle mode: interval polling paused." in body
 
 
 def test_hmi_prefills_system_token_when_configured():

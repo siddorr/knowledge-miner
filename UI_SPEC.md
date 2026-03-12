@@ -109,6 +109,8 @@ Contains:
 9. Status freshness text (`Last update`) and progress bars are visible during long-running operations.
 10. Run state is exposed with canonical values: `idle`, `queued`, `running`, `waiting_user`, `completed`, `failed`.
 11. Pagination controls are hidden/disabled unless multi-page navigation is applicable.
+12. Status strip must show explicit auth wording: `Auth: Yes` or `Auth: No`.
+13. Live updates use server push with reconnect and bounded fallback refresh when disconnected/active.
 
 ## State and Status Presentation
 

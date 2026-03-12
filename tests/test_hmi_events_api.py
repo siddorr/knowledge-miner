@@ -4,6 +4,7 @@ import logging
 
 from fastapi.testclient import TestClient
 
+from knowledge_miner.config import settings
 from knowledge_miner.main import app
 
 
@@ -62,3 +63,28 @@ def test_hmi_events_ingest_redacts_sensitive_preview_in_logs(caplog):
     messages = [rec.message for rec in caplog.records if "hmi_event" in rec.message]
     assert messages
     assert any("[redacted]" in msg for msg in messages)
+
+
+def test_hmi_event_stream_emits_connected_event():
+    client = TestClient(app)
+    response = client.get("/v1/events/stream?once=true")
+    assert response.status_code == 200
+    assert "event: connected" in response.text
+    assert "event: queue_updated" in response.text
+
+
+def test_hmi_event_stream_requires_key_when_auth_enabled():
+    client = TestClient(app)
+    original_auth = settings.auth_enabled
+    original_api = settings.api_token
+    try:
+        object.__setattr__(settings, "auth_enabled", True)
+        object.__setattr__(settings, "api_token", "dev-token")
+        unauthorized = client.get("/v1/events/stream")
+        assert unauthorized.status_code == 401
+        authorized = client.get("/v1/events/stream?once=true&api_key=dev-token")
+        assert authorized.status_code == 200
+        assert "event: connected" in authorized.text
+    finally:
+        object.__setattr__(settings, "auth_enabled", original_auth)
+        object.__setattr__(settings, "api_token", original_api)

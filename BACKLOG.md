@@ -4,6 +4,7 @@ Status:
 - Updated on 2026-03-11: Phase 4.2 task-first HMI rebuild checklist is complete; next priorities are post-HMI hardening and deployment readiness.
 - Updated on 2026-03-12: P0/P1 UX backlog items #11-#15 are implemented and verified in API/HMI/tests.
 - Updated on 2026-03-12: Discovery iteration control (#16) and conditional pagination behavior (#17) are implemented.
+- Updated on 2026-03-12: Auth wording clarity (#18) and live-update/fallback refresh model (#19) are implemented.
 
 ## High Priority
 
@@ -360,7 +361,7 @@ Status:
   - UI test: single-page queue -> `Prev/Next` not actionable.
   - UI test: multi-page queue -> correct button state on first/middle/last page.
 
-18. [ ] P2 - Clarify auth status wording in HMI status strip
+18. [x] P2 - Clarify auth status wording in HMI status strip
 - Goal: use explicit auth wording for operators.
 - Required change:
   - Replace status token `disabled` with `Auth: No` when app auth is off.
@@ -369,7 +370,7 @@ Status:
   - UI test: auth disabled mode shows `Auth: No`.
   - UI test: auth enabled mode shows `Auth: Yes`.
 
-19. [ ] P1 - Replace fixed 5s polling with on-change refresh model
+19. [x] P1 - Replace fixed 5s polling with on-change refresh model
 - Goal: refresh UI only when something changed, not on constant interval.
 - Preferred solution:
   - Add server-driven updates (SSE/WebSocket) for run/status/queue changes.
@@ -389,6 +390,22 @@ Status:
   - integration test: status/table updates after emitted backend event without interval polling.
   - UI test: idle state does not issue periodic refresh requests.
   - UI test: fallback polling activates only during active runs or disconnected push channel.
+
+20. [ ] P1 - Auto-populate Review pane without manual "Load" action
+- Goal: review queue appears and updates automatically; operator should not need to press `Load Review Queue`.
+- Required behavior:
+  - On entering Review page, queue loads automatically for active run context.
+  - When run/status/filter changes, Review list refreshes automatically.
+  - New candidates appear in Review on the fly during active discovery.
+- Tasks:
+  - Trigger `loadReview()` on Review page activation and on relevant context changes.
+  - Remove dependency on manual load button from default flow (keep optional refresh in advanced mode only).
+  - Show clear empty-state text when no items are available yet.
+  - Debounce refresh to avoid redundant requests during rapid UI state changes.
+- Tests:
+  - UI test: navigating to Review auto-loads list without button click.
+  - UI test: new items appear automatically during active run.
+  - regression test: filter/pagination still works with auto-refresh behavior.
 
 ## Must-Fix (Spec Compliance)
 

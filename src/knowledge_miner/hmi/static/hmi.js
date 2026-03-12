@@ -1,5 +1,6 @@
 const POLL_ACTIVE_MS = 5000;
 const POLL_BACKGROUND_MS = 15000;
+const POLL_DISCONNECTED_IDLE_MS = 30000;
 const TELEMETRY_INPUT_DEBOUNCE_MS = 400;
 const SYSTEM_TOKEN = typeof window !== "undefined" ? window.__KM_HMI_DEFAULT_TOKEN__ || null : null;
 const AUTH_ENABLED = typeof window !== "undefined" ? window.__KM_HMI_AUTH_ENABLED__ !== false : true;
@@ -56,6 +57,11 @@ const state = {
   stale: {
     lastResetKey: "",
   },
+  live: {
+    connected: false,
+    eventSource: null,
+    queuedRefresh: null,
+  },
 };
 
 function el(id) {
@@ -82,6 +88,16 @@ function setPollState(message, stale = false) {
   node.textContent = message;
   node.classList.remove("poll-ok", "poll-stale");
   node.classList.add(stale ? "poll-stale" : "poll-ok");
+}
+
+function hasActiveWork() {
+  if (state.busy.count > 0) return true;
+  return state.runRows.some((row) => row.status === "queued" || row.status === "running");
+}
+
+function setLiveUpdatesState(connected) {
+  state.live.connected = connected;
+  setText("liveUpdatesState", `Live updates: ${connected ? "connected" : "disconnected"}`);
 }
 
 function setButtonBusy(id, busy) {
@@ -337,7 +353,15 @@ function updateSectionVisibility() {
 
 function schedulePoll() {
   if (state.pollTimer) clearTimeout(state.pollTimer);
-  const interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
+  state.pollTimer = null;
+  const active = hasActiveWork();
+  if (state.live.connected && !active) {
+    setPollState("Live updates connected. Idle mode: interval polling paused.");
+    return;
+  }
+  let interval;
+  if (!state.live.connected && !active) interval = POLL_DISCONNECTED_IDLE_MS;
+  else interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
   state.pollTimer = setTimeout(runPollCycle, interval);
 }
 
@@ -757,7 +781,8 @@ async function loadSystemStatus() {
     const s2 = provider.semantic_scholar && provider.semantic_scholar.api_key_present ? "s2:ready" : "s2:limited";
     const ai = payload.ai_filter_active ? "ai:active" : `ai:${payload.ai_filter_warning ? "warning" : "disabled"}`;
     const db = payload.db_ready ? "db:ready" : `db:missing-${(payload.db_missing_tables || []).length}`;
-    setText("systemBadges", `${payload.auth_mode} | ${db} | ${ai} | ${brave} | ${s2}`);
+    const authBadge = payload.auth_enabled ? "Auth: Yes" : "Auth: No";
+    setText("systemBadges", `${authBadge} | ${db} | ${ai} | ${brave} | ${s2}`);
     return payload;
   } catch (err) {
     setText("systemBadges", `status unavailable: ${err.message}`);
@@ -2138,24 +2163,86 @@ async function refreshCurrentSection() {
 
 async function runPollCycle() {
   const section = activeSection();
-  const interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
   try {
     const sys = await loadSystemStatus();
     if ((sys?.db_run_count || 0) === 0) {
       resetStaleRunContext("db_run_count_zero");
       updateFreshness();
-      setPollState(`Auto-refreshing #${section} every ${Math.round(interval / 1000)}s.`);
       schedulePoll();
       return;
     }
     await refreshCurrentSection();
     await refreshRunProgress();
     updateFreshness();
-    setPollState(`Auto-refreshing #${section} every ${Math.round(interval / 1000)}s.`);
+    if (!state.live.connected || hasActiveWork()) {
+      setPollState(`Fallback refresh active for #${section}.`);
+    } else {
+      setPollState(`Live updates active for #${section}.`);
+    }
   } catch (err) {
     setPollState(`Stale data in #${section}: ${err.message}`, true);
   }
   schedulePoll();
+}
+
+async function runLiveRefresh(eventType = "queue_updated") {
+  try {
+    await loadSystemStatus();
+    if (eventType === "run_started" || eventType === "run_progress" || eventType === "run_completed") {
+      await refreshRunProgress();
+    }
+    await loadDashboard();
+    if (activeSection() === "review" && state.review.loaded) await loadReview();
+    if (activeSection() === "documents" && state.documents.loaded) await loadDocuments();
+    updateFreshness();
+    setPollState(`Live update processed (${eventType}).`);
+  } catch (err) {
+    setPollState(`Live update failed: ${err.message}`, true);
+  } finally {
+    schedulePoll();
+  }
+}
+
+function queueLiveRefresh(eventType) {
+  if (state.live.queuedRefresh) clearTimeout(state.live.queuedRefresh);
+  state.live.queuedRefresh = setTimeout(() => {
+    state.live.queuedRefresh = null;
+    runLiveRefresh(eventType);
+  }, 250);
+}
+
+function openLiveUpdatesChannel() {
+  if (state.live.eventSource) {
+    state.live.eventSource.close();
+    state.live.eventSource = null;
+  }
+  let url = "/v1/events/stream";
+  if (AUTH_ENABLED) {
+    if (!state.apiKey) {
+      setLiveUpdatesState(false);
+      setPollState("Live updates unavailable: API token is required for stream channel.", true);
+      schedulePoll();
+      return;
+    }
+    url = `${url}?api_key=${encodeURIComponent(state.apiKey)}`;
+  }
+  const stream = new EventSource(url);
+  state.live.eventSource = stream;
+  stream.addEventListener("open", () => {
+    setLiveUpdatesState(true);
+    setPollState("Live updates connected.");
+    schedulePoll();
+  });
+  for (const eventType of ["run_started", "run_progress", "run_completed", "queue_updated"]) {
+    stream.addEventListener(eventType, () => {
+      queueLiveRefresh(eventType);
+    });
+  }
+  stream.addEventListener("error", () => {
+    setLiveUpdatesState(false);
+    setPollState("Live updates disconnected. Using fallback refresh.", true);
+    schedulePoll();
+  });
 }
 
 function addListener(id, event, handler) {
@@ -2213,6 +2300,7 @@ function initAuth() {
     state.apiKey = "";
     state.tokenSource = "none";
     setApiStateText();
+    openLiveUpdatesChannel();
     return;
   }
 
@@ -2242,8 +2330,10 @@ function initAuth() {
       }
     }
     setApiStateText();
+    openLiveUpdatesChannel();
   });
   setApiStateText();
+  openLiveUpdatesChannel();
 }
 
 function initPagination() {

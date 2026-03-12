@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from pathlib import Path
 import csv
 import io
@@ -14,7 +15,7 @@ from uuid import uuid4
 from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, HTMLResponse, Response, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
@@ -31,7 +32,7 @@ from .acquisition import (
 from .ai_filter import describe_ai_filter_runtime
 from .auth import require_api_key
 from .config import is_sqlite_url, settings
-from .db import Base, database_readiness, engine, get_db
+from .db import Base, SessionLocal, database_readiness, engine, get_db
 from .discovery import create_run, enqueue_run, export_sources_raw, review_source
 from .iteration import build_next_queries, extract_keywords
 from .models import AcquisitionItem, AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Run, Source
@@ -280,6 +281,70 @@ def _title_tokens(value: str) -> set[str]:
     return {part for part in parts if len(part) >= 3}
 
 
+def _authorize_event_stream(api_key: str | None) -> None:
+    if not settings.auth_enabled:
+        return
+    expected = {value for value in [settings.api_token, settings.hmi_api_token] if value}
+    if not expected or api_key not in expected:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+
+
+def _collect_live_snapshot(db: Session) -> dict:
+    latest_discovery = db.scalars(select(Run).order_by(Run.created_at.desc(), Run.id.desc()).limit(1)).first()
+    latest_acq = db.scalars(select(AcquisitionRun).order_by(AcquisitionRun.created_at.desc(), AcquisitionRun.id.desc()).limit(1)).first()
+    latest_parse = db.scalars(select(ParseRun).order_by(ParseRun.created_at.desc(), ParseRun.id.desc()).limit(1)).first()
+    pending_review = db.scalar(select(func.count()).select_from(Source).where(Source.review_status == "needs_review")) or 0
+    doc_issues = (
+        db.scalar(
+            select(func.count()).select_from(AcquisitionItem).where(AcquisitionItem.status.in_(("failed", "partial")))
+        )
+        or 0
+    )
+    return {
+        "latest_discovery": latest_discovery.id if latest_discovery else "",
+        "latest_discovery_status": latest_discovery.status if latest_discovery else "idle",
+        "latest_acquisition": latest_acq.id if latest_acq else "",
+        "latest_acquisition_status": latest_acq.status if latest_acq else "idle",
+        "latest_parse": latest_parse.id if latest_parse else "",
+        "latest_parse_status": latest_parse.status if latest_parse else "idle",
+        "pending_review": int(pending_review),
+        "doc_issues": int(doc_issues),
+    }
+
+
+def _detect_live_events(previous: dict | None, current: dict) -> list[tuple[str, dict]]:
+    if previous is None:
+        return [("queue_updated", current)]
+    events: list[tuple[str, dict]] = []
+
+    def _run_event(prefix: str) -> None:
+        prev_id = previous.get(f"latest_{prefix}", "")
+        curr_id = current.get(f"latest_{prefix}", "")
+        prev_status = previous.get(f"latest_{prefix}_status", "idle")
+        curr_status = current.get(f"latest_{prefix}_status", "idle")
+        if curr_id and curr_id != prev_id and curr_status in {"queued", "running"}:
+            events.append(("run_started", {"phase": prefix, **current}))
+        elif curr_id and curr_id == prev_id and curr_status != prev_status:
+            if curr_status in {"completed", "failed"}:
+                events.append(("run_completed", {"phase": prefix, **current}))
+            else:
+                events.append(("run_progress", {"phase": prefix, **current}))
+
+    for phase in ("discovery", "acquisition", "parse"):
+        _run_event(phase)
+
+    if (
+        current.get("pending_review") != previous.get("pending_review")
+        or current.get("doc_issues") != previous.get("doc_issues")
+    ):
+        events.append(("queue_updated", current))
+    return events
+
+
+def _format_sse(event_name: str, payload: dict) -> str:
+    return f"event: {event_name}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
 def _build_citation_iteration_queries(db: Session, run_id: str) -> list[str]:
     rows = db.scalars(
         select(Source)
@@ -345,6 +410,41 @@ def get_system_status(
         db_run_count=run_count,
         process_pid=os.getpid(),
     )
+
+
+@app.get("/v1/events/stream")
+async def stream_hmi_events(
+    request: Request,
+    api_key: str | None = Query(default=None),
+    once: bool = Query(default=False),
+) -> StreamingResponse:
+    _authorize_event_stream(api_key)
+
+    async def event_generator():
+        previous: dict | None = None
+        yield _format_sse("connected", {"status": "connected"})
+        if once:
+            try:
+                with SessionLocal() as db:
+                    current = _collect_live_snapshot(db)
+                yield _format_sse("queue_updated", current)
+            except Exception as exc:
+                yield _format_sse("error", {"message": str(exc)})
+            return
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                with SessionLocal() as db:
+                    current = _collect_live_snapshot(db)
+                for event_name, payload in _detect_live_events(previous, current):
+                    yield _format_sse(event_name, payload)
+                previous = current
+            except Exception as exc:
+                yield _format_sse("error", {"message": str(exc)})
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get("/v1/debug/db-context")

@@ -15,6 +15,8 @@ Knowledge Miner is an end-to-end UPW literature workflow for semiconductor manuf
 8. Canonical progress contract in run status APIs (`current_stage`, `stage_status`, `completed/total`, `percent`, freshness cues in HMI).
 9. Discovery execution is operator-driven and single-step (`one trigger = one iteration`).
 10. Pagination controls appear only when a list has multiple pages.
+11. HMI status strip shows explicit auth state (`Auth: Yes` / `Auth: No`).
+12. UI refresh model is event-driven (SSE) with fallback polling only when needed.
 
 ## In Scope
 
