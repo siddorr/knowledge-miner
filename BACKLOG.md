@@ -204,6 +204,102 @@ Status:
   - UI test: stale run id is auto-cleared after first `run_not_found`.
   - integration test: `db_run_count=0` leads to clean idle state without repeated 404 spam.
 
+11. [x] P0 - Remove manual send step: approved documents should be processed directly
+- Goal: operator should not need `Send ... to Documents`; approved sources should be immediately processable by acquisition.
+- Tasks:
+  - Remove dependency on manual transfer action between Review and Documents.
+  - Make acquisition consume approved sources directly from run context (all approved or explicitly selected scope).
+  - Update Review UI action labels/workflow to reflect direct processing.
+  - Ensure Documents queue is populated from approved sources without extra sync button.
+  - Update docs (`UI_SPEC.md`, `CURRENT_SCOPE.md`, `README.md`) to reflect simplified flow.
+- Tests:
+  - integration test: approve source -> acquisition item becomes available without manual send action.
+  - UI test: operator can proceed from approval to acquisition in one clear step.
+
+12. [ ] P1 - Batch PDF upload with auto-scan and auto-match to required documents
+- Goal: operator can upload a folder/batch of PDFs once; app scans files and automatically picks documents needed by current acquisition queue.
+- Tasks:
+  - Add batch upload endpoint (multiple files) for acquisition/manual recovery.
+  - For each uploaded PDF, extract quick identifiers (DOI/title/year) and build match candidates against pending required sources.
+  - Auto-link high-confidence matches and mark corresponding acquisition items as recovered/downloaded.
+  - Keep unmatched files in a review list with suggested matches and one-click assign.
+  - Add duplicate detection by checksum to avoid re-processing same file.
+  - Add batch result report:
+    - matched count
+    - unmatched count
+    - ambiguous matches requiring operator decision
+  - Add HMI flow in Documents page:
+    - `Upload PDF Batch`
+    - progress indicator
+    - results table (`matched/unmatched/needs review`)
+- Tests:
+  - integration test: upload batch with mixed match/unmatch PDFs -> expected status transitions.
+  - unit tests for DOI/title-based matching and ambiguity handling.
+  - regression test for existing single-file upload behavior.
+
+13. [ ] P0 - Simplify Documents pane actions for end users
+- Goal: reduce operator confusion by keeping only essential actions in Documents pane; move technical controls out of default flow.
+- Tasks:
+  - Keep minimal primary actions in Documents:
+    - `Process Approved Docs` (preferred label)
+    - `Upload PDF Batch`
+    - `View Issues` (single unified issues list)
+  - Rename existing `Acquire Pending` action/copy to `Process Approved Docs` across:
+    - button labels
+    - status toasts/messages
+    - docs/examples/tooltips
+  - Move non-essential/technical actions to `Advanced` (or collapse behind `More`):
+    - `Copy Selected DOI/URL`
+    - `Export CSV`
+    - low-level retry/sync controls
+  - Unify per-row actions so each row has one recommended next step based on status.
+  - Add concise inline helper text explaining what each remaining action does.
+  - Update UI docs to reflect simplified action model.
+- Tests:
+  - UI regression test: minimal action set visible in Documents default view.
+  - usability smoke test: approve -> acquire -> resolve issue path with no extra technical steps.
+
+14. [ ] P0 - Make app "thinking/progress" state obvious to operator
+- Goal: user must immediately understand whether the app is working, how far it is, and what to do next.
+- Tasks:
+  - Define and expose canonical run states: `idle`, `queued`, `running`, `waiting_user`, `completed`, `failed`.
+  - Add global status banner showing active operation and stage message (example: `Searching sources`, `Evaluating relevance with AI`).
+  - Add per-action busy behavior:
+    - clicked button shows spinner + `Running...`
+    - disable duplicate submits while request is in-flight
+    - restore enabled state on completion/failure
+  - Add progress bars for long tasks:
+    - determinate bar when totals are known (`completed/total`, percent)
+    - indeterminate bar when totals are unknown
+  - Extend run/status API payloads with progress contract:
+    - `current_stage`, `stage_status`, `completed`, `total`, `percent`, `message`, `started_at`, `updated_at`
+  - Add UI freshness indicator (`Last update X sec ago`) and clear empty-while-running message (not final empty result wording).
+  - Track stage transitions and UI action lifecycle in logs/telemetry for diagnostics.
+  - Ensure accessibility:
+    - progress/status text available via `aria-live`
+    - state must not rely on color only
+- Tests:
+  - UI test: global status appears during active run and clears on terminal state.
+  - UI test: long-running actions show spinner/progress and prevent duplicate clicks.
+  - API integration test: progress fields update monotonically through run stages.
+  - UX acceptance check: first-time user can answer "is it working?" and "how far is it?" without reading docs.
+
+15. [ ] P1 - Add `Select All / Deselect All` to checkbox-based HMI lists
+- Goal: operator can quickly manage bulk selection without clicking each row manually.
+- Scope:
+  - Review table (`Accept/Reject` batch workflow)
+  - Documents table (`Copy selected`, bulk actions)
+- Tasks:
+  - Add `Select All` and `Deselect All` controls near each checkbox table.
+  - Apply selection to the currently loaded list/page only.
+  - Keep selection state consistent after table reload/filter/pagination.
+  - Show concise feedback (`Selected N rows`, `Selection cleared`).
+  - Ensure controls are disabled when list is empty.
+- Tests:
+  - UI test: `Select All` checks all visible rows and enables batch actions.
+  - UI test: `Deselect All` clears all visible rows and disables selection-dependent actions.
+  - UI regression test: selection behavior remains correct after `Prev/Next` and filter changes.
+
 ## Must-Fix (Spec Compliance)
 
 1. [x] Align default runtime database with v1 spec

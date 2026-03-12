@@ -26,14 +26,13 @@ def test_hmi_shell_route_and_navigation():
     assert "Later" in body
     assert "Accept Selected" in body
     assert "Reject Selected" in body
-    assert "Send Selected Accepted to Documents" in body
+    assert "Process Approved Docs" in body
     assert "Preview" in body
     assert "Copy DOI" in body
     assert "Copy Error" in body
     assert "Copy Runs Error" in body
     assert "Copy Parse Error" in body
     assert "Documents" in body
-    assert "Acquire Pending" in body
     assert "Retry Failed" in body
     assert "Copy Selected DOI/URL" in body
     assert "documentsDetails" in body
@@ -133,7 +132,6 @@ def test_hmi_static_js_served():
     assert "handleCopyValueClick" in body
     assert "copyFeedbackIdForTarget" in body
     assert "applyReviewDecisionToSelected" in body
-    assert "sendAcceptedSelectedToDocuments" in body
     assert "runBusy" in body
     assert "setGlobalBusy" in body
     assert "recoverLatestDiscoveryRun" in body

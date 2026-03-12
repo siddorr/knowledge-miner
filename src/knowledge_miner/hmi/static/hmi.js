@@ -29,7 +29,15 @@ const state = {
     },
   },
   review: { offset: 0, loaded: false, expanded: new Set(), selected: new Set(), items: [] },
-  documents: { offset: 0, loaded: false, selectedSourceId: "", selected: new Set(), items: [], acqRunMeta: null },
+  documents: {
+    offset: 0,
+    loaded: false,
+    selectedSourceId: "",
+    selected: new Set(),
+    items: [],
+    acqRunMeta: null,
+    discoveryRunId: "",
+  },
   search: { loaded: false, payload: null, items: [], mode: "browse", docsById: new Map() },
   context: {},
   telemetry: {
@@ -881,14 +889,68 @@ async function loadReview() {
 async function loadDocuments() {
   setText("documentsError", "");
   const acqRunId = getAcqRunId();
-  if (!acqRunId) {
-    setText("documentsState", "No active runs found. Start from Build -> Run Discovery.");
-    renderTable("documentsRows", [], 4);
-    return true;
-  }
   const limit = Number(el("documentsLimit").value);
   const offset = state.documents.offset;
   const queueFilter = (el("documentsQueueFilter") || {}).value || "awaiting";
+  if (!acqRunId) {
+    const discoveryRunId = getDiscoveryRunId();
+    state.documents.discoveryRunId = discoveryRunId || "";
+    if (!discoveryRunId) {
+      setText("documentsState", "No active runs found. Start from Build -> Run Discovery.");
+      renderTable("documentsRows", [], 4);
+      return true;
+    }
+    let approvedPayload;
+    try {
+      approvedPayload = await apiGet(
+        `/v1/discovery/runs/${encodeURIComponent(discoveryRunId)}/sources?status=accepted&limit=1000&offset=0`,
+      );
+    } catch (err) {
+      if (String(err.message || "").includes("run_not_found")) {
+        resetStaleRunContext("documents_discovery_not_found");
+        renderTable("documentsRows", [], 4);
+        return true;
+      }
+      throw err;
+    }
+    const normalizedApproved = (approvedPayload.items || []).map((row) => ({
+      source_id: row.id,
+      status: "approved",
+      title: row.title || row.id,
+      doi: row.doi || "",
+      source_url: row.url || "",
+      selected_url: row.url || "",
+      attempt_count: 0,
+      last_error: "",
+      reason_code: null,
+      problem: "Approved - ready to process",
+      discovery_run_id: discoveryRunId,
+    }));
+    const filteredApproved = normalizedApproved.filter((row) => {
+      if (queueFilter === "awaiting") return true;
+      if (queueFilter === "acquired") return false;
+      if (queueFilter === "failed") return false;
+      if (queueFilter === "manual_recovery") return false;
+      return true;
+    });
+    state.documents.items = filteredApproved;
+    renderTable(
+      "documentsRows",
+      filteredApproved.map((item) => {
+        const checked = state.documents.selected.has(item.source_id) ? " checked" : "";
+        const openUrl = item.source_url || "";
+        return `<tr><td><input type="checkbox" class="documents-select" data-source-id="${escapeHtml(item.source_id)}"${checked}></td><td><button type="button" class="documents-action" data-action="select" data-source-id="${escapeHtml(item.source_id)}">${escapeHtml(item.title || "")}</button></td><td>${escapeHtml(item.problem)}</td><td>${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : "-"}</td></tr>`;
+      }),
+      4,
+    );
+    setText("documentsPage", `offset=${offset}, limit=${limit}, total=${filteredApproved.length}`);
+    setText("documentsState", `Approved sources ready: ${filteredApproved.length}. Click Process Approved Docs.`);
+    if (!filteredApproved.length) {
+      setText("documentsDetails", "No approved sources yet. Continue review decisions first.");
+    }
+    state.documents.loaded = true;
+    return true;
+  }
   let itemsPayload;
   let queue;
   let run;
@@ -907,6 +969,7 @@ async function loadDocuments() {
     throw err;
   }
   state.documents.acqRunMeta = run;
+  state.documents.discoveryRunId = run.discovery_run_id || state.documents.discoveryRunId || "";
   const manualBySourceId = new Map((queue.items || []).map((row) => [row.source_id, row]));
   const normalized = (itemsPayload.items || []).map((row) => {
     const manual = manualBySourceId.get(row.source_id);
@@ -1473,7 +1536,11 @@ async function handleReviewAction(event) {
   if (!sourceId) return;
   try {
     await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision: action === "accept" ? "accept" : "reject" });
-    setText("reviewState", `Review decision saved: ${action}.`);
+    if (action === "accept") {
+      setText("reviewState", "Accepted. Open Documents and click Process Approved Docs.");
+    } else {
+      setText("reviewState", "Rejected.");
+    }
     await loadReview();
     await loadDashboard();
   } catch (err) {
@@ -1498,47 +1565,13 @@ async function applyReviewDecisionToSelected(decision) {
     }
   }
   state.review.selected.clear();
-  setText("reviewState", `${decision} applied to ${ok}/${selected.length} selected rows.`);
+  if (decision === "accept") {
+    setText("reviewState", `Accepted ${ok}/${selected.length}. Open Documents and click Process Approved Docs.`);
+  } else {
+    setText("reviewState", `${decision} applied to ${ok}/${selected.length} selected rows.`);
+  }
   await loadReview();
   await loadDashboard();
-}
-
-async function sendAcceptedSelectedToDocuments() {
-  const runId = getDiscoveryRunId();
-  if (!runId) {
-    setText("reviewError", "discovery run id is required");
-    return;
-  }
-  const selected = state.review.items.filter((item) => state.review.selected.has(item.id));
-  if (!selected.length) {
-    setText("reviewError", "Select at least one row.");
-    return;
-  }
-  const accepted = selected.filter((item) => item.review_status === "auto_accept" || item.review_status === "human_accept");
-  if (!accepted.length) {
-    setText("reviewError", "No accepted rows in current selection.");
-    return;
-  }
-  try {
-    const acq = await runBusy("acquisition", ["reviewBatchSendDocsBtn"], async () =>
-      apiPost("/v1/acquisition/runs", {
-        run_id: runId,
-        retry_failed_only: false,
-        selected_source_ids: accepted.map((item) => item.id),
-      }),
-    );
-    setLatestId("acquisition", acq.acq_run_id);
-    el("documentsAcqRunIdInput").value = acq.acq_run_id;
-    setText("reviewState", "Sent accepted rows to Documents.");
-    window.location.hash = "#documents";
-    await loadDocuments();
-    await loadDashboard();
-  } catch (err) {
-    if (String(err.message || "").includes("run_not_found")) {
-      await recoverLatestDiscoveryRun();
-    }
-    setText("reviewError", `Send to Documents failed: ${err.message}`);
-  }
 }
 
 async function startAcquisition(event) {
@@ -1553,7 +1586,6 @@ async function startAcquisition(event) {
       setLatestId("acquisition", result.acq_run_id);
       el("documentsAcqRunIdInput").value = result.acq_run_id;
       setText("acqError", "Acquisition started. IDs are available in Advanced.");
-    });
     });
   } catch (err) {
     setText("acqError", `Start failed: ${err.message}`);
@@ -1703,21 +1735,22 @@ async function exportManualCsv() {
 }
 
 async function documentsAcquirePending() {
-  const run = state.documents.acqRunMeta;
-  if (!run || !run.discovery_run_id) {
-    setText("documentsError", "Load documents queue first.");
+  const runId = state.documents.discoveryRunId || getDiscoveryRunId();
+  if (!runId) {
+    setText("documentsError", "Discovery run context is required.");
     return;
   }
   try {
     const next = await runBusy("acquisition", ["documentsAcquirePendingBtn"], async () =>
-      apiPost("/v1/acquisition/runs", { run_id: run.discovery_run_id, retry_failed_only: false }),
+      apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: false }),
     );
     setLatestId("acquisition", next.acq_run_id);
     el("documentsAcqRunIdInput").value = next.acq_run_id;
-    setText("documentsState", "Started acquisition for pending sources.");
+    setText("documentsState", "Started processing approved documents.");
     await loadDocuments();
+    await loadDashboard();
   } catch (err) {
-    setText("documentsError", `Acquire pending failed: ${err.message}`);
+    setText("documentsError", `Process approved docs failed: ${err.message}`);
   }
 }
 
@@ -2019,7 +2052,6 @@ function init() {
   addListener("reviewRows", "change", handleReviewAction);
   addListener("reviewBatchAcceptBtn", "click", () => applyReviewDecisionToSelected("accept"));
   addListener("reviewBatchRejectBtn", "click", () => applyReviewDecisionToSelected("reject"));
-  addListener("reviewBatchSendDocsBtn", "click", sendAcceptedSelectedToDocuments);
 
   addListener("documentsForm", "submit", async (event) => {
     event.preventDefault();

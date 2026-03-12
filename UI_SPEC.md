@@ -49,7 +49,7 @@ Goal:
 Must include:
 1. Queue filters: `Pending`, `Accepted`, `Rejected`, `Later`.
 2. Row actions: `Accept`, `Reject`, `Later`.
-3. Batch actions including `Send Accepted to Documents`.
+3. Batch actions for `Accept Selected` / `Reject Selected` only (no manual transfer step).
 4. Details/preview panel with copy buttons.
 
 Primary action:
@@ -62,12 +62,14 @@ Goal:
 
 Must include:
 1. Acquisition queue with `Awaiting`, `Acquired`, `Failed`, `Manual Recovery`.
-2. Actions per row:
+2. Queue can be populated directly from approved review sources before acquisition run creation.
+3. Primary action label: `Process Approved Docs`.
+4. Actions per row:
 - `Retry`
 - `Upload PDF`
 - `Open source`
-3. Batch copy for selected DOI/URL.
-4. CSV export and manual upload workflow.
+5. Batch copy for selected DOI/URL.
+6. CSV export and manual upload workflow.
 
 ## Library
 

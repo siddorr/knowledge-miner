@@ -8,6 +8,7 @@ Current product includes:
 3. Document acquisition (PDF-first, HTML fallback) with manual recovery tools.
 4. Full-text parse/chunk processing and search.
 5. Task-first HMI workflow for operators.
+6. Direct Review -> Documents transition (no manual "send to documents" step).
 
 ## Quick Start
 

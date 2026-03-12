@@ -75,6 +75,13 @@ def test_operator_queue_flow_without_manual_id_entry():
     assert review.status_code == 200
     assert review.json()["accepted"] is True
 
+    acq = client.post("/v1/acquisition/runs", json={"run_id": run_id, "retry_failed_only": False}, headers=_auth_headers())
+    assert acq.status_code == 202
+    acq_run_id = acq.json()["acq_run_id"]
+    items = client.get(f"/v1/acquisition/runs/{acq_run_id}/items", headers=_auth_headers())
+    assert items.status_code == 200
+    assert any(row["source_id"] == source_id for row in items.json()["items"])
+
 
 def test_hmi_route_exposes_operator_first_shell_and_advanced_section():
     client = TestClient(app)
