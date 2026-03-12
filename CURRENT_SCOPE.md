@@ -18,6 +18,7 @@ Knowledge Miner is an end-to-end UPW literature workflow for semiconductor manuf
 11. HMI status strip shows explicit auth state (`Auth: Yes` / `Auth: No`).
 12. UI refresh model is event-driven (SSE) with fallback polling only when needed.
 13. Review pane auto-populates on entry/context changes with debounced refresh.
+14. HMI hot-read mitigation includes in-tab GET dedup and leader-tab coordination for background refresh.
 
 ## In Scope
 

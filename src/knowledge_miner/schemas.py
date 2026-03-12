@@ -362,6 +362,7 @@ class SystemStatusResponse(BaseModel):
     db_schema_ready: bool
     db_run_count: int | None
     process_pid: int
+    hot_read_metrics: dict
 
 
 class AISettingsUpdateRequest(BaseModel):

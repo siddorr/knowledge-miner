@@ -6,6 +6,7 @@ Status:
 - Updated on 2026-03-12: Discovery iteration control (#16) and conditional pagination behavior (#17) are implemented.
 - Updated on 2026-03-12: Auth wording clarity (#18) and live-update/fallback refresh model (#19) are implemented.
 - Updated on 2026-03-12: Review pane now auto-populates without manual load action (#20).
+- Updated on 2026-03-12: LAN access workflow docs (#21) and HMI request-storm reduction controls (#22) are implemented.
 
 ## High Priority
 
@@ -407,6 +408,49 @@ Status:
   - UI test: navigating to Review auto-loads list without button click.
   - UI test: new items appear automatically during active run.
   - regression test: filter/pagination still works with auto-refresh behavior.
+
+21. [x] P2 - Document LAN access workflow for HMI/API
+- Goal: make same-network access from another PC repeatable without troubleshooting.
+- Tasks:
+  - Add docs section with exact startup command for LAN binding (`--host 0.0.0.0`).
+  - Add steps to find Linux IP and open HMI/docs from remote browser.
+  - Add port-conflict fix (`address already in use`) and alternate port example.
+  - Add firewall checklist (`ufw allow 8000/tcp`) and connectivity test examples.
+  - Add security note: LAN exposure and auth mode implications.
+- Tests:
+  - smoke checklist: remote machine can open `/healthz`, `/docs`, and `/hmi/`.
+
+22. [x] P0 - Reduce high-frequency repeated GET calls in HMI
+- Goal: eliminate request storms while keeping UI responsive and current.
+- Problem observed:
+  - repeated high-rate `GET /v1/discovery/runs/...` and related status calls from multiple clients/tabs.
+- Tasks:
+  - Client request dedup:
+    - prevent concurrent duplicate fetches for same endpoint+params.
+    - skip refresh if identical request is already in-flight.
+  - Adaptive refresh cadence:
+    - no periodic refresh in idle state.
+    - refresh only active pane.
+    - pause refresh when browser tab is hidden.
+  - Event-driven updates:
+    - use SSE/WebSocket as primary update signal.
+    - fetch only affected resource on event (incremental refresh).
+  - Multi-tab coordination:
+    - leader-tab fetch model using `BroadcastChannel` (or equivalent) to avoid duplicate polling per user.
+  - Server-side safeguards:
+    - lightweight per-session/IP rate limits for hot read endpoints.
+    - caching/etag support for unchanged payloads where practical.
+  - Observability:
+    - add metrics for request rate per endpoint/client and dedup hit-rate.
+    - add warning log when client exceeds expected read cadence.
+- Acceptance criteria:
+  - >=60% reduction of repeated GET volume on discovery/review endpoints under same user workflow.
+  - no visible UX regression in freshness (<2s perceived delay during active runs).
+  - no duplicate in-flight requests for identical resource from same tab.
+- Tests:
+  - UI test: hidden tab does not continue high-rate refresh.
+  - integration test: active run + two tabs generates bounded request rate.
+  - regression test: status still updates correctly during active discovery.
 
 ## Must-Fix (Spec Compliance)
 
@@ -1128,3 +1172,20 @@ Definition of done for Phase 4.3:
 2. First-time user can complete one full cycle without manual IDs or external docs.
 3. Copy actions are available and consistent across all operational screens.
 4. Technical internals remain accessible in Advanced but do not dominate task screens.
+
+## New Requests
+
+1. [ ] P0 - Save and load sessions
+- Add explicit `Save Session` and `Load Session` UX so operators can stop and resume work without re-entering context.
+- Persist at minimum:
+  - active topic
+  - current queues/filters/sort
+  - selected items
+  - latest run linkage and visible pane state
+- Support both:
+  - auto-restore last session on app start (user-configurable)
+  - manual load from session list/history
+- Acceptance criteria:
+  - user can save current state in one click
+  - after restart, user can load and continue from the same working state
+  - corrupted/missing session state is handled gracefully with clear warning and fallback

@@ -26,6 +26,56 @@ Open:
 1. API docs: `http://127.0.0.1:8000/docs`
 2. HMI: `http://127.0.0.1:8000/hmi`
 
+## LAN Access (Another PC on Same Network)
+
+Start server bound to all interfaces:
+
+```bash
+cd /home/garik/Documents/git/knowledge-miner
+source .venv/bin/activate
+uvicorn knowledge_miner.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Find Linux host IP:
+
+```bash
+ip -4 addr show | rg -n "inet "
+# or
+hostname -I
+```
+
+From remote browser (replace `192.168.1.50` with host IP):
+1. `http://192.168.1.50:8000/healthz`
+2. `http://192.168.1.50:8000/docs`
+3. `http://192.168.1.50:8000/hmi`
+
+Connectivity tests from remote terminal:
+
+```bash
+curl -i http://192.168.1.50:8000/healthz
+curl -I http://192.168.1.50:8000/hmi
+```
+
+Port conflict fix (`address already in use`):
+1. Use a different port, for example:
+```bash
+uvicorn knowledge_miner.main:app --host 0.0.0.0 --port 8010 --reload
+```
+2. Then open `http://192.168.1.50:8010/hmi`.
+
+Firewall checklist (Linux `ufw`):
+
+```bash
+sudo ufw status
+sudo ufw allow 8000/tcp
+# or if using alternate port:
+sudo ufw allow 8010/tcp
+```
+
+Security note:
+1. Binding to `0.0.0.0` exposes API/HMI to your LAN.
+2. If LAN is not fully trusted, set `AUTH_ENABLED=true` and use a strong API token before exposing it.
+
 ## Repository Documentation Layout
 
 Source of truth docs:

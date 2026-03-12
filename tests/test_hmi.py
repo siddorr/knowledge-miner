@@ -157,6 +157,11 @@ def test_hmi_static_js_served():
     assert "openLiveUpdatesChannel" in body
     assert "Live updates connected. Idle mode: interval polling paused." in body
     assert "scheduleReviewAutoLoad" in body
+    assert "Leader tab mode" in body
+    assert "Follower tab mode" in body
+    assert "Hidden tab: periodic refresh paused." in body
+    assert "inflightGet" in body
+    assert "BroadcastChannel" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

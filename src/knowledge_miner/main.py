@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 import csv
 import io
@@ -88,6 +90,11 @@ from .schemas import (
 app = FastAPI(title="UPW Literature Discovery Engine", version="0.1.0")
 logger = logging.getLogger("knowledge_miner")
 HMI_DIR = Path(__file__).resolve().parent / "hmi"
+HOT_READ_LIMIT_WINDOW_SECONDS = 10.0
+HOT_READ_LIMIT_COUNT = 120
+HOT_READ_WARN_COUNT = 60
+_hot_read_buckets: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+_hot_read_metrics: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "limited": 0})
 
 # Create tables on module load for v1 local/dev simplicity.
 app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_static")
@@ -281,6 +288,42 @@ def _title_tokens(value: str) -> set[str]:
     return {part for part in parts if len(part) >= 3}
 
 
+def _hot_read_client_key(request: Request) -> str:
+    ip = request.client.host if request.client else "unknown"
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth.removeprefix("Bearer ").strip()
+        token_tail = token[-6:] if token else "none"
+    else:
+        token_tail = "none"
+    return f"{ip}:{token_tail}"
+
+
+def _guard_hot_read(request: Request, endpoint_name: str) -> None:
+    key = (_hot_read_client_key(request), endpoint_name)
+    now = time.time()
+    bucket = _hot_read_buckets[key]
+    cutoff = now - HOT_READ_LIMIT_WINDOW_SECONDS
+    while bucket and bucket[0] <= cutoff:
+        bucket.popleft()
+    bucket.append(now)
+    metric = _hot_read_metrics[endpoint_name]
+    metric["total"] += 1
+    count = len(bucket)
+    if count >= HOT_READ_WARN_COUNT:
+        logger.warning(
+            "hot_read_cadence_warning endpoint=%s client=%s count=%s window=%ss total=%s",
+            endpoint_name,
+            key[0],
+            count,
+            HOT_READ_LIMIT_WINDOW_SECONDS,
+            metric["total"],
+        )
+    if count > HOT_READ_LIMIT_COUNT:
+        metric["limited"] += 1
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="read_rate_limited")
+
+
 def _authorize_event_stream(api_key: str | None) -> None:
     if not settings.auth_enabled:
         return
@@ -370,10 +413,12 @@ def _build_citation_iteration_queries(db: Session, run_id: str) -> list[str]:
 
 @app.get("/v1/system/status", response_model=SystemStatusResponse)
 def get_system_status(
+    request: Request,
     _: str = Depends(require_api_key),
     __: None = Depends(require_rate_limit),
     db: Session = Depends(get_db),
-) -> SystemStatusResponse:
+) -> Response:
+    _guard_hot_read(request, "system_status")
     ai_filter_active, ai_filter_warning = describe_ai_filter_runtime(
         use_ai_filter=settings.use_ai_filter,
         api_key=settings.ai_api_key,
@@ -394,7 +439,7 @@ def get_system_status(
     if db_meta["ready"]:
         with suppress(Exception):
             run_count = int(db.scalar(select(func.count()).select_from(Run)) or 0)
-    return SystemStatusResponse(
+    payload = SystemStatusResponse(
         auth_enabled=settings.auth_enabled,
         auth_mode="enabled" if settings.auth_enabled else "disabled",
         ai_filter_active=ai_filter_active,
@@ -409,7 +454,14 @@ def get_system_status(
         db_schema_ready=bool(db_meta["ready"]),
         db_run_count=run_count,
         process_pid=os.getpid(),
+        hot_read_metrics={k: dict(v) for k, v in _hot_read_metrics.items()},
     )
+    stable_payload = payload.model_dump()
+    stable_payload["hot_read_metrics"] = {}
+    etag = hashlib.sha256(json.dumps(stable_payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
+    return JSONResponse(content=payload.model_dump(), headers={"ETag": etag})
 
 
 @app.get("/v1/events/stream")
@@ -819,10 +871,12 @@ def create_citation_iteration_run(
 @app.get("/v1/discovery/runs/{run_id}", response_model=RunStatusResponse)
 def get_run_status(
     run_id: str,
+    request: Request,
     _: str = Depends(require_api_key),
     __: None = Depends(require_rate_limit),
     db: Session = Depends(get_db),
 ) -> RunStatusResponse:
+    _guard_hot_read(request, "discovery_run_status")
     run = db.get(Run, run_id)
     if run is None:
         logger.warning("run_not_found %s", _not_found_diagnostics(db, run_id=run_id))
@@ -874,6 +928,7 @@ def get_run_status(
 @app.get("/v1/discovery/runs/{run_id}/sources", response_model=SourcesListResponse)
 def list_sources(
     run_id: str,
+    request: Request,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     type: str | None = Query(default=None),
@@ -883,6 +938,7 @@ def list_sources(
     __: None = Depends(require_rate_limit),
     db: Session = Depends(get_db),
 ) -> SourcesListResponse:
+    _guard_hot_read(request, "discovery_sources")
     run = db.get(Run, run_id)
     if run is None:
         logger.warning("run_not_found %s", _not_found_diagnostics(db, run_id=run_id))
@@ -1005,10 +1061,12 @@ def create_acq_run(
 @app.get("/v1/acquisition/runs/{acq_run_id}", response_model=AcquisitionRunStatusResponse)
 def get_acq_run_status(
     acq_run_id: str,
+    request: Request,
     _: str = Depends(require_api_key),
     __: None = Depends(require_rate_limit),
     db: Session = Depends(get_db),
 ) -> AcquisitionRunStatusResponse:
+    _guard_hot_read(request, "acquisition_run_status")
     run = db.get(AcquisitionRun, acq_run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
@@ -1050,12 +1108,14 @@ def get_acq_run_status(
 @app.get("/v1/acquisition/runs/{acq_run_id}/items", response_model=AcquisitionItemsListResponse)
 def list_acq_items(
     acq_run_id: str,
+    request: Request,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     _: str = Depends(require_api_key),
     __: None = Depends(require_rate_limit),
     db: Session = Depends(get_db),
 ) -> AcquisitionItemsListResponse:
+    _guard_hot_read(request, "acquisition_items")
     run = db.get(AcquisitionRun, acq_run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
@@ -1085,12 +1145,14 @@ def list_acq_items(
 @app.get("/v1/acquisition/runs/{acq_run_id}/manual-downloads", response_model=ManualDownloadsListResponse)
 def list_manual_downloads(
     acq_run_id: str,
+    request: Request,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     _: str = Depends(require_api_key),
     __: None = Depends(require_rate_limit),
     db: Session = Depends(get_db),
 ) -> ManualDownloadsListResponse:
+    _guard_hot_read(request, "manual_downloads")
     try:
         payload = build_manual_downloads_payload(db, acq_run_id, limit=limit, offset=offset)
     except ValueError as exc:
@@ -1405,10 +1467,12 @@ def create_parse(
 @app.get("/v1/parse/runs/{parse_run_id}", response_model=ParseRunStatusResponse)
 def get_parse_status(
     parse_run_id: str,
+    request: Request,
     _: str = Depends(require_api_key),
     __: None = Depends(require_rate_limit),
     db: Session = Depends(get_db),
 ) -> ParseRunStatusResponse:
+    _guard_hot_read(request, "parse_run_status")
     run = db.get(ParseRun, parse_run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")

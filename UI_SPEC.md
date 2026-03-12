@@ -113,6 +113,8 @@ Contains:
 11. Pagination controls are hidden/disabled unless multi-page navigation is applicable.
 12. Status strip must show explicit auth wording: `Auth: Yes` or `Auth: No`.
 13. Live updates use server push with reconnect and bounded fallback refresh when disconnected/active.
+14. Background refresh uses leader-tab model to avoid duplicate polling across multiple tabs.
+15. Duplicate in-flight GET requests for identical endpoint+params are deduplicated per tab.
 
 ## State and Status Presentation
 

@@ -162,6 +162,18 @@ def test_system_status_endpoint_returns_operator_summary():
     assert "db_target_resolved_path" in body
     assert "db_schema_ready" in body
     assert "process_pid" in body
+    assert "hot_read_metrics" in body
+
+
+def test_system_status_supports_etag_not_modified():
+    _seed_phase42_records()
+    client = TestClient(app)
+    first = client.get("/v1/system/status", headers=_auth_headers())
+    assert first.status_code == 200
+    etag = first.headers.get("etag")
+    assert etag
+    second = client.get("/v1/system/status", headers={**_auth_headers(), "If-None-Match": etag})
+    assert second.status_code == 304
 
 
 def test_system_status_reports_schema_not_ready_when_tables_missing():

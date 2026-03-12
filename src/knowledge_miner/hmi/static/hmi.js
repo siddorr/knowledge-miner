@@ -2,6 +2,10 @@ const POLL_ACTIVE_MS = 5000;
 const POLL_BACKGROUND_MS = 15000;
 const POLL_DISCONNECTED_IDLE_MS = 30000;
 const TELEMETRY_INPUT_DEBOUNCE_MS = 400;
+const LEADER_STALE_MS = 6000;
+const LEADER_HEARTBEAT_MS = 2000;
+const LEADER_STORAGE_KEY = "km_hmi_leader";
+const BC_NAME = "km_hmi_updates";
 const SYSTEM_TOKEN = typeof window !== "undefined" ? window.__KM_HMI_DEFAULT_TOKEN__ || null : null;
 const AUTH_ENABLED = typeof window !== "undefined" ? window.__KM_HMI_AUTH_ENABLED__ !== false : true;
 const LAUNCH_SECTION = typeof window !== "undefined" ? window.__KM_HMI_LAUNCH_SECTION__ || "build" : "build";
@@ -65,6 +69,18 @@ const state = {
     eventSource: null,
     queuedRefresh: null,
   },
+  net: {
+    inflightGet: new Map(),
+    etagCache: new Map(),
+    requestCount: 0,
+    dedupHits: 0,
+  },
+  multiTab: {
+    tabId: `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    isLeader: true,
+    heartbeatTimer: null,
+    channel: null,
+  },
 };
 
 function el(id) {
@@ -91,6 +107,125 @@ function setPollState(message, stale = false) {
   node.textContent = message;
   node.classList.remove("poll-ok", "poll-stale");
   node.classList.add(stale ? "poll-stale" : "poll-ok");
+}
+
+function parseLeaderRecord() {
+  try {
+    const raw = localStorage.getItem(LEADER_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.tabId !== "string" || typeof parsed.ts !== "number") return null;
+    return parsed;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function isLeaderAlive(record) {
+  if (!record) return false;
+  return Date.now() - Number(record.ts || 0) <= LEADER_STALE_MS;
+}
+
+function publishLeaderHeartbeat() {
+  localStorage.setItem(LEADER_STORAGE_KEY, JSON.stringify({ tabId: state.multiTab.tabId, ts: Date.now() }));
+}
+
+function setLeaderMode(enabled) {
+  if (state.multiTab.isLeader === enabled) return;
+  state.multiTab.isLeader = enabled;
+  if (enabled) {
+    setPollState("Leader tab mode: this tab performs background refresh.");
+    openLiveUpdatesChannel();
+    schedulePoll();
+  } else {
+    if (state.live.eventSource) {
+      state.live.eventSource.close();
+      state.live.eventSource = null;
+    }
+    setLiveUpdatesState(false);
+    setPollState("Follower tab mode: waiting for leader updates.");
+  }
+}
+
+function broadcastMessage(type, payload = {}) {
+  const channel = state.multiTab.channel;
+  if (!channel) return;
+  try {
+    channel.postMessage({ type, payload, from: state.multiTab.tabId, ts: Date.now() });
+  } catch (_err) {
+    // ignore cross-tab channel errors
+  }
+}
+
+function broadcastSnapshot() {
+  if (!state.multiTab.isLeader) return;
+  broadcastMessage("ui_snapshot", {
+    systemBadges: (el("systemBadges")?.textContent || "").trim(),
+    pollState: (el("pollState")?.textContent || "").trim(),
+    pendingReview: (el("statusPendingReview")?.textContent || "0").trim(),
+    awaitingDocs: (el("statusAwaitingDocs")?.textContent || "0").trim(),
+    docFailures: (el("statusDocFailures")?.textContent || "0").trim(),
+    reviewBadge: (el("reviewNavBadge")?.textContent || "0").trim(),
+    documentsBadge: (el("documentsNavBadge")?.textContent || "0").trim(),
+    latestDiscovery: state.latest.discovery || "",
+    latestAcquisition: state.latest.acquisition || "",
+    latestParse: state.latest.parse || "",
+  });
+}
+
+function applySnapshot(payload) {
+  if (!payload) return;
+  if (payload.systemBadges) setText("systemBadges", payload.systemBadges);
+  if (payload.pollState) setPollState(`Follower sync: ${payload.pollState}`);
+  if (payload.pendingReview !== undefined) setText("statusPendingReview", String(payload.pendingReview));
+  if (payload.awaitingDocs !== undefined) setText("statusAwaitingDocs", String(payload.awaitingDocs));
+  if (payload.docFailures !== undefined) setText("statusDocFailures", String(payload.docFailures));
+  if (payload.reviewBadge !== undefined) setText("reviewNavBadge", String(payload.reviewBadge));
+  if (payload.documentsBadge !== undefined) setText("documentsNavBadge", String(payload.documentsBadge));
+  if (payload.latestDiscovery) setText("latestDiscoveryId", payload.latestDiscovery);
+  if (payload.latestAcquisition) setText("latestAcqId", payload.latestAcquisition);
+  if (payload.latestParse) setText("latestParseId", payload.latestParse);
+}
+
+function initMultiTabSync() {
+  if (typeof BroadcastChannel !== "undefined") {
+    const channel = new BroadcastChannel(BC_NAME);
+    state.multiTab.channel = channel;
+    channel.onmessage = (event) => {
+      const data = event.data || {};
+      if (!data || data.from === state.multiTab.tabId) return;
+      if (data.type === "ui_snapshot" && !state.multiTab.isLeader) {
+        applySnapshot(data.payload || {});
+      }
+      if (data.type === "leader_heartbeat") {
+        const record = parseLeaderRecord();
+        if (record && record.tabId !== state.multiTab.tabId && isLeaderAlive(record)) {
+          setLeaderMode(false);
+        }
+      }
+    };
+  }
+
+  const tick = () => {
+    const current = parseLeaderRecord();
+    if (!isLeaderAlive(current) || current?.tabId === state.multiTab.tabId) {
+      publishLeaderHeartbeat();
+      setLeaderMode(true);
+      broadcastMessage("leader_heartbeat");
+    } else {
+      setLeaderMode(false);
+    }
+  };
+
+  tick();
+  state.multiTab.heartbeatTimer = setInterval(tick, LEADER_HEARTBEAT_MS);
+
+  window.addEventListener("storage", (event) => {
+    if (event.key !== LEADER_STORAGE_KEY) return;
+    const current = parseLeaderRecord();
+    if (!current || !isLeaderAlive(current)) return;
+    if (current.tabId !== state.multiTab.tabId) setLeaderMode(false);
+  });
 }
 
 function hasActiveWork() {
@@ -274,18 +409,40 @@ function emitDebouncedInputTelemetry(target) {
 
 async function apiGet(path) {
   requiredKey();
-  const res = await fetch(path, { headers: authHeaders() });
-  if (!res.ok) {
-    let detail = `${res.status}`;
-    try {
-      const body = await res.json();
-      detail = body.detail || detail;
-    } catch (_err) {
-      // ignore
-    }
-    throw new Error(detail);
+  const cacheKey = `GET ${path}`;
+  const existing = state.net.inflightGet.get(cacheKey);
+  if (existing) {
+    state.net.dedupHits += 1;
+    return existing;
   }
-  return res.json();
+  const promise = (async () => {
+    state.net.requestCount += 1;
+    const cached = state.net.etagCache.get(cacheKey);
+    const headers = authHeaders();
+    if (cached?.etag) headers["If-None-Match"] = cached.etag;
+    const res = await fetch(path, { headers });
+    if (res.status === 304 && cached) return cached.payload;
+    if (!res.ok) {
+      let detail = `${res.status}`;
+      try {
+        const body = await res.json();
+        detail = body.detail || detail;
+      } catch (_err) {
+        // ignore
+      }
+      throw new Error(detail);
+    }
+    const payload = await res.json();
+    const etag = res.headers.get("ETag");
+    if (etag) state.net.etagCache.set(cacheKey, { etag, payload });
+    return payload;
+  })();
+  state.net.inflightGet.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    state.net.inflightGet.delete(cacheKey);
+  }
 }
 
 async function apiPost(path, payload) {
@@ -357,6 +514,11 @@ function updateSectionVisibility() {
 function schedulePoll() {
   if (state.pollTimer) clearTimeout(state.pollTimer);
   state.pollTimer = null;
+  if (!state.multiTab.isLeader) return;
+  if (document.visibilityState === "hidden") {
+    setPollState("Hidden tab: periodic refresh paused.");
+    return;
+  }
   const active = hasActiveWork();
   if (state.live.connected && !active) {
     setPollState("Live updates connected. Idle mode: interval polling paused.");
@@ -790,6 +952,7 @@ async function loadSystemStatus() {
     const db = payload.db_ready ? "db:ready" : `db:missing-${(payload.db_missing_tables || []).length}`;
     const authBadge = payload.auth_enabled ? "Auth: Yes" : "Auth: No";
     setText("systemBadges", `${authBadge} | ${db} | ${ai} | ${brave} | ${s2}`);
+    if (state.multiTab.isLeader) broadcastSnapshot();
     return payload;
   } catch (err) {
     setText("systemBadges", `status unavailable: ${err.message}`);
@@ -878,6 +1041,7 @@ async function loadDashboard() {
     lastRunState: recent,
     activeTopic: activeTopic()?.name || "Default Topic",
   });
+  if (state.multiTab.isLeader) broadcastSnapshot();
   return true;
 }
 
@@ -2190,6 +2354,7 @@ async function refreshCurrentSection() {
 }
 
 async function runPollCycle() {
+  if (!state.multiTab.isLeader) return;
   const section = activeSection();
   try {
     const sys = await loadSystemStatus();
@@ -2202,6 +2367,7 @@ async function runPollCycle() {
     await refreshCurrentSection();
     await refreshRunProgress();
     updateFreshness();
+    broadcastSnapshot();
     if (!state.live.connected || hasActiveWork()) {
       setPollState(`Fallback refresh active for #${section}.`);
     } else {
@@ -2218,11 +2384,15 @@ async function runLiveRefresh(eventType = "queue_updated") {
     await loadSystemStatus();
     if (eventType === "run_started" || eventType === "run_progress" || eventType === "run_completed") {
       await refreshRunProgress();
+      if (activeSection() === "review") await loadReview();
+      if (activeSection() === "documents" && state.documents.loaded) await loadDocuments();
+    } else if (eventType === "queue_updated") {
+      if (activeSection() === "review") await loadReview();
+      else if (activeSection() === "documents" && state.documents.loaded) await loadDocuments();
     }
     await loadDashboard();
-    if (activeSection() === "review") await loadReview();
-    if (activeSection() === "documents" && state.documents.loaded) await loadDocuments();
     updateFreshness();
+    broadcastSnapshot();
     setPollState(`Live update processed (${eventType}).`);
   } catch (err) {
     setPollState(`Live update failed: ${err.message}`, true);
@@ -2240,6 +2410,7 @@ function queueLiveRefresh(eventType) {
 }
 
 function openLiveUpdatesChannel() {
+  if (!state.multiTab.isLeader) return;
   if (state.live.eventSource) {
     state.live.eventSource.close();
     state.live.eventSource = null;
@@ -2412,6 +2583,7 @@ function init() {
   if (!window.location.hash) {
     window.location.hash = `#${activeSection()}`;
   }
+  initMultiTabSync();
   initAuth();
   initTelemetry();
   updateSectionVisibility();
@@ -2537,6 +2709,11 @@ function init() {
     updateSectionVisibility();
     if (activeSection() === "review") scheduleReviewAutoLoad("enter_review");
     schedulePoll();
+  });
+  window.addEventListener("beforeunload", () => {
+    if (state.multiTab.heartbeatTimer) clearInterval(state.multiTab.heartbeatTimer);
+    if (state.multiTab.channel) state.multiTab.channel.close();
+    if (state.live.eventSource) state.live.eventSource.close();
   });
 
   renderRunsTable();
