@@ -35,7 +35,7 @@ const state = {
       },
     },
   },
-  review: { offset: 0, total: 0, loaded: false, expanded: new Set(), selected: new Set(), items: [] },
+  review: { offset: 0, total: 0, loaded: false, expanded: new Set(), selected: new Set(), items: [], mode: "table", activeIndex: 0 },
   documents: {
     offset: 0,
     total: 0,
@@ -793,9 +793,9 @@ function resetStaleRunContext(reason) {
   state.documents.selected.clear();
   state.documents.loaded = false;
   state.search.loaded = false;
-  setText("reviewState", "No active runs found. Start from Build -> Run Discovery.");
-  setText("discoverState", "No active runs found. Start from Build -> Run Discovery.");
-  setText("documentsState", "No active runs found. Start from Build -> Run Discovery.");
+  setText("reviewState", "No active runs found. Start from Discover -> Run One Iteration.");
+  setText("discoverState", "No active runs found. Start from Discover -> Run One Iteration.");
+  setText("documentsState", "No active runs found. Start from Discover -> Run One Iteration.");
   emitTelemetryEvent("change", document.body, "stale_context_reset");
   return true;
 }
@@ -852,6 +852,72 @@ function statusBadge(status) {
   const text = statusToUi(status);
   const klass = text === "Ready" ? "status-ready" : text === "Needs Action" ? "status-alert" : "status-warn";
   return `<span class="status-badge ${klass}">${escapeHtml(text)}</span>`;
+}
+
+function formatReviewSignals(row) {
+  const out = [];
+  if ((row.title || "").toLowerCase().includes("upw")) out.push("upw");
+  if ((row.title || "").toLowerCase().includes("semiconductor")) out.push("semiconductor");
+  if ((row.abstract || "").toLowerCase().includes("contamination")) out.push("contamination control");
+  if (!out.length) out.push("keywords pending");
+  return out.join(", ");
+}
+
+function reviewStatusLabel(row) {
+  if (!row) return "-";
+  if (row.review_status === "needs_review") return "Pending";
+  if (row.accepted || row.review_status === "auto_accept" || row.review_status === "human_accept") return "Accepted";
+  if (row.review_status === "human_later") return "Later";
+  return "Rejected";
+}
+
+function renderReviewDetails(row) {
+  if (!row) {
+    setText("reviewDetailTitle", "No source selected.");
+    setText("reviewDetailScore", "-");
+    setText("reviewDetailStatus", "-");
+    setText("reviewDetailAbstract", "No source selected.");
+    setText("reviewDetailSignals", "-");
+    const link = el("reviewDetailLink");
+    if (link) link.href = "#";
+    return;
+  }
+  setText("reviewDetailTitle", row.title || "");
+  setText("reviewDetailScore", String(row.heuristic_score ?? row.relevance_score ?? "-"));
+  setText("reviewDetailStatus", reviewStatusLabel(row));
+  setText("reviewDetailAbstract", row.abstract || "");
+  setText("reviewDetailSignals", formatReviewSignals(row));
+  const link = el("reviewDetailLink");
+  if (link) link.href = row.url || "#";
+}
+
+function setReviewMode(mode) {
+  state.review.mode = mode === "fast" ? "fast" : "table";
+  const fast = state.review.mode === "fast";
+  const panel = el("fastReviewPanel");
+  const tableWrap = el("reviewRows")?.closest(".table-wrap");
+  if (panel) panel.hidden = !fast;
+  if (tableWrap) tableWrap.hidden = fast;
+  const paginationRow = el("reviewPaginationRow");
+  if (paginationRow && fast) paginationRow.hidden = true;
+  if (fast) renderFastReviewCard();
+}
+
+function renderFastReviewCard() {
+  const total = state.review.items.length;
+  if (!total) {
+    setText("fastReviewPosition", "Paper 0 of 0");
+    setText("fastReviewCard", "No source selected.");
+    return;
+  }
+  state.review.activeIndex = Math.max(0, Math.min(state.review.activeIndex, total - 1));
+  const row = state.review.items[state.review.activeIndex];
+  setText("fastReviewPosition", `Paper ${state.review.activeIndex + 1} of ${total}`);
+  setText(
+    "fastReviewCard",
+    `Title: ${row.title || ""}\n\nScore: ${row.heuristic_score ?? row.relevance_score ?? "-"}\nStatus: ${reviewStatusLabel(row)}\n\nAbstract:\n${row.abstract || ""}\n\nAI signals: ${formatReviewSignals(row)}`,
+  );
+  renderReviewDetails(row);
 }
 
 function reasonText(reasonCode) {
@@ -1293,9 +1359,12 @@ async function loadReview() {
   setText("reviewError", "");
   const runId = getDiscoveryRunId();
   if (!runId) {
-    setText("reviewState", "No active runs found. Start from Build -> Run Discovery.");
+    setText("reviewState", "No active runs found. Start from Discover -> Run One Iteration.");
     state.review.total = 0;
-    renderTable("reviewRows", [], 5);
+    state.review.items = [];
+    renderTable("reviewRows", [], 4);
+    renderReviewDetails(null);
+    renderFastReviewCard();
     applyPaginationControls("review", 0, state.review.offset, Number(el("reviewLimit").value));
     return true;
   }
@@ -1312,7 +1381,10 @@ async function loadReview() {
     if (String(err.message || "").includes("run_not_found")) {
       resetStaleRunContext("review_not_found");
       state.review.total = 0;
-      renderTable("reviewRows", [], 5);
+      state.review.items = [];
+      renderTable("reviewRows", [], 4);
+      renderReviewDetails(null);
+      renderFastReviewCard();
       applyPaginationControls("review", 0, state.review.offset, limit);
       return true;
     }
@@ -1333,6 +1405,8 @@ async function loadReview() {
     const run = await apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
     if (!items.length && (run.status === "queued" || run.status === "running")) {
       setText("reviewState", "Discovery run is still processing. Review queue will fill automatically.");
+    } else if (!items.length) {
+      setText("reviewState", "No items in this queue.");
     }
   } catch (_err) {
     // keep current UI state
@@ -1340,17 +1414,20 @@ async function loadReview() {
   renderTable(
     "reviewRows",
     items.map((s) => {
-      const expanded = state.review.expanded.has(s.id);
-      const view = abstractView(s.abstract || "", expanded);
-      const toggle = view.long
-        ? `<button type="button" class="review-action" data-action="toggle" data-source-id="${escapeHtml(s.id)}">${expanded ? "Collapse" : "Expand"}</button>`
-        : "";
-      const why = `${escapeHtml(s.decision_source || "")}${s.heuristic_score != null ? ` | score=${escapeHtml(String(s.heuristic_score))}` : ""}`;
       const checked = state.review.selected.has(s.id) ? " checked" : "";
-      return `<tr data-source-id="${escapeHtml(s.id)}"><td><input type="checkbox" class="review-select" data-source-id="${escapeHtml(s.id)}"${checked}></td><td><button type="button" class="review-action" data-action="preview" data-source-id="${escapeHtml(s.id)}">${escapeHtml(s.title || "")}</button></td><td><span>${escapeHtml(view.text)}</span> ${toggle}</td><td><button type="button" class="review-action" data-action="accept" data-source-id="${escapeHtml(s.id)}">Accept</button> <button type="button" class="review-action" data-action="reject" data-source-id="${escapeHtml(s.id)}">Reject</button> <button type="button" class="review-action" data-action="later" data-source-id="${escapeHtml(s.id)}">Later</button> ${statusBadge(s.review_status)}</td><td>${why}</td></tr>`;
+      const score = s.heuristic_score ?? s.relevance_score ?? "-";
+      const statusLabel = reviewStatusLabel(s);
+      return `<tr data-source-id="${escapeHtml(s.id)}"><td><input type="checkbox" class="review-select" data-source-id="${escapeHtml(s.id)}"${checked}></td><td><button type="button" class="review-action" data-action="preview" data-source-id="${escapeHtml(s.id)}">${escapeHtml(s.title || "")}</button></td><td>${escapeHtml(String(score))}</td><td>${escapeHtml(statusLabel)}</td></tr>`;
     }),
-    5,
+    4,
   );
+  if (items.length) {
+    if (state.review.activeIndex >= items.length) state.review.activeIndex = 0;
+    renderReviewDetails(items[state.review.activeIndex]);
+  } else {
+    renderReviewDetails(null);
+  }
+  renderFastReviewCard();
   state.review.loaded = true;
   updateReviewSelectionControls();
   return true;
@@ -1366,7 +1443,7 @@ async function loadDocuments() {
     const discoveryRunId = getDiscoveryRunId();
     state.documents.discoveryRunId = discoveryRunId || "";
     if (!discoveryRunId) {
-      setText("documentsState", "No active runs found. Start from Build -> Run Discovery.");
+      setText("documentsState", "No active runs found. Start from Discover -> Run One Iteration.");
       state.documents.total = 0;
       state.documents.items = [];
       renderTable("documentsRows", [], 4);
@@ -1425,7 +1502,7 @@ async function loadDocuments() {
     );
     setText("documentsPage", `offset=${state.documents.offset}, limit=${limit}, total=${total}`);
     applyPaginationControls("documents", total, state.documents.offset, limit);
-    setText("documentsState", `Approved sources ready: ${total}. Click Process Approved Docs.`);
+    setText("documentsState", `Approved sources ready: ${total}. Click Download Documents.`);
     if (!total) {
       setText("documentsDetails", "No approved sources yet. Continue review decisions first.");
     }
@@ -1500,9 +1577,9 @@ async function loadDocuments() {
       const openUrl = item.selected_url || item.source_url || "";
       const checked = state.documents.selected.has(item.source_id) ? " checked" : "";
       const openLink = openUrl ? ` <a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : "";
-      let nextStep = "Awaiting processing";
+      let nextStep = "Awaiting download";
       if (item.status === "failed" || item.status === "partial") {
-        nextStep = `<button type="button" class="documents-action" data-action="upload" data-source-id="${escapeHtml(item.source_id)}">Upload PDF</button>`;
+        nextStep = `<button type="button" class="documents-action" data-action="retry" data-source-id="${escapeHtml(item.source_id)}" data-discovery-run-id="${escapeHtml(state.documents.discoveryRunId || "")}">Download</button> <button type="button" class="documents-action" data-action="upload" data-source-id="${escapeHtml(item.source_id)}">Upload PDF</button>`;
       } else if (item.status === "skipped" && item.reason_code !== "manual_complete") {
         nextStep = `<button type="button" class="documents-action" data-action="manual-complete" data-source-id="${escapeHtml(item.source_id)}">Manual Complete</button>`;
       } else if (item.status === "downloaded") {
@@ -2051,74 +2128,26 @@ async function handleReviewAction(event) {
   const action = target.dataset.action || "";
   const sourceId = target.dataset.sourceId || "";
 
-  if (action === "toggle") {
-    if (!sourceId) return;
-    if (state.review.expanded.has(sourceId)) state.review.expanded.delete(sourceId);
-    else state.review.expanded.add(sourceId);
-    try {
-      await loadReview();
-    } catch (err) {
-      setText("reviewError", `Load failed: ${err.message}`);
-    }
-    return;
-  }
-
   if (action === "preview") {
-    const row = state.review.items.find((item) => item.id === sourceId);
+    const idx = state.review.items.findIndex((item) => item.id === sourceId);
+    const row = idx >= 0 ? state.review.items[idx] : null;
     if (!row) return;
-    const citation = `${row.title || ""}${row.year ? ` (${row.year})` : ""}${row.source ? ` - ${row.source}` : ""}`;
-    setText(
-      "reviewPreview",
-      JSON.stringify(
-        {
-          title: row.title || "",
-          abstract: row.abstract || "",
-          doi: row.doi || "",
-          url: row.url || "",
-          citation,
-        },
-        null,
-        2,
-      ),
-    );
-    el("reviewPreviewTitle").value = row.title || "";
-    el("reviewPreviewDoi").value = row.doi || "";
-    el("reviewPreviewUrl").value = row.url || "";
-    el("reviewPreviewCitation").value = citation;
+    state.review.activeIndex = idx;
+    renderReviewDetails(row);
+    renderFastReviewCard();
     return;
   }
 
   if (action === "later") {
     if (!sourceId) return;
-    try {
-      await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision: "later" });
-      state.review.selected.delete(sourceId);
-      setText("reviewState", "Moved to Later.");
-      await loadReview();
-      await loadDashboard();
-    } catch (err) {
-      if (String(err.message || "").includes("source_not_found")) {
-        await recoverLatestDiscoveryRun();
-      }
-      setText("reviewError", `Review failed: ${err.message}`);
-    }
+    state.review.selected.delete(sourceId);
+    await applySingleReviewDecision(sourceId, "later");
     return;
   }
 
   if (action !== "accept" && action !== "reject") return;
   if (!sourceId) return;
-  try {
-    await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision: action === "accept" ? "accept" : "reject" });
-    if (action === "accept") {
-      setText("reviewState", "Accepted. Open Documents and click Process Approved Docs.");
-    } else {
-      setText("reviewState", "Rejected.");
-    }
-    await loadReview();
-    await loadDashboard();
-  } catch (err) {
-    setText("reviewError", `Review failed: ${err.message}`);
-  }
+  await applySingleReviewDecision(sourceId, action === "accept" ? "accept" : "reject");
 }
 
 async function applyReviewDecisionToSelected(decision) {
@@ -2139,12 +2168,61 @@ async function applyReviewDecisionToSelected(decision) {
   }
   state.review.selected.clear();
   if (decision === "accept") {
-    setText("reviewState", `Accepted ${ok}/${selected.length}. Open Documents and click Process Approved Docs.`);
+    setText("reviewState", `Accepted ${ok}/${selected.length}. Open Documents and click Download Documents.`);
   } else {
     setText("reviewState", `${decision} applied to ${ok}/${selected.length} selected rows.`);
   }
   await loadReview();
   await loadDashboard();
+}
+
+async function applySingleReviewDecision(sourceId, decision) {
+  if (!sourceId) return;
+  try {
+    await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision });
+    if (decision === "accept") setText("reviewState", "Accepted. Click Download Documents next.");
+    else if (decision === "reject") setText("reviewState", "Rejected.");
+    else setText("reviewState", "Moved to Later.");
+    await loadReview();
+    await loadDashboard();
+  } catch (err) {
+    setText("reviewError", `Review failed: ${err.message}`);
+  }
+}
+
+function fastReviewMove(delta) {
+  if (!state.review.items.length) return;
+  state.review.activeIndex = Math.max(0, Math.min(state.review.activeIndex + delta, state.review.items.length - 1));
+  renderFastReviewCard();
+}
+
+async function fastReviewDecision(decision) {
+  const row = state.review.items[state.review.activeIndex];
+  if (!row) return;
+  await applySingleReviewDecision(row.id, decision);
+}
+
+function handleReviewShortcuts(event) {
+  if (activeSection() !== "review") return;
+  const target = event.target;
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+  const key = (event.key || "").toLowerCase();
+  if (key === "a") {
+    event.preventDefault();
+    fastReviewDecision("accept");
+  } else if (key === "r") {
+    event.preventDefault();
+    fastReviewDecision("reject");
+  } else if (key === "l") {
+    event.preventDefault();
+    fastReviewDecision("later");
+  } else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    fastReviewMove(1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    fastReviewMove(-1);
+  }
 }
 
 async function startAcquisition(event) {
@@ -2233,7 +2311,7 @@ async function handleDocumentsAction(event) {
   if (action === "retry") {
     try {
       await apiPost("/v1/acquisition/runs", { run_id: discoveryRunId, retry_failed_only: true });
-      setText("documentsState", "Retry acquisition started.");
+      setText("documentsState", "Retry download started.");
       await loadDocuments();
       await loadDashboard();
     } catch (err) {
@@ -2326,7 +2404,7 @@ async function documentsAcquirePending() {
     );
     setLatestId("acquisition", next.acq_run_id);
     el("documentsAcqRunIdInput").value = next.acq_run_id;
-    setText("documentsState", "Started processing approved documents.");
+    setText("documentsState", "Started document download.");
     await loadDocuments();
     await loadDashboard();
   } catch (err) {
@@ -2335,7 +2413,7 @@ async function documentsAcquirePending() {
       el("documentsAcquirePendingBtn") || document.body,
       `action:process_approved_docs:error run_id=${runId} error=${String(err.message || "unknown")}`,
     );
-    setText("documentsError", `Process approved docs failed: ${err.message}`);
+    setText("documentsError", `Download documents failed: ${err.message}`);
   }
 }
 
@@ -2866,12 +2944,21 @@ function init() {
     state.review.offset = 0;
     scheduleReviewAutoLoad("run_override_changed");
   });
+  addListener("reviewMode", "change", () => setReviewMode(el("reviewMode").value));
   addListener("reviewRows", "click", handleReviewAction);
   addListener("reviewRows", "change", handleReviewAction);
   addListener("reviewBatchAcceptBtn", "click", () => applyReviewDecisionToSelected("accept"));
   addListener("reviewBatchRejectBtn", "click", () => applyReviewDecisionToSelected("reject"));
   addListener("reviewSelectAllBtn", "click", selectAllReviewRows);
   addListener("reviewDeselectAllBtn", "click", deselectAllReviewRows);
+  addListener("reviewDetailAcceptBtn", "click", () => fastReviewDecision("accept"));
+  addListener("reviewDetailRejectBtn", "click", () => fastReviewDecision("reject"));
+  addListener("reviewDetailLaterBtn", "click", () => fastReviewDecision("later"));
+  addListener("fastAcceptBtn", "click", () => fastReviewDecision("accept"));
+  addListener("fastRejectBtn", "click", () => fastReviewDecision("reject"));
+  addListener("fastLaterBtn", "click", () => fastReviewDecision("later"));
+  addListener("fastPrevBtn", "click", () => fastReviewMove(-1));
+  addListener("fastNextBtn", "click", () => fastReviewMove(1));
 
   addListener("documentsForm", "submit", async (event) => {
     event.preventDefault();
@@ -2925,8 +3012,12 @@ function init() {
     const route = state.statusStrip.nextActionRoute || "build";
     window.location.hash = `#${route}`;
   });
+  addListener("taskReviewBtn", "click", () => (window.location.hash = "#review"));
+  addListener("taskDocumentsBtn", "click", () => (window.location.hash = "#documents"));
+  addListener("taskErrorsBtn", "click", () => (window.location.hash = "#documents"));
 
   initPagination();
+  document.addEventListener("keydown", handleReviewShortcuts);
 
   document.addEventListener("visibilitychange", schedulePoll);
   window.addEventListener("hashchange", () => {
@@ -2943,6 +3034,7 @@ function init() {
   renderRunsTable();
   renderBuildTopics();
   setBuildTab(state.build.activeTab);
+  setReviewMode(el("reviewMode")?.value || "table");
   (async () => {
     try {
       if (state.sessions.autoRestore && state.sessions.items.length > 0) {

@@ -8,6 +8,7 @@ Status:
 - Updated on 2026-03-12: Review pane now auto-populates without manual load action (#20).
 - Updated on 2026-03-12: LAN access workflow docs (#21) and HMI request-storm reduction controls (#22) are implemented.
 - Updated on 2026-03-12: Session save/load workflow (#23) is implemented with auto-restore and history.
+- Updated on 2026-03-12: GUI Team Notes v1.1 alignment (#24) is implemented for task-first UX.
 
 ## High Priority
 
@@ -1190,3 +1191,23 @@ Definition of done for Phase 4.3:
   - user can save current state in one click
   - after restart, user can load and continue from the same working state
   - corrupted/missing session state is handled gracefully with clear warning and fallback
+
+2. [x] P0 - Align HMI with GUI Team Notes v1.1 (task-first UX)
+- Mother document reference:
+  - `/home/garik/Downloads/knowledge_miner_gui_team_notes_v1_1.md`
+- Related in-repo references:
+  - `UI_SPEC.md`
+  - `README.md`
+  - `BACKLOG.md` (Phase 4.3 section)
+- Scope:
+  - enforce task-first flow (`Discover -> Review -> Documents -> Library`) with `Advanced` technical-only
+  - dashboard top area must prioritize `Pending tasks` links
+  - review table uses `Title / Score / Status`; full abstract only in details panel
+  - add fast review mode (single-paper view) with shortcuts `A/R/L` and arrow navigation
+  - keep system diagnostics in footer or Advanced, not in main work area
+  - use plain-language labels; hide pipeline/internal IDs from normal task screens
+- Acceptance criteria:
+  - first-time user completes one cycle without docs/help (`discover -> review -> documents -> library`)
+  - default review queue shows only `needs_review` while still allowing audit of auto-accept/reject decisions
+  - documents page wording/action model follows `Download` / `Upload PDF`
+  - advanced diagnostics remain available but do not block/interrupt primary workflow

@@ -83,7 +83,7 @@ Source of truth docs:
 1. `README.md` - entry point
 2. `CURRENT_SCOPE.md` - what exists now, scope boundaries, near-term direction
 3. `ARCHITECTURE.md` - system components, data flow, runtime boundaries
-4. `UI_SPEC.md` - canonical user workflow and HMI behavior contract (Build/Review/Documents/Library/Advanced)
+4. `UI_SPEC.md` - canonical user workflow and HMI behavior contract (Discover/Review/Documents/Library/Advanced)
 5. `PIPELINE_RULES.md` - discovery/decision/iteration rules
 6. `DATA_SCHEMA.md` - data model and constraints
 7. `BACKLOG.md` - active implementation tasks

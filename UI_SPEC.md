@@ -5,7 +5,7 @@ Status: Active source of truth (aligned with `Knowledge_Miner_GUI_Spec.docx` imp
 ## Navigation (Single Canonical Model)
 
 Top-level navigation is fixed to:
-1. `Build`
+1. `Discover`
 2. `Review`
 3. `Documents`
 4. `Library`
@@ -29,10 +29,10 @@ No stage-first navigation is valid for primary UX.
 
 ## Page Contracts
 
-## Build
+## Discover
 
 Goal:
-1. Planning and iteration workspace.
+1. Discovery workspace.
 
 Must include:
 1. Topic list and create-topic flow.
@@ -69,7 +69,7 @@ Goal:
 Must include:
 1. Acquisition queue with `Awaiting`, `Acquired`, `Failed`, `Manual Recovery`.
 2. Queue can be populated directly from approved review sources before acquisition run creation.
-3. Primary action label: `Process Approved Docs`.
+3. Primary action label: `Download Documents`.
 4. Secondary visible action: `View Issues`.
 5. Batch upload action: `Upload PDF Batch` with match result summary (`matched/unmatched/ambiguous`).
 6. Actions per row: one recommended next step based on status (`Upload PDF`, `Manual Complete`, `Acquired`, `Awaiting processing`) and optional `Open source`.
@@ -140,7 +140,7 @@ Task pages depend on:
 
 ## Acceptance Criteria
 
-1. First-time user completes `Build -> Review -> Documents -> Library` without external docs.
+1. First-time user completes `Discover -> Review -> Documents -> Library` without external docs.
 2. No manual ID copy/paste required in default flow.
 3. Advanced controls remain available without cluttering task pages.
 4. Navigation model remains single and consistent across docs/tests/UI.

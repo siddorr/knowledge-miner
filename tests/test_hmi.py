@@ -12,7 +12,7 @@ def test_hmi_shell_route_and_navigation():
     assert response.status_code == 200
     body = response.text
     assert "Knowledge Miner Task Dashboard" in body
-    assert "Build" in body
+    assert "Discover" in body
     assert "+ New Topic" in body
     assert "Add Sources" in body
     assert "Queries" in body
@@ -26,9 +26,8 @@ def test_hmi_shell_route_and_navigation():
     assert "Later" in body
     assert "Accept Selected" in body
     assert "Reject Selected" in body
-    assert "Process Approved Docs" in body
-    assert "Preview" in body
-    assert "Copy DOI" in body
+    assert "Download Documents" in body
+    assert "Article Details" in body
     assert "Copy Error" in body
     assert "Copy Runs Error" in body
     assert "Copy Parse Error" in body
@@ -51,20 +50,22 @@ def test_hmi_shell_route_and_navigation():
     assert "inProgressBanner" in body
     assert "inProgressState" in body
     assert "liveUpdatesState" in body
-    assert "Pending review:" in body
-    assert "Accepted waiting docs:" in body
-    assert "Document failures:" in body
+    assert "Pending Tasks" in body
+    assert "Review Sources:" in body
+    assert "Resolve Errors:" in body
     assert "statusNextActionBtn" in body
     assert "useLatestRunBtn" in body
     assert "/hmi/static/hmi.js" in body
     assert "Run One Iteration" in body
     assert "Run Next Citation Iteration" in body
     assert "Search New Keywords" in body
+    assert "Mode" in body
+    assert "Fast review" in body
     assert "Refresh Review Queue" in body
     assert "Start Acquisition" in body
     assert "Start Parse" in body
-    assert "Abstract" in body
-    assert "Actions" in body
+    assert "Score" in body
+    assert "Status" in body
     assert "Latest IDs:" in body
     assert "Copy ID" in body
     assert "Context:" in body
