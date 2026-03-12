@@ -60,7 +60,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Run One Iteration" in body
     assert "Run Next Citation Iteration" in body
     assert "Search New Keywords" in body
-    assert "Load Review Queue" in body
+    assert "Refresh Review Queue" in body
     assert "Start Acquisition" in body
     assert "Start Parse" in body
     assert "Abstract" in body
@@ -156,6 +156,7 @@ def test_hmi_static_js_served():
     assert "Auth: Yes" in body
     assert "openLiveUpdatesChannel" in body
     assert "Live updates connected. Idle mode: interval polling paused." in body
+    assert "scheduleReviewAutoLoad" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

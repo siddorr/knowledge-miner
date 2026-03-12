@@ -57,6 +57,9 @@ const state = {
   stale: {
     lastResetKey: "",
   },
+  reviewAuto: {
+    timer: null,
+  },
   live: {
     connected: false,
     eventSource: null,
@@ -399,6 +402,10 @@ function setLatestId(kind, value) {
   if (kind === "discovery") setText("latestDiscoveryId", trimmed || "-");
   if (kind === "acquisition") setText("latestAcqId", trimmed || "-");
   if (kind === "parse") setText("latestParseId", trimmed || "-");
+  if (kind === "discovery" && activeSection() === "review") {
+    state.review.offset = 0;
+    scheduleReviewAutoLoad("run_context_changed");
+  }
 }
 
 function clearRunInputs() {
@@ -1610,7 +1617,7 @@ function handleCopyValueClick(event) {
 }
 
 async function loadReviewClick(event) {
-  event.preventDefault();
+  if (event && event.preventDefault) event.preventDefault();
   state.review.offset = 0;
   try {
     await loadReview();
@@ -1624,6 +1631,27 @@ async function loadReviewClick(event) {
     }
     setText("reviewError", `Load failed: ${err.message}`);
   }
+}
+
+function scheduleReviewAutoLoad(reason = "auto") {
+  if (state.reviewAuto.timer) clearTimeout(state.reviewAuto.timer);
+  state.reviewAuto.timer = setTimeout(async () => {
+    state.reviewAuto.timer = null;
+    if (activeSection() !== "review") return;
+    try {
+      await loadReview();
+      setText("reviewState", `Review queue updated (${reason}).`);
+    } catch (err) {
+      if (String(err.message || "").includes("run_not_found")) {
+        const recovered = await recoverLatestDiscoveryRun();
+        if (recovered) {
+          await loadReview();
+          return;
+        }
+      }
+      setText("reviewError", `Auto-load failed: ${err.message}`);
+    }
+  }, 250);
 }
 
 async function recoverLatestDiscoveryRun() {
@@ -2192,7 +2220,7 @@ async function runLiveRefresh(eventType = "queue_updated") {
       await refreshRunProgress();
     }
     await loadDashboard();
-    if (activeSection() === "review" && state.review.loaded) await loadReview();
+    if (activeSection() === "review") await loadReview();
     if (activeSection() === "documents" && state.documents.loaded) await loadDocuments();
     updateFreshness();
     setPollState(`Live update processed (${eventType}).`);
@@ -2423,7 +2451,25 @@ function init() {
   });
   addListener("downloadSourcesRawBtn", "click", exportSourcesRaw);
 
-  addListener("reviewForm", "submit", loadReviewClick);
+  addListener("reviewRefreshBtn", "click", async () => {
+    try {
+      await loadReviewClick(new Event("submit"));
+    } catch (_err) {
+      // loadReviewClick handles message
+    }
+  });
+  addListener("reviewStatusFilter", "change", () => {
+    state.review.offset = 0;
+    scheduleReviewAutoLoad("filter_changed");
+  });
+  addListener("reviewLimit", "change", () => {
+    state.review.offset = 0;
+    scheduleReviewAutoLoad("limit_changed");
+  });
+  addListener("reviewRunIdInput", "change", () => {
+    state.review.offset = 0;
+    scheduleReviewAutoLoad("run_override_changed");
+  });
   addListener("reviewRows", "click", handleReviewAction);
   addListener("reviewRows", "change", handleReviewAction);
   addListener("reviewBatchAcceptBtn", "click", () => applyReviewDecisionToSelected("accept"));
@@ -2489,6 +2535,7 @@ function init() {
   document.addEventListener("visibilitychange", schedulePoll);
   window.addEventListener("hashchange", () => {
     updateSectionVisibility();
+    if (activeSection() === "review") scheduleReviewAutoLoad("enter_review");
     schedulePoll();
   });
 
@@ -2508,6 +2555,7 @@ function init() {
     loadAiSettings();
   })();
   emitTelemetryEvent("navigate", document.body, activeSection());
+  if (activeSection() === "review") scheduleReviewAutoLoad("initial_review");
   schedulePoll();
 }
 

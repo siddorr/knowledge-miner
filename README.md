@@ -9,7 +9,7 @@ Current product includes:
 4. Batch PDF upload with auto-match to pending acquisition items.
 5. Full-text parse/chunk processing and search.
 6. Operator-driven discovery iterations (`Run One Iteration`, explicit citation iteration, keyword search on demand).
-7. Task-first HMI workflow for operators with live updates (SSE), visible progress/freshness state, explicit auth badges, and conditional pagination controls.
+7. Task-first HMI workflow for operators with live updates (SSE), visible progress/freshness state, explicit auth badges, conditional pagination controls, and auto-loading Review queue.
 8. Direct Review -> Documents transition (no manual "send to documents" step).
 
 ## Quick Start

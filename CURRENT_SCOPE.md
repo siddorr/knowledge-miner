@@ -17,6 +17,7 @@ Knowledge Miner is an end-to-end UPW literature workflow for semiconductor manuf
 10. Pagination controls appear only when a list has multiple pages.
 11. HMI status strip shows explicit auth state (`Auth: Yes` / `Auth: No`).
 12. UI refresh model is event-driven (SSE) with fallback polling only when needed.
+13. Review pane auto-populates on entry/context changes with debounced refresh.
 
 ## In Scope
 

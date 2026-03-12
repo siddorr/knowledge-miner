@@ -5,6 +5,7 @@ Status:
 - Updated on 2026-03-12: P0/P1 UX backlog items #11-#15 are implemented and verified in API/HMI/tests.
 - Updated on 2026-03-12: Discovery iteration control (#16) and conditional pagination behavior (#17) are implemented.
 - Updated on 2026-03-12: Auth wording clarity (#18) and live-update/fallback refresh model (#19) are implemented.
+- Updated on 2026-03-12: Review pane now auto-populates without manual load action (#20).
 
 ## High Priority
 
@@ -391,7 +392,7 @@ Status:
   - UI test: idle state does not issue periodic refresh requests.
   - UI test: fallback polling activates only during active runs or disconnected push channel.
 
-20. [ ] P1 - Auto-populate Review pane without manual "Load" action
+20. [x] P1 - Auto-populate Review pane without manual "Load" action
 - Goal: review queue appears and updates automatically; operator should not need to press `Load Review Queue`.
 - Required behavior:
   - On entering Review page, queue loads automatically for active run context.

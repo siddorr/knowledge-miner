@@ -223,8 +223,8 @@
             <option value="100">100</option>
           </select>
         </label>
-        <button type="submit">Load Review Queue</button>
       </form>
+      <p class="muted">Queue auto-loads when you open Review or change filters.</p>
       <div class="row compact">
         <button id="reviewBatchAcceptBtn" type="button">Accept Selected</button>
         <button id="reviewBatchRejectBtn" type="button">Reject Selected</button>
@@ -260,6 +260,7 @@
           Discovery Run ID Override
           <input id="reviewRunIdInput" type="text" placeholder="run_...">
         </label>
+        <button id="reviewRefreshBtn" type="button">Refresh Review Queue</button>
       </details>
       <p id="reviewState" class="muted"></p>
       <div class="row compact">
