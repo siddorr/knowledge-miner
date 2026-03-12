@@ -825,11 +825,18 @@ def hmi_shell(db: Session = Depends(get_db)) -> HTMLResponse:
     token_json = json.dumps(settings.hmi_api_token) if settings.auth_enabled and settings.hmi_api_token else "null"
     auth_enabled_json = "true" if settings.auth_enabled else "false"
     launch_section_json = json.dumps(launch_section)
+    static_version = str(
+        max(
+            int((HMI_DIR / "static" / "hmi.js").stat().st_mtime),
+            int((HMI_DIR / "static" / "hmi.css").stat().st_mtime),
+        )
+    )
     html = (
         template
         .replace("__HMI_DEFAULT_TOKEN_JSON__", token_json)
         .replace("__HMI_AUTH_ENABLED__", auth_enabled_json)
         .replace("__HMI_LAUNCH_SECTION_JSON__", launch_section_json)
+        .replace("__HMI_STATIC_VERSION__", static_version)
     )
     return HTMLResponse(content=html)
 
@@ -1010,6 +1017,8 @@ def source_review(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="source_not_found; hint=reload_review_queue_or_check_discovery_run_context",
         )
+    if payload.run_id and payload.run_id != source.run_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_context_mismatch")
     try:
         updated = review_source(db, source, payload.decision)
     except ValueError as exc:

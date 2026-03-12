@@ -76,6 +76,12 @@ const state = {
     etagCache: new Map(),
     requestCount: 0,
     dedupHits: 0,
+    readThrottleUntil: 0,
+    readBackoffMs: 0,
+  },
+  refresh: {
+    inflight: new Map(),
+    lastAt: new Map(),
   },
   multiTab: {
     tabId: `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
@@ -113,6 +119,10 @@ function setPollState(message, stale = false) {
   node.textContent = message;
   node.classList.remove("poll-ok", "poll-stale");
   node.classList.add(stale ? "poll-stale" : "poll-ok");
+}
+
+function isReadRateLimitedError(err) {
+  return String(err?.message || "").includes("read_rate_limited");
 }
 
 function parseLeaderRecord() {
@@ -415,6 +425,9 @@ function emitDebouncedInputTelemetry(target) {
 
 async function apiGet(path) {
   requiredKey();
+  if (Date.now() < state.net.readThrottleUntil) {
+    throw new Error("read_rate_limited");
+  }
   const cacheKey = `GET ${path}`;
   const existing = state.net.inflightGet.get(cacheKey);
   if (existing) {
@@ -436,8 +449,14 @@ async function apiGet(path) {
       } catch (_err) {
         // ignore
       }
+      if (res.status === 429 && String(detail).includes("read_rate_limited")) {
+        state.net.readBackoffMs = Math.min(30000, Math.max(2000, state.net.readBackoffMs ? state.net.readBackoffMs * 2 : 2000));
+        state.net.readThrottleUntil = Date.now() + state.net.readBackoffMs;
+      }
       throw new Error(detail);
     }
+    state.net.readBackoffMs = 0;
+    state.net.readThrottleUntil = 0;
     const payload = await res.json();
     const etag = res.headers.get("ETag");
     if (etag) state.net.etagCache.set(cacheKey, { etag, payload });
@@ -493,6 +512,23 @@ async function apiDownload(path, filename) {
   link.click();
   link.remove();
   URL.revokeObjectURL(objectUrl);
+}
+
+async function coalescedRefresh(key, minIntervalMs, fn, force = false) {
+  const inflight = state.refresh.inflight.get(key);
+  if (inflight) return inflight;
+  const last = Number(state.refresh.lastAt.get(key) || 0);
+  if (!force && Date.now() - last < minIntervalMs) return true;
+  const promise = (async () => {
+    try {
+      return await fn();
+    } finally {
+      state.refresh.inflight.delete(key);
+      state.refresh.lastAt.set(key, Date.now());
+    }
+  })();
+  state.refresh.inflight.set(key, promise);
+  return promise;
 }
 
 function setContext(patch) {
@@ -655,6 +691,77 @@ function saveCurrentSession() {
   setText("sessionState", `Session saved: ${snapshot.name}`);
 }
 
+async function validateSessionSnapshot(snapshot) {
+  const clone = JSON.parse(JSON.stringify(snapshot || {}));
+  const notes = [];
+  const discoveryIds = new Set();
+  const acquisitionIds = new Set();
+  const parseIds = new Set();
+  const discoveryCandidates = [
+    clone.latest?.discovery,
+    clone.ids?.discoverRunIdInput,
+    clone.ids?.reviewRunIdInput,
+    clone.ids?.startAcqRunId,
+  ];
+  const acquisitionCandidates = [clone.latest?.acquisition, clone.documents?.acqRunIdInput, clone.ids?.startParseAcqRunId];
+  const parseCandidates = [clone.latest?.parse, clone.library?.parseRunIdInput];
+  for (const id of discoveryCandidates) if (id) discoveryIds.add(String(id));
+  for (const id of acquisitionCandidates) if (id) acquisitionIds.add(String(id));
+  for (const id of parseCandidates) if (id) parseIds.add(String(id));
+
+  const validDiscovery = new Set();
+  const validAcquisition = new Set();
+  const validParse = new Set();
+  await Promise.all(
+    Array.from(discoveryIds).map(async (id) => {
+      try {
+        await apiGet(`/v1/discovery/runs/${encodeURIComponent(id)}`);
+        validDiscovery.add(id);
+      } catch (_err) {
+        notes.push(`discovery cleared: ${id}`);
+      }
+    }),
+  );
+  await Promise.all(
+    Array.from(acquisitionIds).map(async (id) => {
+      try {
+        await apiGet(`/v1/acquisition/runs/${encodeURIComponent(id)}`);
+        validAcquisition.add(id);
+      } catch (_err) {
+        notes.push(`acquisition cleared: ${id}`);
+      }
+    }),
+  );
+  await Promise.all(
+    Array.from(parseIds).map(async (id) => {
+      try {
+        await apiGet(`/v1/parse/runs/${encodeURIComponent(id)}`);
+        validParse.add(id);
+      } catch (_err) {
+        notes.push(`parse cleared: ${id}`);
+      }
+    }),
+  );
+
+  const keepDiscovery = (v) => (v && validDiscovery.has(String(v)) ? String(v) : "");
+  const keepAcquisition = (v) => (v && validAcquisition.has(String(v)) ? String(v) : "");
+  const keepParse = (v) => (v && validParse.has(String(v)) ? String(v) : "");
+  clone.latest = clone.latest || {};
+  clone.ids = clone.ids || {};
+  clone.documents = clone.documents || {};
+  clone.library = clone.library || {};
+  clone.latest.discovery = keepDiscovery(clone.latest.discovery);
+  clone.ids.discoverRunIdInput = keepDiscovery(clone.ids.discoverRunIdInput);
+  clone.ids.reviewRunIdInput = keepDiscovery(clone.ids.reviewRunIdInput);
+  clone.ids.startAcqRunId = keepDiscovery(clone.ids.startAcqRunId);
+  clone.latest.acquisition = keepAcquisition(clone.latest.acquisition);
+  clone.documents.acqRunIdInput = keepAcquisition(clone.documents.acqRunIdInput);
+  clone.ids.startParseAcqRunId = keepAcquisition(clone.ids.startParseAcqRunId);
+  clone.latest.parse = keepParse(clone.latest.parse);
+  clone.library.parseRunIdInput = keepParse(clone.library.parseRunIdInput);
+  return { snapshot: clone, notes };
+}
+
 async function loadSelectedSession() {
   const select = el("sessionHistorySelect");
   const id = select?.value || "";
@@ -664,12 +771,14 @@ async function loadSelectedSession() {
     return;
   }
   try {
-    applySessionState(item.state);
+    const validated = await validateSessionSnapshot(item.state);
+    applySessionState(validated.snapshot);
     await loadDashboard();
     if (activeSection() === "review") scheduleReviewAutoLoad("session_restore");
-    if (activeSection() === "documents") await loadDocuments();
+    if (activeSection() === "documents") await refreshDocuments(true);
     if (activeSection() === "library") await runSearch();
-    setText("sessionState", `Session loaded: ${item.name}`);
+    if (validated.notes.length) setText("sessionState", `Session loaded with cleared stale IDs: ${validated.notes.join("; ")}`);
+    else setText("sessionState", `Session loaded: ${item.name}`);
   } catch (err) {
     setText("sessionState", `Session load failed: ${err.message}`);
   }
@@ -722,6 +831,8 @@ function schedulePoll() {
   let interval;
   if (!state.live.connected && !active) interval = POLL_DISCONNECTED_IDLE_MS;
   else interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
+  const throttleMs = Math.max(0, state.net.readThrottleUntil - Date.now());
+  if (throttleMs > 0) interval = Math.max(interval, throttleMs);
   state.pollTimer = setTimeout(runPollCycle, interval);
 }
 
@@ -806,7 +917,7 @@ function resetStaleRunContext(reason) {
   return true;
 }
 
-async function useLatestRunContext() {
+async function useLatestRunContext(interactive = false) {
   const payload = await apiGet("/v1/runs/latest");
   const d = (payload.discovery_run_id || "").trim();
   const a = (payload.acquisition_run_id || "").trim();
@@ -815,18 +926,23 @@ async function useLatestRunContext() {
     resetStaleRunContext("use_latest_none");
     return false;
   }
-  if (d) {
-    setLatestId("discovery", d);
-    el("discoverRunIdInput").value = d;
-    el("reviewRunIdInput").value = d;
+  const prev = { ...state.latest };
+  const changed = (!!d && d !== prev.discovery) || (!!a && a !== prev.acquisition) || (!!p && p !== prev.parse);
+  if (interactive && changed) {
+    const ok = window.confirm(
+      `Switch active context?\nDiscovery: ${prev.discovery || "-"} -> ${d || prev.discovery || "-"}\nAcquisition: ${prev.acquisition || "-"} -> ${a || prev.acquisition || "-"}\nParse: ${prev.parse || "-"} -> ${p || prev.parse || "-"}`,
+    );
+    if (!ok) return false;
   }
-  if (a) {
-    setLatestId("acquisition", a);
-    el("documentsAcqRunIdInput").value = a;
-  }
-  if (p) {
-    setLatestId("parse", p);
-    el("searchParseRunIdInput").value = p;
+  if (d) setLatestId("discovery", d);
+  if (a) setLatestId("acquisition", a);
+  if (p) setLatestId("parse", p);
+  if (changed) {
+    emitTelemetryEvent(
+      "change",
+      el("useLatestRunBtn") || document.body,
+      `context_switch discovery:${prev.discovery || "-"}->${state.latest.discovery || "-"} acq:${prev.acquisition || "-"}->${state.latest.acquisition || "-"} parse:${prev.parse || "-"}->${state.latest.parse || "-"}`,
+    );
   }
   setText("reviewState", "Loaded latest run context.");
   return true;
@@ -842,6 +958,32 @@ function getAcqRunId() {
 
 function getParseRunId() {
   return (state.latest.parse || "").trim();
+}
+
+async function ensureDiscoveryRunExists(runId) {
+  if (!runId) throw new Error("discovery run context is required");
+  try {
+    await apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
+    return true;
+  } catch (err) {
+    if (String(err.message || "").includes("run_not_found")) {
+      throw new Error("Active discovery run is missing. Use Latest or start a new run.");
+    }
+    throw err;
+  }
+}
+
+async function ensureAcquisitionRunExists(acqRunId) {
+  if (!acqRunId) throw new Error("acquisition run context is required");
+  try {
+    await apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}`);
+    return true;
+  } catch (err) {
+    if (String(err.message || "").includes("run_not_found")) {
+      throw new Error("Active acquisition run is missing. Use Latest or start acquisition again.");
+    }
+    throw err;
+  }
 }
 
 function statusToUi(status) {
@@ -1608,6 +1750,28 @@ async function loadDocuments() {
   return true;
 }
 
+function reviewRefreshKey() {
+  const runId = getDiscoveryRunId();
+  const status = el("reviewStatusFilter")?.value || "pending";
+  const limit = el("reviewLimit")?.value || "50";
+  return `review:${runId}:${status}:${state.review.offset}:${limit}`;
+}
+
+function documentsRefreshKey() {
+  const acqRunId = getAcqRunId();
+  const queue = el("documentsQueueFilter")?.value || "awaiting";
+  const limit = el("documentsLimit")?.value || "50";
+  return `documents:${acqRunId}:${queue}:${state.documents.offset}:${limit}:${getDiscoveryRunId()}`;
+}
+
+async function refreshReview(force = false) {
+  return coalescedRefresh(reviewRefreshKey(), 700, () => loadReview(), force);
+}
+
+async function refreshDocuments(force = false) {
+  return coalescedRefresh(documentsRefreshKey(), 700, () => loadDocuments(), force);
+}
+
 function libraryFilters() {
   return {
     topic: (el("libraryTopicFilter")?.value || "").trim().toLowerCase(),
@@ -1640,8 +1804,6 @@ function setSearchPreview(doc, snippet = "") {
     JSON.stringify(
       {
         title: doc.title || "",
-        document_id: doc.document_id || "",
-        source_id: doc.source_id || "",
         publication_year: doc.publication_year || null,
         status: doc.status || "",
         decision: doc.decision || "",
@@ -2065,7 +2227,7 @@ async function loadReviewClick(event) {
   if (event && event.preventDefault) event.preventDefault();
   state.review.offset = 0;
   try {
-    await loadReview();
+    await refreshReview(true);
   } catch (err) {
     setText("reviewError", `Load failed: ${err.message}`);
   }
@@ -2077,7 +2239,7 @@ function scheduleReviewAutoLoad(reason = "auto") {
     state.reviewAuto.timer = null;
     if (activeSection() !== "review") return;
     try {
-      await loadReview();
+      await refreshReview();
       setText("reviewState", `Review queue updated (${reason}).`);
     } catch (err) {
       setText("reviewError", `Auto-load failed: ${err.message}`);
@@ -2128,14 +2290,21 @@ async function applyReviewDecisionToSelected(decision) {
     setText("reviewError", "Select at least one row.");
     return;
   }
+  const runId = getDiscoveryRunId();
+  if (!runId) {
+    setText("reviewError", "Active discovery run is required.");
+    return;
+  }
   setText("reviewError", "");
   let ok = 0;
+  let mismatches = 0;
   for (const sourceId of selected) {
     try {
-      await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision });
+      await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision, run_id: runId });
       ok += 1;
-    } catch (_err) {
-      // continue to apply best-effort for rest
+    } catch (err) {
+      if (String(err.message || "").includes("run_context_mismatch")) mismatches += 1;
+      // continue to apply best-effort for remaining rows
     }
   }
   state.review.selected.clear();
@@ -2144,21 +2313,33 @@ async function applyReviewDecisionToSelected(decision) {
   } else {
     setText("reviewState", `${decision} applied to ${ok}/${selected.length} selected rows.`);
   }
-  await loadReview();
+  if (mismatches > 0) {
+    setText("reviewError", `Run context mismatch on ${mismatches} rows. Refresh queue or switch context explicitly.`);
+  }
+  await refreshReview(true);
   await loadDashboard();
 }
 
 async function applySingleReviewDecision(sourceId, decision) {
   if (!sourceId) return;
+  const runId = getDiscoveryRunId();
+  if (!runId) {
+    setText("reviewError", "Active discovery run is required.");
+    return;
+  }
   try {
-    await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision });
+    await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision, run_id: runId });
     if (decision === "accept") setText("reviewState", "Accepted. Click Download Documents next.");
     else if (decision === "reject") setText("reviewState", "Rejected.");
     else setText("reviewState", "Moved to Later.");
-    await loadReview();
+    await refreshReview(true);
     await loadDashboard();
   } catch (err) {
-    setText("reviewError", `Review failed: ${err.message}`);
+    if (String(err.message || "").includes("run_context_mismatch")) {
+      setText("reviewError", "Run context mismatch. Refresh review queue or switch context explicitly.");
+    } else {
+      setText("reviewError", `Review failed: ${err.message}`);
+    }
   }
 }
 
@@ -2202,12 +2383,11 @@ async function startAcquisition(event) {
   setText("acqError", "");
   try {
     await runBusy("acquisition", ["startAcqBtn"], async () => {
-      const runId = el("startAcqRunId").value.trim();
-      if (!runId) throw new Error("discovery run id is required");
+      const runId = getDiscoveryRunId();
+      await ensureDiscoveryRunExists(runId);
       const retryFailedOnly = el("startAcqRetry").value === "true";
       const result = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: retryFailedOnly });
       setLatestId("acquisition", result.acq_run_id);
-      el("documentsAcqRunIdInput").value = result.acq_run_id;
       setText("acqError", "Acquisition started. IDs are available in Advanced.");
     });
   } catch (err) {
@@ -2220,12 +2400,11 @@ async function startParse(event) {
   setText("parseError", "");
   try {
     await runBusy("parse", ["startParseBtn"], async () => {
-      const acqRunId = el("startParseAcqRunId").value.trim();
-      if (!acqRunId) throw new Error("acquisition run id is required");
+      const acqRunId = getAcqRunId();
+      await ensureAcquisitionRunExists(acqRunId);
       const retryFailedOnly = el("startParseRetry").value === "true";
       const result = await apiPost("/v1/parse/runs", { acq_run_id: acqRunId, retry_failed_only: retryFailedOnly });
       setLatestId("parse", result.parse_run_id);
-      el("searchParseRunIdInput").value = result.parse_run_id;
       setText("parseError", "Parse started. IDs are available in Advanced.");
     });
   } catch (err) {
@@ -2247,7 +2426,6 @@ async function handleDocumentsAction(event) {
   if (!target.classList.contains("documents-action")) return;
   const action = target.dataset.action || "";
   const sourceId = target.dataset.sourceId || "";
-  const discoveryRunId = target.dataset.discoveryRunId || "";
 
   if (action === "select") {
     const item = state.documents.items.find((row) => row.source_id === sourceId);
@@ -2282,11 +2460,14 @@ async function handleDocumentsAction(event) {
 
   if (action === "retry") {
     try {
-      await apiPost("/v1/acquisition/runs", { run_id: discoveryRunId, retry_failed_only: true });
+      const runId = getDiscoveryRunId();
+      await ensureDiscoveryRunExists(runId);
+      await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: true });
       setText("documentsState", "Retry download started.");
-      await loadDocuments();
+      await refreshDocuments(true);
       await loadDashboard();
     } catch (err) {
+      emitTelemetryEvent("change", target, `action:retry_download:blocked reason=${String(err.message || "unknown")}`);
       setText("documentsError", `Retry failed: ${err.message}`);
     }
   }
@@ -2297,7 +2478,7 @@ async function handleDocumentsAction(event) {
       if (!acqRunId) throw new Error("acquisition run id is required");
       await apiPost(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-complete`, { source_id: sourceId });
       setText("documentsState", "Manual completion saved.");
-      await loadDocuments();
+      await refreshDocuments(true);
       await loadDashboard();
     } catch (err) {
       setText("documentsError", `Manual complete failed: ${err.message}`);
@@ -2341,7 +2522,7 @@ async function registerManualUpload(event) {
       content_type: file.type || null,
     });
     setText("documentsState", "Manual upload registered.");
-    await loadDocuments();
+    await refreshDocuments(true);
   } catch (err) {
     setText("documentsError", `Upload failed: ${err.message}`);
   }
@@ -2371,6 +2552,7 @@ async function documentsAcquirePending() {
   }
   emitTelemetryEvent("submit", el("documentsAcquirePendingBtn") || document.body, `action:process_approved_docs:start run_id=${runId}`);
   try {
+    await ensureDiscoveryRunExists(runId);
     const next = await runBusy("acquisition", ["documentsAcquirePendingBtn"], async () =>
       apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: false }),
     );
@@ -2380,9 +2562,8 @@ async function documentsAcquirePending() {
       `action:process_approved_docs:success run_id=${runId} acq_run_id=${next.acq_run_id} accepted_count=${(el("statusAwaitingDocs")?.textContent || "0").trim()}`,
     );
     setLatestId("acquisition", next.acq_run_id);
-    el("documentsAcqRunIdInput").value = next.acq_run_id;
     setText("documentsState", "Started document download.");
-    await loadDocuments();
+    await refreshDocuments(true);
     await loadDashboard();
   } catch (err) {
     emitTelemetryEvent(
@@ -2395,19 +2576,19 @@ async function documentsAcquirePending() {
 }
 
 async function documentsRetryFailed() {
-  const run = state.documents.acqRunMeta;
-  if (!run || !run.discovery_run_id) {
-    setText("documentsError", "Load documents queue first.");
+  const runId = getDiscoveryRunId();
+  if (!runId) {
+    setText("documentsError", "Discovery run context is required.");
     return;
   }
   try {
+    await ensureDiscoveryRunExists(runId);
     const next = await runBusy("acquisition", ["documentsRetryFailedBtn"], async () =>
-      apiPost("/v1/acquisition/runs", { run_id: run.discovery_run_id, retry_failed_only: true }),
+      apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: true }),
     );
     setLatestId("acquisition", next.acq_run_id);
-    el("documentsAcqRunIdInput").value = next.acq_run_id;
     setText("documentsState", "Started retry-failed acquisition.");
-    await loadDocuments();
+    await refreshDocuments(true);
   } catch (err) {
     setText("documentsError", `Retry failed failed: ${err.message}`);
   }
@@ -2513,25 +2694,25 @@ async function refreshRunProgress() {
 function selectAllReviewRows() {
   for (const row of state.review.items) state.review.selected.add(row.id);
   setText("reviewState", `Selected ${state.review.items.length} rows.`);
-  loadReview().catch(() => {});
+  refreshReview(true).catch(() => {});
 }
 
 function deselectAllReviewRows() {
   state.review.selected.clear();
   setText("reviewState", "Selection cleared.");
-  loadReview().catch(() => {});
+  refreshReview(true).catch(() => {});
 }
 
 function selectAllDocumentsRows() {
   for (const row of state.documents.items) state.documents.selected.add(row.source_id);
   setText("documentsState", `Selected ${state.documents.items.length} rows.`);
-  loadDocuments().catch(() => {});
+  refreshDocuments(true).catch(() => {});
 }
 
 function deselectAllDocumentsRows() {
   state.documents.selected.clear();
   setText("documentsState", "Selection cleared.");
-  loadDocuments().catch(() => {});
+  refreshDocuments(true).catch(() => {});
 }
 
 function toggleBatchUploadPanel() {
@@ -2578,7 +2759,7 @@ async function uploadBatchDocuments(event) {
     });
     setText("batchUploadResults", JSON.stringify(payload, null, 2));
     setText("documentsState", `Batch upload complete: matched=${payload.matched}, unmatched=${payload.unmatched}, ambiguous=${payload.ambiguous}`);
-    await loadDocuments();
+    await refreshDocuments(true);
     await loadDashboard();
   } catch (err) {
     setText("documentsError", `Batch upload failed: ${err.message}`);
@@ -2604,8 +2785,8 @@ async function refreshCurrentSection() {
   const section = activeSection();
   if (section === "build") return loadDashboard();
   if (section === "discover") return loadDiscover();
-  if (section === "review" && state.review.loaded) return loadReview();
-  if (section === "documents" && state.documents.loaded) return loadDocuments();
+  if (section === "review" && state.review.loaded) return refreshReview();
+  if (section === "documents" && state.documents.loaded) return refreshDocuments();
   if (section === "library" && state.search.loaded) return runSearch();
   return true;
 }
@@ -2631,7 +2812,11 @@ async function runPollCycle() {
       setPollState(`Live updates active for #${section}.`);
     }
   } catch (err) {
-    setPollState(`Stale data in #${section}: ${err.message}`, true);
+    if (isReadRateLimitedError(err)) {
+      setPollState("Read rate limited. Passive refresh paused briefly; actions remain available.", true);
+    } else {
+      setPollState(`Stale data in #${section}: ${err.message}`, true);
+    }
   }
   schedulePoll();
 }
@@ -2641,18 +2826,22 @@ async function runLiveRefresh(eventType = "queue_updated") {
     await loadSystemStatus();
     if (eventType === "run_started" || eventType === "run_progress" || eventType === "run_completed") {
       await refreshRunProgress();
-      if (activeSection() === "review") await loadReview();
-      if (activeSection() === "documents" && state.documents.loaded) await loadDocuments();
+      if (activeSection() === "review") await refreshReview();
+      if (activeSection() === "documents" && state.documents.loaded) await refreshDocuments();
     } else if (eventType === "queue_updated") {
-      if (activeSection() === "review") await loadReview();
-      else if (activeSection() === "documents" && state.documents.loaded) await loadDocuments();
+      if (activeSection() === "review") await refreshReview();
+      else if (activeSection() === "documents" && state.documents.loaded) await refreshDocuments();
     }
     await loadDashboard();
     updateFreshness();
     broadcastSnapshot();
     setPollState(`Live update processed (${eventType}).`);
   } catch (err) {
-    setPollState(`Live update failed: ${err.message}`, true);
+    if (isReadRateLimitedError(err)) {
+      setPollState("Read rate limited during live update. Backing off refresh.", true);
+    } else {
+      setPollState(`Live update failed: ${err.message}`, true);
+    }
   } finally {
     schedulePoll();
   }
@@ -2797,7 +2986,7 @@ function initPagination() {
     const limit = Number(el("reviewLimit").value);
     state.review.offset = Math.max(0, state.review.offset - limit);
     try {
-      await loadReview();
+      await refreshReview(true);
     } catch (err) {
       setText("reviewError", `Load failed: ${err.message}`);
     }
@@ -2808,7 +2997,7 @@ function initPagination() {
     if (!page.has_next) return;
     state.review.offset += limit;
     try {
-      await loadReview();
+      await refreshReview(true);
     } catch (err) {
       setText("reviewError", `Load failed: ${err.message}`);
     }
@@ -2818,7 +3007,7 @@ function initPagination() {
     const limit = Number(el("documentsLimit").value);
     state.documents.offset = Math.max(0, state.documents.offset - limit);
     try {
-      await loadDocuments();
+      await refreshDocuments(true);
     } catch (err) {
       setText("documentsError", `Load failed: ${err.message}`);
     }
@@ -2829,7 +3018,7 @@ function initPagination() {
     if (!page.has_next) return;
     state.documents.offset += limit;
     try {
-      await loadDocuments();
+      await refreshDocuments(true);
     } catch (err) {
       setText("documentsError", `Load failed: ${err.message}`);
     }
@@ -2956,7 +3145,7 @@ function init() {
     state.documents.offset = 0;
     try {
       await runBusy("documents_view", ["documentsViewIssuesBtn"], async () => {
-        await loadDocuments();
+        await refreshDocuments(true);
       });
     } catch (err) {
       setText("documentsError", `Load failed: ${err.message}`);
@@ -2984,7 +3173,15 @@ function init() {
   addListener("runLookupForm", "submit", lookupRun);
   addListener("runFilterPhase", "change", renderRunsTable);
   addListener("runFilterStatus", "change", renderRunsTable);
+  addListener("startAcqRunId", "change", () => {
+    const runId = (el("startAcqRunId").value || "").trim();
+    setLatestId("discovery", runId);
+  });
   addListener("startAcqForm", "submit", startAcquisition);
+  addListener("startParseAcqRunId", "change", () => {
+    const runId = (el("startParseAcqRunId").value || "").trim();
+    setLatestId("acquisition", runId);
+  });
   addListener("startParseForm", "submit", startParse);
   addListener("downloadManifestBtn", "click", exportManifest);
 
@@ -2993,7 +3190,7 @@ function init() {
   addListener("copyParseIdBtn", "click", () => copyLatestId("parse"));
   addListener("useLatestRunBtn", "click", async () => {
     try {
-      const ok = await useLatestRunContext();
+      const ok = await useLatestRunContext(true);
       if (ok) await loadDashboard();
     } catch (err) {
       setText("reviewError", `Use Latest failed: ${err.message}`);
@@ -3031,8 +3228,10 @@ function init() {
       if (state.sessions.autoRestore && state.sessions.items.length > 0) {
         const latest = state.sessions.items[0];
         try {
-          applySessionState(latest.state);
-          setText("sessionState", `Auto-restored: ${latest.name}`);
+          const validated = await validateSessionSnapshot(latest.state);
+          applySessionState(validated.snapshot);
+          if (validated.notes.length) setText("sessionState", `Auto-restore cleared stale IDs: ${validated.notes.join("; ")}`);
+          else setText("sessionState", `Auto-restored: ${latest.name}`);
         } catch (_err) {
           setText("sessionState", "Auto-restore skipped due to invalid saved state.");
         }

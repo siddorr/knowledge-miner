@@ -11,7 +11,8 @@ Current product includes:
 6. Operator-driven discovery iterations (`Run One Iteration`, explicit citation iteration, keyword search on demand).
 7. Task-first HMI workflow for operators with live updates (SSE), visible progress/freshness state, explicit auth badges, conditional pagination controls, and auto-loading Review queue.
 8. Save/Load Session workflow with history and optional auto-restore on app start.
-8. Direct Review -> Documents transition (no manual "send to documents" step).
+9. Direct Review -> Documents transition (no manual "send to documents" step).
+10. Run-context controls are kept in Advanced; task pages run on active session context.
 
 ## Quick Start
 
@@ -26,6 +27,10 @@ uvicorn knowledge_miner.main:app --reload
 Open:
 1. API docs: `http://127.0.0.1:8000/docs`
 2. HMI: `http://127.0.0.1:8000/hmi`
+
+Static asset cache strategy:
+1. `/hmi` injects a version query param (`?v=<build stamp>`) for `hmi.js` and `hmi.css`.
+2. After restart/deploy, browsers fetch the updated frontend bundle automatically.
 
 ## LAN Access (Another PC on Same Network)
 

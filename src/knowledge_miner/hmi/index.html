@@ -4,13 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Knowledge Miner HMI</title>
-  <link rel="stylesheet" href="/hmi/static/hmi.css">
+  <link rel="stylesheet" href="/hmi/static/hmi.css?v=__HMI_STATIC_VERSION__">
 </head>
 <body>
   <header class="topbar">
     <h1>Knowledge Miner Task Dashboard</h1>
     <p>First-time-user flow: Discover -> Review -> Documents -> Library.</p>
-  </section>
+  </header>
 
   <section id="inProgressBanner" class="pollbar" aria-live="polite" hidden>
     <strong>Work in progress:</strong>
@@ -33,9 +33,7 @@
     <button id="taskDocumentsBtn" type="button">Download Documents: <span id="statusAwaitingDocs">0</span></button>
     <button id="taskErrorsBtn" type="button">Resolve Errors: <span id="statusDocFailures">0</span></button>
     <span>Topic: <span id="statusActiveTopic">Default Topic</span></span>
-    <span>Active run: <code id="statusActiveDiscoveryRun">-</code></span>
     <span>Recent activity: <span id="statusLastRun">none</span></span>
-    <button id="useLatestRunBtn" type="button">Use Latest</button>
     <button id="statusNextActionBtn" type="button">Next Action</button>
     <form id="quickKeywordForm" class="row compact">
       <label>
@@ -272,14 +270,7 @@
           <tbody id="reviewRows"></tbody>
         </table>
       </div>
-      <details>
-        <summary>Technical details</summary>
-        <label>
-          Discovery Run ID Override
-          <input id="reviewRunIdInput" type="text" placeholder="run_...">
-        </label>
-        <button id="reviewRefreshBtn" type="button">Refresh Review Queue</button>
-      </details>
+      <button id="reviewRefreshBtn" type="button">Refresh Review Queue</button>
       <p id="reviewState" class="muted"></p>
       <div class="row compact">
         <button type="button" class="copy-value-btn" data-target-id="reviewError" data-feedback-id="reviewState">Copy Error</button>
@@ -354,10 +345,6 @@
           <button id="manualExportCsvBtn" type="button">Export CSV</button>
         </div>
         <label>
-          Acquisition Run ID Override
-          <input id="documentsAcqRunIdInput" type="text" placeholder="acq_...">
-        </label>
-        <label>
           Source ID for manual upload
           <input id="manualUploadSourceId" type="text" placeholder="source_id">
         </label>
@@ -428,10 +415,6 @@
       <pre id="searchPreview" class="metrics">No document selected.</pre>
       <details>
         <summary>Technical details</summary>
-        <label>
-          Parse Run ID Override
-          <input id="searchParseRunIdInput" type="text" placeholder="parse_...">
-        </label>
         <h3>Parsed Document Detail</h3>
         <pre id="searchDocDetail" class="metrics">No document selected.</pre>
         <h3>Parsed Document Full Text</h3>
@@ -521,6 +504,10 @@
       <section class="idbar">
         <strong>Context:</strong>
         <pre id="globalContext" class="metrics">No context selected.</pre>
+        <div class="row compact">
+          <span>Active run: <code id="statusActiveDiscoveryRun">-</code></span>
+          <button id="useLatestRunBtn" type="button">Use Latest</button>
+        </div>
       </section>
 
       <details>
@@ -623,6 +610,6 @@
     window.__KM_HMI_AUTH_ENABLED__ = __HMI_AUTH_ENABLED__;
     window.__KM_HMI_LAUNCH_SECTION__ = __HMI_LAUNCH_SECTION_JSON__;
   </script>
-  <script src="/hmi/static/hmi.js" defer></script>
+  <script src="/hmi/static/hmi.js?v=__HMI_STATIC_VERSION__" defer></script>
 </body>
 </html>

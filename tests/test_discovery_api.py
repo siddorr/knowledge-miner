@@ -251,14 +251,22 @@ def test_source_review_supports_slash_source_id():
 
     client = TestClient(app)
     source_id = "doi:10.1000/upw/review-test"
-    response = client.post(f"/v1/sources/{source_id}/review", json={"decision": "accept"}, headers=_auth_headers())
+    response = client.post(
+        f"/v1/sources/{source_id}/review",
+        json={"decision": "accept", "run_id": "run_slash_review"},
+        headers=_auth_headers(),
+    )
     assert response.status_code == 200
     assert response.json()["source_id"] == source_id
     assert response.json()["accepted"] is True
 
     # Simulate reload/new process boundary with a fresh client session.
     second_client = TestClient(app)
-    second = second_client.post(f"/v1/sources/{source_id}/review", json={"decision": "reject"}, headers=_auth_headers())
+    second = second_client.post(
+        f"/v1/sources/{source_id}/review",
+        json={"decision": "reject", "run_id": "run_slash_review"},
+        headers=_auth_headers(),
+    )
     assert second.status_code == 200
     assert second.json()["source_id"] == source_id
     assert second.json()["accepted"] is False
@@ -266,7 +274,11 @@ def test_source_review_supports_slash_source_id():
 
 def test_source_review_not_found_returns_context_hint():
     client = TestClient(app)
-    response = client.post("/v1/sources/src_missing/review", json={"decision": "accept"}, headers=_auth_headers())
+    response = client.post(
+        "/v1/sources/src_missing/review",
+        json={"decision": "accept", "run_id": "run_missing"},
+        headers=_auth_headers(),
+    )
     assert response.status_code == 404
     assert "source_not_found" in response.json()["detail"]
     assert "reload_review_queue_or_check_discovery_run_context" in response.json()["detail"]
@@ -276,7 +288,7 @@ def test_source_review_later_is_persistent_and_filterable():
     run_id = _seed_run_with_sources()
     source_id = "src_review"
     client = TestClient(app)
-    move = client.post(f"/v1/sources/{source_id}/review", json={"decision": "later"}, headers=_auth_headers())
+    move = client.post(f"/v1/sources/{source_id}/review", json={"decision": "later", "run_id": run_id}, headers=_auth_headers())
     assert move.status_code == 200
     later = client.get(f"/v1/discovery/runs/{run_id}/sources?status=later", headers=_auth_headers())
     assert later.status_code == 200
@@ -298,16 +310,28 @@ def test_run_and_source_endpoints_do_not_flap_in_repeated_reads():
         assert list_resp.status_code == 200
         review_resp = client.post(
             f"/v1/sources/{source_id}/review",
-            json={"decision": "later"},
+            json={"decision": "later", "run_id": run_id},
             headers=_auth_headers(),
         )
         assert review_resp.status_code == 200
         restore_resp = client.post(
             f"/v1/sources/{source_id}/review",
-            json={"decision": "accept"},
+            json={"decision": "accept", "run_id": run_id},
             headers=_auth_headers(),
         )
         assert restore_resp.status_code == 200
+
+
+def test_source_review_rejects_run_context_mismatch():
+    run_id = _seed_run_with_sources()
+    client = TestClient(app)
+    response = client.post(
+        "/v1/sources/src_review/review",
+        json={"decision": "accept", "run_id": f"{run_id}_other"},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "run_context_mismatch"
 
 
 def test_ai_settings_update_applies_to_new_runs(monkeypatch):

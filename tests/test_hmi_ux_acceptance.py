@@ -71,7 +71,11 @@ def test_operator_queue_flow_without_manual_id_entry():
     assert row["status"] == "needs_review"
     assert row["context"]["discovery_run_id"] == run_id
 
-    review = client.post(f"/v1/sources/{source_id}/review", json={"decision": "accept"}, headers=_auth_headers())
+    review = client.post(
+        f"/v1/sources/{source_id}/review",
+        json={"decision": "accept", "run_id": run_id},
+        headers=_auth_headers(),
+    )
     assert review.status_code == 200
     assert review.json()["accepted"] is True
 

@@ -10,6 +10,8 @@ Status:
 - Updated on 2026-03-12: Session save/load workflow (#23) is implemented with auto-restore and history.
 - Updated on 2026-03-12: GUI Team Notes v1.1 alignment (#24) is implemented for task-first UX.
 - Updated on 2026-03-12: Run/session context pinning (#25) and review-to-documents handoff hardening (#26) are implemented.
+- Updated on 2026-03-12: Context-safety hardening (#27-#31) is implemented for run-scoped review, session restore validation, retry guards, and refresh coalescing.
+- Updated on 2026-03-12: HMI robustness/UI cleanup (#32-#39) is implemented (run-scoped review E2E, explicit context switch, cache busting, 429 backoff, task-page ID cleanup, and header fix).
 
 ## High Priority
 
@@ -1245,7 +1247,7 @@ Definition of done for Phase 4.3:
   - no frontend exception in hmi logs for `accepted_waiting_docs` access
   - no acquisition attempts against placeholder DOI/example.org in real operator workflow
 
-5. [ ] P0 - Enforce canonical active run resolution for all UI actions
+5. [x] P0 - Enforce canonical active run resolution for all UI actions
 - Problem:
   - `getDiscoveryRunId()` prioritizes manual input overrides and can execute actions against stale run IDs.
 - Scope:
@@ -1260,7 +1262,7 @@ Definition of done for Phase 4.3:
   - action telemetry run_id always matches visible active run
   - no hidden/stale input value can redirect execution
 
-6. [ ] P0 - Make review decision API run-scoped to prevent cross-run decisions
+6. [x] P0 - Make review decision API run-scoped to prevent cross-run decisions
 - Problem:
   - `POST /v1/sources/{source_id}/review` is source-id scoped only; no run guard in request contract.
 - Scope:
@@ -1271,7 +1273,7 @@ Definition of done for Phase 4.3:
   - impossible to apply review decision to source outside selected run
   - server responds with explicit conflict/error when run/source mismatch occurs
 
-7. [ ] P1 - Validate session-restore IDs before applying restored context
+7. [x] P1 - Validate session-restore IDs before applying restored context
 - Problem:
   - loading saved session can restore stale run IDs into inputs and reactivate invalid context.
 - Scope:
@@ -1282,7 +1284,7 @@ Definition of done for Phase 4.3:
   - no stale run ID survives session restore silently
   - restored session cannot trigger actions against deleted/nonexistent runs
 
-8. [ ] P1 - Guard document retry action against missing/invalid discovery_run_id
+8. [x] P1 - Guard document retry action against missing/invalid discovery_run_id
 - Problem:
   - per-row `Retry` action can call acquisition without strict pre-validation of `discovery_run_id`.
 - Scope:
@@ -1293,7 +1295,7 @@ Definition of done for Phase 4.3:
   - retry never fires with empty/invalid run_id
   - user gets deterministic message instead of generic failure
 
-9. [ ] P1 - Reduce repeated high-frequency polling loops in Review/Documents
+9. [x] P1 - Reduce repeated high-frequency polling loops in Review/Documents
 - Problem:
   - repeated GET storms (`/discovery/runs/...` + `/sources`) increase race/noise and hide real state transitions.
 - Scope:
@@ -1304,3 +1306,165 @@ Definition of done for Phase 4.3:
   - GET rate drops materially during steady state
   - no duplicate concurrent loads for same section/run/status tuple
   - operator still sees timely updates after decision/action completion
+
+10. [x] P0 - Make review decision flow run-scoped end-to-end
+- Problem:
+  - GUI review action posts `decision` without explicit `run_id`, backend applies by `source_id` only.
+  - In context-drift cases this can update the wrong run/source context.
+- Scope:
+  - extend review request contract to include active `run_id`
+  - validate on backend that `source_id` belongs to `run_id`
+  - reject mismatches with explicit conflict detail and guidance
+- Acceptance criteria:
+  - review decision cannot be committed for source outside selected run
+  - UI surfaces clear mismatch message and prompts context refresh
+
+11. [x] P0 - Remove implicit run switching during auto-recovery
+- Problem:
+  - auto-recovery path can switch to latest run without explicit operator confirmation.
+- Scope:
+  - disable implicit run context rewrites in recovery paths
+  - require explicit user confirmation before any run switch
+  - log a dedicated `context_switch` telemetry event on explicit switch
+- Acceptance criteria:
+  - no silent run changes after `run_not_found` or refresh
+  - operator can always trace who/what switched run context
+
+12. [x] P1 - Add static asset cache-busting for HMI JS/CSS
+- Problem:
+  - fixed static paths can serve stale frontend after backend updates, causing contract/runtime mismatch.
+- Scope:
+  - append build/version hash query to `/hmi/static/hmi.js` and `/hmi/static/hmi.css`
+  - document cache strategy in README/instructions
+- Acceptance criteria:
+  - after deploy/restart, browser always loads latest frontend assets without manual cache clear
+  - no stale-client errors from old JS calling changed APIs
+
+13. [x] P1 - Improve UI handling for backend read throttling (`429 read_rate_limited`)
+- Problem:
+  - high polling frequency can trigger backend hot-read limits; UI does not clearly classify throttle vs functional failure.
+- Scope:
+  - detect `429 read_rate_limited` in API layer and show explicit “rate limited” state
+  - apply adaptive backoff for affected sections
+  - keep user actions available while passive refresh is throttled
+- Acceptance criteria:
+  - UI shows clear throttling message (not generic error)
+  - polling backs off automatically and recovers when limit clears
+
+14. [x] P0 - Remove run-ID controls from task pages (keep IDs in Advanced only)
+- Problem:
+  - task pages still expose run-id override fields, violating task-first UX and increasing operator confusion.
+- Scope:
+  - remove/hide run-id override controls from `Review`, `Documents`, and `Library` task panes
+  - keep technical ID controls in `Advanced` only
+  - ensure task actions still use active session context without manual IDs
+- Acceptance criteria:
+  - first-time workflow pages have no manual run-id inputs
+  - all run-id operations remain available in Advanced
+
+15. [x] P1 - Simplify Library preview (hide raw technical IDs by default)
+- Problem:
+  - default library preview shows technical IDs (`document_id`, `source_id`) instead of user-facing paper context.
+- Scope:
+  - default preview should prioritize title, abstract/snippet, year, status, decision, confidence
+  - move IDs to optional technical details section
+- Acceptance criteria:
+  - normal Library view does not show raw IDs unless user opens technical details
+  - search/browse remains fully functional
+
+16. [x] P1 - Reduce technical controls in top status strip
+- Problem:
+  - top task area includes technical controls (`Use Latest`, active run code) that should not dominate normal flow.
+- Scope:
+  - keep task-first actions in top strip
+  - move run-context management controls to Advanced (or technical drawer)
+  - preserve explicit context switch capability without cluttering primary workflow
+- Acceptance criteria:
+  - top strip focuses on pending tasks and next action
+  - technical context controls are still accessible but not primary
+
+17. [x] P2 - Fix HMI header markup validity issue
+- Problem:
+  - malformed closing tag in header (`</section>` inside `<header>`) can cause fragile rendering behavior.
+- Scope:
+  - correct invalid HTML structure in HMI template
+  - run quick browser sanity check for layout/interaction regressions
+- Acceptance criteria:
+  - HTML is structurally valid in header/top layout
+  - no visual regressions on desktop/mobile
+
+18. [ ] P1 - Refactor `hmi.js` into feature modules
+- Problem:
+  - `src/knowledge_miner/hmi/static/hmi.js` is >3k lines and mixes API/state/UI/event logic.
+- Scope:
+  - split into modules:
+    - `hmi/api.js` (apiGet/apiPost/download/auth headers/error normalization)
+    - `hmi/state.js` (shared state + run/session context helpers)
+    - `hmi/review.js`
+    - `hmi/documents.js`
+    - `hmi/library.js`
+    - `hmi/live_updates.js` (polling/SSE)
+    - `hmi/telemetry.js`
+  - keep behavior parity and existing UI flows.
+- Acceptance criteria:
+  - no single frontend module exceeds ~800 lines
+  - all existing HMI acceptance tests pass
+  - no regression in run/session context handling
+
+19. [ ] P1 - Refactor `main.py` into FastAPI routers by domain
+- Problem:
+  - `src/knowledge_miner/main.py` is large and couples system, HMI, discovery, acquisition, parse, search.
+- Scope:
+  - split into routers:
+    - `routes/system.py` (`/healthz`, `/v1/system/status`, `/v1/events/stream`, `/v1/runs/latest`)
+    - `routes/hmi.py` (`/hmi`, `/v1/hmi/events`, `/v1/work-queue`)
+    - `routes/discovery.py`
+    - `routes/acquisition.py`
+    - `routes/parse.py`
+    - `routes/search.py`
+    - `routes/settings.py`
+  - keep shared auth/rate-limit/dependency wiring centralized.
+- Acceptance criteria:
+  - public API paths and response contracts unchanged
+  - app startup/import remains stable
+  - route-level tests pass without contract drift
+
+20. [ ] P2 - Refactor `index.html` into partial templates/components
+- Problem:
+  - `src/knowledge_miner/hmi/index.html` is large and hard to maintain as a single monolith.
+- Scope:
+  - split into reusable partials:
+    - `partials/nav.html`
+    - `partials/status_strip.html`
+    - `partials/review.html`
+    - `partials/documents.html`
+    - `partials/library.html`
+    - `partials/advanced.html`
+  - preserve current IDs/hooks required by JS.
+- Acceptance criteria:
+  - no broken selectors/listeners in JS
+  - full HMI renders and behaves the same
+  - HTML lint/validation passes for composed output
+
+21. [ ] P2 - Keep backlog maintainable by archiving completed items
+- Problem:
+  - `BACKLOG.md` is large and becoming difficult to navigate.
+- Scope:
+  - move completed tasks to `archive/backlog_completed_YYYY-MM.md`
+  - keep active backlog focused on open P0/P1/P2 items only
+  - add short index at top with links to archive files.
+- Acceptance criteria:
+  - active `BACKLOG.md` remains concise and actionable
+  - historical trace preserved in archive files
+
+22. [ ] P2 - Add file-size guardrails and lint checks for maintainability
+- Problem:
+  - oversized files grow unnoticed and increase regression risk.
+- Scope:
+  - add CI/pre-commit checks for:
+    - JS/TS files over threshold (e.g., 800 lines warning, 1200 fail)
+    - Python files over threshold (e.g., 700 lines warning, 1000 fail)
+  - document exceptions policy.
+- Acceptance criteria:
+  - maintainability thresholds enforced in CI
+  - violations show actionable messages with file paths

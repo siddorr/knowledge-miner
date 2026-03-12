@@ -44,6 +44,7 @@ class RunStatusResponse(BaseModel):
 
 class SourceReviewRequest(BaseModel):
     decision: str
+    run_id: str | None = Field(default=None, min_length=1)
     note: str | None = None
 
 

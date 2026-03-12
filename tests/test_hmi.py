@@ -56,7 +56,8 @@ def test_hmi_shell_route_and_navigation():
     assert "statusNextActionBtn" in body
     assert "statusActiveDiscoveryRun" in body
     assert "useLatestRunBtn" in body
-    assert "/hmi/static/hmi.js" in body
+    assert "/hmi/static/hmi.js?v=" in body
+    assert "/hmi/static/hmi.css?v=" in body
     assert "Run One Iteration" in body
     assert "Run Next Citation Iteration" in body
     assert "Search New Keywords" in body
@@ -88,7 +89,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Auto-restore latest" in body
     assert "AI Filter" in body
     assert "Global Search" in body
-    assert "Parse Run ID Override" in body
+    assert "Parse Run ID Override" not in body
     assert "Parsed Document Detail" in body
     assert "Parsed Document Full Text" in body
     assert "Related Source Context" in body
