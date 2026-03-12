@@ -1,0 +1,167 @@
+<section id="advanced" class="panel">
+  <h2>Advanced</h2>
+  <p class="muted">Technical operations, IDs, logs, and diagnostics.</p>
+
+  <section id="apiAuthBar" class="authbar">
+    <label for="apiKeyInput">API Key</label>
+    <input id="apiKeyInput" type="password" placeholder="Bearer token (e.g. dev-token)">
+    <button id="saveApiKeyBtn" type="button">Save Key</button>
+    <span id="authState" class="muted">Key not set</span>
+    <span id="authModeHint" class="muted"></span>
+  </section>
+
+  <section class="authbar">
+    <strong>AI Filter Settings</strong>
+    <label for="aiEnabledSelect">Enabled</label>
+    <select id="aiEnabledSelect">
+      <option value="true">true</option>
+      <option value="false">false</option>
+    </select>
+    <label for="aiModelInput">Model</label>
+    <input id="aiModelInput" type="text" placeholder="gpt-4o-mini">
+    <label for="aiBaseUrlInput">Base URL</label>
+    <input id="aiBaseUrlInput" type="text" placeholder="https://api.openai.com/v1">
+    <label for="aiApiKeyInput">API Key</label>
+    <input id="aiApiKeyInput" type="password" placeholder="Set/update key">
+    <button id="loadAiSettingsBtn" type="button">Load AI Settings</button>
+    <button id="saveAiSettingsBtn" type="button">Save AI Settings</button>
+    <span id="aiSettingsState" class="muted">Not loaded</span>
+  </section>
+
+  <section class="authbar">
+    <strong>Session State</strong>
+    <label for="sessionNameInput">Name</label>
+    <input id="sessionNameInput" type="text" placeholder="optional session name">
+    <button id="saveSessionBtn" type="button">Save Session</button>
+    <label for="sessionHistorySelect">History</label>
+    <select id="sessionHistorySelect"></select>
+    <button id="loadSessionBtn" type="button">Load Session</button>
+    <button id="deleteSessionBtn" type="button">Delete Session</button>
+    <label for="autoRestoreSession">
+      <input id="autoRestoreSession" type="checkbox" checked>
+      Auto-restore latest
+    </label>
+    <span id="sessionState" class="muted">No saved sessions.</span>
+  </section>
+
+  <section class="idbar">
+    <strong>Latest IDs:</strong>
+    <span class="idrow">Discovery: <code id="latestDiscoveryId">-</code> <button id="copyDiscoveryIdBtn" type="button">Copy ID</button></span>
+    <span class="idrow">Acquisition: <code id="latestAcqId">-</code> <button id="copyAcqIdBtn" type="button">Copy ID</button></span>
+    <span class="idrow">Parse: <code id="latestParseId">-</code> <button id="copyParseIdBtn" type="button">Copy ID</button></span>
+    <span id="idCopyState" class="muted"></span>
+  </section>
+
+  <section class="pollbar">
+    <form id="globalSearchForm" class="row compact">
+      <label>
+        Global Search
+        <input id="globalSearchQuery" type="text" placeholder="run id, DOI, source title, chunk text">
+      </label>
+      <label>
+        Limit
+        <select id="globalSearchLimit">
+          <option value="10">10</option>
+          <option value="25" selected>25</option>
+          <option value="50">50</option>
+        </select>
+      </label>
+      <button id="globalSearchBtn" type="submit">Search</button>
+      <span id="globalSearchState" class="muted"></span>
+    </form>
+  </section>
+
+  <section class="idbar">
+    <strong>Context:</strong>
+    <pre id="globalContext" class="metrics">No context selected.</pre>
+    <div class="row compact">
+      <span>Active run: <code id="statusActiveDiscoveryRun">-</code></span>
+      <button id="useLatestRunBtn" type="button">Use Latest</button>
+    </div>
+  </section>
+
+  <details>
+    <summary>Run lookup and stage controls</summary>
+    <form id="runLookupForm" class="row">
+      <label>
+        Phase
+        <select id="runPhaseSelect">
+          <option value="discovery">Discovery</option>
+          <option value="acquisition">Acquisition</option>
+          <option value="parse">Parse</option>
+        </select>
+      </label>
+      <label>
+        Run ID
+        <input id="runIdInput" type="text" placeholder="run_... / acq_... / parse_..." required>
+      </label>
+      <button type="submit">Lookup</button>
+    </form>
+    <div class="row">
+      <label>
+        Filter Phase
+        <select id="runFilterPhase">
+          <option value="all">All</option>
+          <option value="discovery">Discovery</option>
+          <option value="acquisition">Acquisition</option>
+          <option value="parse">Parse</option>
+        </select>
+      </label>
+      <label>
+        Filter Status
+        <select id="runFilterStatus">
+          <option value="all">All</option>
+          <option value="queued">queued</option>
+          <option value="running">running</option>
+          <option value="completed">completed</option>
+          <option value="failed">failed</option>
+        </select>
+      </label>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Phase</th><th>Run ID</th><th>Status</th><th>Summary</th></tr></thead>
+        <tbody id="runsTable"></tbody>
+      </table>
+    </div>
+    <p id="runsError" class="error"></p>
+
+    <form id="startAcqForm" class="row">
+      <label>
+        Discovery Run ID
+        <input id="startAcqRunId" type="text" placeholder="run_..." required>
+      </label>
+      <label>
+        Retry failed only
+        <select id="startAcqRetry">
+          <option value="false" selected>false</option>
+          <option value="true">true</option>
+        </select>
+      </label>
+      <button id="startAcqBtn" type="submit">Start Acquisition</button>
+      <button id="downloadManifestBtn" type="button">Export acquisition manifest</button>
+    </form>
+    <p id="acqError" class="error"></p>
+
+    <form id="startParseForm" class="row">
+      <label>
+        Acquisition Run ID
+        <input id="startParseAcqRunId" type="text" placeholder="acq_..." required>
+      </label>
+      <label>
+        Retry failed only
+        <select id="startParseRetry">
+          <option value="false" selected>false</option>
+          <option value="true">true</option>
+        </select>
+      </label>
+      <button id="startParseBtn" type="submit">Start Parse</button>
+    </form>
+    <p id="parseError" class="error"></p>
+    <div class="row compact">
+      <button type="button" class="copy-value-btn" data-target-id="runsError" data-feedback-id="globalSearchState">Copy Runs Error</button>
+      <button type="button" class="copy-value-btn" data-target-id="acqError" data-feedback-id="globalSearchState">Copy Acquisition Error</button>
+      <button type="button" class="copy-value-btn" data-target-id="parseError" data-feedback-id="globalSearchState">Copy Parse Error</button>
+    </div>
+  </details>
+</section>

@@ -1,0 +1,91 @@
+<section id="review" class="panel">
+  <h2>Review</h2>
+  <p class="muted">Dedicated decision workspace for source triage.</p>
+  <form id="reviewForm" class="row compact">
+    <label>
+      Queue
+      <select id="reviewStatusFilter">
+        <option value="pending" selected>Pending</option>
+        <option value="accepted">Accepted</option>
+        <option value="rejected">Rejected</option>
+        <option value="later">Later</option>
+        <option value="all">all</option>
+      </select>
+    </label>
+    <label>
+      Limit
+      <select id="reviewLimit">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+      </select>
+    </label>
+  </form>
+  <p class="muted">Queue auto-loads when you open Review or change filters.</p>
+  <div id="reviewRunChooser" class="row compact" hidden>
+    <label>
+      Select run to review
+      <select id="reviewRunChooserSelect"></select>
+    </label>
+    <button id="reviewRunChooserUseBtn" type="button">Use Selected Run</button>
+  </div>
+  <div class="row compact">
+    <label>
+      Mode
+      <select id="reviewMode">
+        <option value="table" selected>Table mode</option>
+        <option value="fast">Fast review</option>
+      </select>
+    </label>
+  </div>
+  <section id="reviewDetailPanel" class="panel-sub">
+    <h3>Article Details</h3>
+    <p><strong>Title:</strong> <span id="reviewDetailTitle">No source selected.</span></p>
+    <p><strong>Score:</strong> <span id="reviewDetailScore">-</span></p>
+    <p><strong>Status:</strong> <span id="reviewDetailStatus">-</span></p>
+    <p><strong>Abstract:</strong></p>
+    <pre id="reviewDetailAbstract" class="metrics">No source selected.</pre>
+    <p><strong>Source:</strong> <a id="reviewDetailLink" href="#" target="_blank" rel="noopener noreferrer">Open source</a></p>
+    <p><strong>AI signals:</strong> <span id="reviewDetailSignals">-</span></p>
+    <div class="row compact">
+      <button id="reviewDetailAcceptBtn" type="button">Accept</button>
+      <button id="reviewDetailRejectBtn" type="button">Reject</button>
+      <button id="reviewDetailLaterBtn" type="button">Later</button>
+    </div>
+  </section>
+  <section id="fastReviewPanel" class="panel-sub" hidden>
+    <h3>Fast Review</h3>
+    <p id="fastReviewPosition" class="muted">Paper 0 of 0</p>
+    <pre id="fastReviewCard" class="metrics">No source selected.</pre>
+    <div class="row compact">
+      <button id="fastPrevBtn" type="button">Prev</button>
+      <button id="fastAcceptBtn" type="button">[A] Accept</button>
+      <button id="fastRejectBtn" type="button">[R] Reject</button>
+      <button id="fastLaterBtn" type="button">[L] Later</button>
+      <button id="fastNextBtn" type="button">Next</button>
+    </div>
+  </section>
+  <div class="row compact">
+    <button id="reviewBatchAcceptBtn" type="button">Accept Selected</button>
+    <button id="reviewBatchRejectBtn" type="button">Reject Selected</button>
+    <button id="reviewSelectAllBtn" type="button">Select All</button>
+    <button id="reviewDeselectAllBtn" type="button">Deselect All</button>
+  </div>
+  <div id="reviewPaginationRow" class="row compact">
+    <button id="reviewPrev" type="button">Prev</button>
+    <button id="reviewNext" type="button">Next</button>
+    <span id="reviewPage" class="muted">offset=0</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Select</th><th>Title</th><th>Score</th><th>Status</th></tr></thead>
+      <tbody id="reviewRows"></tbody>
+    </table>
+  </div>
+  <button id="reviewRefreshBtn" type="button">Refresh Review Queue</button>
+  <p id="reviewState" class="muted"></p>
+  <div class="row compact">
+    <button type="button" class="copy-value-btn" data-target-id="reviewError" data-feedback-id="reviewState">Copy Error</button>
+  </div>
+  <p id="reviewError" class="error"></p>
+</section>

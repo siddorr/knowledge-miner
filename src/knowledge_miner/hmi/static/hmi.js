@@ -37,7 +37,17 @@ const state = {
       },
     },
   },
-  review: { offset: 0, total: 0, loaded: false, expanded: new Set(), selected: new Set(), items: [], mode: "table", activeIndex: 0 },
+  review: {
+    offset: 0,
+    total: 0,
+    loaded: false,
+    expanded: new Set(),
+    selected: new Set(),
+    items: [],
+    mode: "table",
+    activeIndex: 0,
+    runChoices: [],
+  },
   documents: {
     offset: 0,
     total: 0,
@@ -1283,6 +1293,70 @@ function abstractView(text, expanded) {
   return { text: `${raw.slice(0, 220)}...`, long: true };
 }
 
+function pendingReviewRunIds(queueItems) {
+  const ids = new Set();
+  for (const row of queueItems || []) {
+    if (!row || row.phase !== "discovery" || row.status !== "needs_review") continue;
+    const runId = String(row.run_id || row.context?.discovery_run_id || "").trim();
+    if (runId) ids.add(runId);
+  }
+  return Array.from(ids);
+}
+
+function hideReviewRunChooser() {
+  const wrap = el("reviewRunChooser");
+  if (wrap) wrap.hidden = true;
+  const select = el("reviewRunChooserSelect");
+  if (select) select.innerHTML = "";
+  state.review.runChoices = [];
+}
+
+function showReviewRunChooser(runIds) {
+  const ids = Array.from(new Set((runIds || []).map((id) => String(id || "").trim()).filter(Boolean)));
+  state.review.runChoices = ids;
+  const wrap = el("reviewRunChooser");
+  const select = el("reviewRunChooserSelect");
+  if (!wrap || !select) return;
+  if (!ids.length) {
+    wrap.hidden = true;
+    select.innerHTML = "";
+    return;
+  }
+  select.innerHTML = ids.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join("");
+  wrap.hidden = false;
+}
+
+async function ensureReviewRunContext() {
+  if (getDiscoveryRunId()) {
+    hideReviewRunChooser();
+    return true;
+  }
+  const queue = await apiGet("/v1/work-queue?limit=200&offset=0");
+  const runIds = pendingReviewRunIds(queue.items || []);
+  if (runIds.length === 1) {
+    setLatestId("discovery", runIds[0]);
+    hideReviewRunChooser();
+    emitTelemetryEvent("change", el("review"), `review_autoload:resolved_run run_id=${runIds[0]}`);
+    return true;
+  }
+  if (runIds.length > 1) {
+    showReviewRunChooser(runIds);
+    emitTelemetryEvent("change", el("review"), `review_autoload:multiple_runs count=${runIds.length}`);
+    return false;
+  }
+  const latest = await apiGet("/v1/runs/latest");
+  const latestRunId = String(latest.discovery_run_id || "").trim();
+  if (latestRunId) {
+    setLatestId("discovery", latestRunId);
+    hideReviewRunChooser();
+    emitTelemetryEvent("change", el("review"), `review_autoload:resolved_run run_id=${latestRunId}`);
+    return true;
+  }
+  hideReviewRunChooser();
+  emitTelemetryEvent("change", el("review"), "review_autoload:no_run_context");
+  return false;
+}
+
 async function loadSystemStatus() {
   try {
     const payload = await apiGet("/v1/system/status");
@@ -1346,7 +1420,10 @@ async function loadDashboard() {
   const pendingForUi = activeCoverage.pending_review ?? needsReview;
   const awaitingForUi = activeCoverage.awaiting_documents ?? awaitingAcceptedDocs;
   const failedForUi = activeCoverage.failed_documents ?? docFailures;
-  setText("reviewNavBadge", String(pendingForUi));
+  const reviewPendingRuns = pendingReviewRunIds(queueItems);
+  const reviewContextResolvable = !!state.latest.discovery || reviewPendingRuns.length === 1;
+  const pendingBadge = pendingForUi > 0 && !reviewContextResolvable ? 0 : pendingForUi;
+  setText("reviewNavBadge", String(pendingBadge));
   setText("documentsNavBadge", String(awaitingForUi));
   renderBuildTopics();
 
@@ -1376,7 +1453,7 @@ async function loadDashboard() {
     setText("dashboardState", "Still processing. Results may appear soon.");
   }
   updateStatusStrip({
-    pendingReview: pendingForUi,
+    pendingReview: pendingBadge,
     awaitingDocs: awaitingForUi,
     docFailures: failedForUi,
     lastRunState: recent,
@@ -1430,17 +1507,26 @@ async function loadDiscover() {
 
 async function loadReview() {
   setText("reviewError", "");
-  const runId = getDiscoveryRunId();
+  let runId = getDiscoveryRunId();
   if (!runId) {
-    setText("reviewState", "No active runs found. Start from Discover -> Run One Iteration.");
-    state.review.total = 0;
-    state.review.items = [];
-    renderTable("reviewRows", [], 4);
-    renderReviewDetails(null);
-    renderFastReviewCard();
-    applyPaginationControls("review", 0, state.review.offset, Number(el("reviewLimit").value));
-    return true;
+    const resolved = await ensureReviewRunContext();
+    runId = getDiscoveryRunId();
+    if (!resolved || !runId) {
+      if (state.review.runChoices.length > 1) {
+        setText("reviewState", "Multiple runs have pending review. Select the run first.");
+      } else {
+        setText("reviewState", "No active runs found. Start from Discover -> Run One Iteration.");
+      }
+      state.review.total = 0;
+      state.review.items = [];
+      renderTable("reviewRows", [], 4);
+      renderReviewDetails(null);
+      renderFastReviewCard();
+      applyPaginationControls("review", 0, state.review.offset, Number(el("reviewLimit").value));
+      return true;
+    }
   }
+  hideReviewRunChooser();
   const queueFilter = el("reviewStatusFilter").value;
   const status = queueFilter === "pending" ? "needs_review" : queueFilter === "later" ? "later" : queueFilter;
   const limit = Number(el("reviewLimit").value);
@@ -3068,6 +3154,17 @@ function init() {
   addListener("fastLaterBtn", "click", () => fastReviewDecision("later"));
   addListener("fastPrevBtn", "click", () => fastReviewMove(-1));
   addListener("fastNextBtn", "click", () => fastReviewMove(1));
+  addListener("reviewRunChooserUseBtn", "click", async () => {
+    const selected = (el("reviewRunChooserSelect")?.value || "").trim();
+    if (!selected) {
+      setText("reviewError", "Select a run first.");
+      return;
+    }
+    setLatestId("discovery", selected);
+    hideReviewRunChooser();
+    emitTelemetryEvent("change", el("reviewRunChooserUseBtn"), `review_autoload:resolved_run run_id=${selected}`);
+    await refreshReview(true);
+  });
 
   addListener("documentsForm", "submit", async (event) => {
     event.preventDefault();

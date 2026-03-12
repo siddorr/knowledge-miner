@@ -96,6 +96,10 @@ HOT_READ_WARN_COUNT = 60
 _hot_read_buckets: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _hot_read_metrics: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "limited": 0})
 
+
+def _load_hmi_partial(name: str) -> str:
+    return (HMI_DIR / "partials" / name).read_text(encoding="utf-8")
+
 # Create tables on module load for v1 local/dev simplicity.
 app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_static")
 
@@ -837,6 +841,12 @@ def hmi_shell(db: Session = Depends(get_db)) -> HTMLResponse:
         .replace("__HMI_AUTH_ENABLED__", auth_enabled_json)
         .replace("__HMI_LAUNCH_SECTION_JSON__", launch_section_json)
         .replace("__HMI_STATIC_VERSION__", static_version)
+        .replace("__PARTIAL_NAV__", _load_hmi_partial("nav.html"))
+        .replace("__PARTIAL_STATUS_STRIP__", _load_hmi_partial("status_strip.html"))
+        .replace("__PARTIAL_REVIEW__", _load_hmi_partial("review.html"))
+        .replace("__PARTIAL_DOCUMENTS__", _load_hmi_partial("documents.html"))
+        .replace("__PARTIAL_LIBRARY__", _load_hmi_partial("library.html"))
+        .replace("__PARTIAL_ADVANCED__", _load_hmi_partial("advanced.html"))
     )
     return HTMLResponse(content=html)
 

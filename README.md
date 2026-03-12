@@ -131,6 +131,19 @@ Typical settings:
 2. Runtime lock files are stored under `./runtime/`.
 3. Artifacts are stored under `./artifacts/`.
 
+## Maintainability Guardrails
+
+Run file-size checks:
+
+```bash
+python scripts/check_file_sizes.py
+```
+
+Guardrail policy:
+1. JS/TS warning/fail thresholds and Python warning/fail thresholds are defined in `config/file_size_guardrails.json`.
+2. Temporary exceptions must be listed in the same config with an explicit reason.
+3. Exceptions are for active refactors only and should be removed once split work is complete.
+
 ## Current Priorities
 
 Use `BACKLOG.md` for authoritative task priority and execution status.

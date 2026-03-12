@@ -1,0 +1,76 @@
+<section id="documents" class="panel">
+  <h2>Download Documents</h2>
+  <p class="muted">Retrieve full-text documents with simple actions.</p>
+  <form id="documentsForm" class="row compact">
+    <label>
+      Queue
+      <select id="documentsQueueFilter">
+        <option value="awaiting" selected>Awaiting</option>
+        <option value="acquired">Acquired</option>
+        <option value="failed">Failed</option>
+        <option value="manual_recovery">Manual Recovery</option>
+        <option value="all">all</option>
+      </select>
+    </label>
+    <label>
+      Limit
+      <select id="documentsLimit">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+      </select>
+    </label>
+    <button id="documentsViewIssuesBtn" type="submit">View Issues</button>
+    <button id="documentsAcquirePendingBtn" type="button">Download Documents</button>
+    <button id="openBatchUploadBtn" type="button">Upload PDF Batch</button>
+  </form>
+  <form id="batchUploadForm" class="row" hidden>
+    <label>
+      PDF Batch
+      <input id="batchUploadFiles" type="file" accept=".pdf,.html,.htm,application/pdf,text/html" multiple>
+    </label>
+    <button id="batchUploadSubmitBtn" type="submit">Start Batch Upload</button>
+  </form>
+  <pre id="batchUploadResults" class="metrics">No batch upload yet.</pre>
+  <div id="documentsPaginationRow" class="row compact">
+    <button id="documentsPrev" type="button">Prev</button>
+    <button id="documentsNext" type="button">Next</button>
+    <span id="documentsPage" class="muted">offset=0</span>
+  </div>
+  <div class="row compact">
+    <button id="documentsSelectAllBtn" type="button">Select All</button>
+    <button id="documentsDeselectAllBtn" type="button">Deselect All</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Select</th><th>Title</th><th>Problem</th><th>Actions</th></tr></thead>
+      <tbody id="documentsRows"></tbody>
+    </table>
+  </div>
+  <h3>Details</h3>
+  <pre id="documentsDetails" class="metrics">No item selected.</pre>
+  <form id="manualUploadForm" class="row">
+    <label>
+      PDF File
+      <input id="manualUploadFile" type="file" required>
+    </label>
+    <button type="submit">Upload PDF</button>
+  </form>
+  <p id="documentsState" class="muted"></p>
+  <details>
+    <summary>More</summary>
+    <div class="row compact">
+      <button id="documentsRetryFailedBtn" type="button">Retry Failed</button>
+      <button id="documentsCopySelectedBtn" type="button">Copy Selected DOI/URL</button>
+      <button id="manualExportCsvBtn" type="button">Export CSV</button>
+    </div>
+    <label>
+      Source ID for manual upload
+      <input id="manualUploadSourceId" type="text" placeholder="source_id">
+    </label>
+  </details>
+  <div class="row compact">
+    <button type="button" class="copy-value-btn" data-target-id="documentsError" data-feedback-id="documentsState">Copy Error</button>
+  </div>
+  <p id="documentsError" class="error"></p>
+</section>

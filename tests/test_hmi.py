@@ -64,6 +64,9 @@ def test_hmi_shell_route_and_navigation():
     assert "Mode" in body
     assert "Fast review" in body
     assert "Refresh Review Queue" in body
+    assert "reviewRunChooser" in body
+    assert "reviewRunChooserSelect" in body
+    assert "reviewRunChooserUseBtn" in body
     assert "Start Acquisition" in body
     assert "Start Parse" in body
     assert "Score" in body
@@ -171,6 +174,9 @@ def test_hmi_static_js_served():
     assert "BroadcastChannel" in body
     assert "captureSessionState" in body
     assert "loadSelectedSession" in body
+    assert "review_autoload:resolved_run" in body
+    assert "review_autoload:no_run_context" in body
+    assert "review_autoload:multiple_runs" in body
 
 
 def test_hmi_prefills_system_token_when_configured():

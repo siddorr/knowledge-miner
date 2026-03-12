@@ -1,0 +1,10 @@
+{
+  "js_warn": 800,
+  "js_fail": 1200,
+  "py_warn": 700,
+  "py_fail": 1000,
+  "exceptions": {
+    "src/knowledge_miner/hmi/static/hmi.js": "Temporary exception while backlog item #18 modularization is in progress.",
+    "src/knowledge_miner/main.py": "Temporary exception while backlog item #19 router split is in progress."
+  }
+}
