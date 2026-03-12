@@ -591,12 +591,9 @@ function captureSessionState() {
 function applySessionState(snapshot) {
   if (!snapshot || typeof snapshot !== "object") throw new Error("invalid_session_payload");
   const section = snapshot.section || "build";
-  state.latest.discovery = snapshot.latest?.discovery || "";
-  state.latest.acquisition = snapshot.latest?.acquisition || "";
-  state.latest.parse = snapshot.latest?.parse || "";
-  setText("latestDiscoveryId", state.latest.discovery || "-");
-  setText("latestAcqId", state.latest.acquisition || "-");
-  setText("latestParseId", state.latest.parse || "-");
+  setLatestId("discovery", snapshot.latest?.discovery || "");
+  setLatestId("acquisition", snapshot.latest?.acquisition || "");
+  setLatestId("parse", snapshot.latest?.parse || "");
 
   if (snapshot.build) {
     state.build.activeTopicId = snapshot.build.activeTopicId || state.build.activeTopicId;
@@ -624,7 +621,6 @@ function applySessionState(snapshot) {
   state.documents.selected = new Set((snapshot.documents?.selected || []).map((id) => String(id)));
   if (el("documentsQueueFilter")) el("documentsQueueFilter").value = snapshot.documents?.queueFilter || "awaiting";
   if (el("documentsLimit")) el("documentsLimit").value = snapshot.documents?.limit || "50";
-  if (el("documentsAcqRunIdInput")) el("documentsAcqRunIdInput").value = snapshot.documents?.acqRunIdInput || "";
   if (el("manualUploadSourceId")) el("manualUploadSourceId").value = snapshot.documents?.manualSourceId || "";
 
   if (el("searchQuery")) el("searchQuery").value = snapshot.library?.query || "";
@@ -633,12 +629,9 @@ function applySessionState(snapshot) {
   if (el("libraryYearFilter")) el("libraryYearFilter").value = snapshot.library?.yearFilter || "";
   if (el("libraryDocsFilter")) el("libraryDocsFilter").value = snapshot.library?.docsFilter || "all";
   if (el("libraryParsedFilter")) el("libraryParsedFilter").value = snapshot.library?.parsedFilter || "all";
-  if (el("searchParseRunIdInput")) el("searchParseRunIdInput").value = snapshot.library?.parseRunIdInput || "";
-
-  if (el("discoverRunIdInput")) el("discoverRunIdInput").value = snapshot.ids?.discoverRunIdInput || state.latest.discovery || "";
-  if (el("reviewRunIdInput")) el("reviewRunIdInput").value = snapshot.ids?.reviewRunIdInput || state.latest.discovery || "";
-  if (el("startAcqRunId")) el("startAcqRunId").value = snapshot.ids?.startAcqRunId || state.latest.discovery || "";
-  if (el("startParseAcqRunId")) el("startParseAcqRunId").value = snapshot.ids?.startParseAcqRunId || state.latest.acquisition || "";
+  if (snapshot.library?.parseRunIdInput && !state.latest.parse) setLatestId("parse", snapshot.library.parseRunIdInput);
+  if (snapshot.documents?.acqRunIdInput && !state.latest.acquisition) setLatestId("acquisition", snapshot.documents.acqRunIdInput);
+  if (snapshot.ids?.discoverRunIdInput && !state.latest.discovery) setLatestId("discovery", snapshot.ids.discoverRunIdInput);
 
   if (["build", "review", "documents", "library", "advanced", "discover"].includes(section)) {
     window.location.hash = `#${section}`;
@@ -763,9 +756,22 @@ function renderRunsTable() {
 function setLatestId(kind, value) {
   const trimmed = (value || "").trim();
   state.latest[kind] = trimmed;
-  if (kind === "discovery") setText("latestDiscoveryId", trimmed || "-");
-  if (kind === "acquisition") setText("latestAcqId", trimmed || "-");
-  if (kind === "parse") setText("latestParseId", trimmed || "-");
+  if (kind === "discovery") {
+    setText("latestDiscoveryId", trimmed || "-");
+    setText("statusActiveDiscoveryRun", trimmed || "-");
+    if (el("discoverRunIdInput")) el("discoverRunIdInput").value = trimmed;
+    if (el("reviewRunIdInput")) el("reviewRunIdInput").value = trimmed;
+    if (el("startAcqRunId")) el("startAcqRunId").value = trimmed;
+  }
+  if (kind === "acquisition") {
+    setText("latestAcqId", trimmed || "-");
+    if (el("documentsAcqRunIdInput")) el("documentsAcqRunIdInput").value = trimmed;
+    if (el("startParseAcqRunId")) el("startParseAcqRunId").value = trimmed;
+  }
+  if (kind === "parse") {
+    setText("latestParseId", trimmed || "-");
+    if (el("searchParseRunIdInput")) el("searchParseRunIdInput").value = trimmed;
+  }
   if (kind === "discovery" && activeSection() === "review") {
     state.review.offset = 0;
     scheduleReviewAutoLoad("run_context_changed");
@@ -827,19 +833,15 @@ async function useLatestRunContext() {
 }
 
 function getDiscoveryRunId() {
-  const override = (el("reviewRunIdInput") || {}).value || "";
-  const discoverOverride = (el("discoverRunIdInput") || {}).value || "";
-  return override.trim() || discoverOverride.trim() || state.latest.discovery;
+  return (state.latest.discovery || "").trim();
 }
 
 function getAcqRunId() {
-  const override = (el("documentsAcqRunIdInput") || {}).value || "";
-  return override.trim() || state.latest.acquisition;
+  return (state.latest.acquisition || "").trim();
 }
 
 function getParseRunId() {
-  const override = (el("searchParseRunIdInput") || {}).value || "";
-  return override.trim() || state.latest.parse;
+  return (state.latest.parse || "").trim();
 }
 
 function statusToUi(status) {
@@ -1196,6 +1198,7 @@ function updateStatusStrip({
   setText("statusPendingReview", String(pendingReview));
   setText("statusAwaitingDocs", String(awaitingDocs));
   setText("statusDocFailures", String(docFailures));
+  setText("statusActiveDiscoveryRun", state.latest.discovery || "-");
   setText("statusLastRun", lastRunState || "none");
   if (pendingReview > 0) state.statusStrip.nextActionRoute = "review";
   else if (docFailures > 0 || awaitingDocs > 0) state.statusStrip.nextActionRoute = "documents";
@@ -1380,6 +1383,7 @@ async function loadReview() {
   } catch (err) {
     if (String(err.message || "").includes("run_not_found")) {
       resetStaleRunContext("review_not_found");
+      setText("reviewError", "Active run is unavailable. Click Use Latest to switch explicitly, or start a new run.");
       state.review.total = 0;
       state.review.items = [];
       renderTable("reviewRows", [], 4);
@@ -1917,14 +1921,12 @@ async function runNextCitationIteration() {
         ai_filter_enabled: aiFilterEnabled,
       }),
     );
-    setLatestId("discovery", result.run_id);
-    el("discoverRunIdInput").value = result.run_id;
-    el("reviewRunIdInput").value = result.run_id;
-    state.review.offset = 0;
-    setText("dashboardState", "Citation iteration started.");
+    setText(
+      "dashboardState",
+      `Citation iteration started from active run ${runId}. New run created: ${result.run_id}. Context unchanged until you switch explicitly.`,
+    );
     await loadDashboard();
     await loadDiscover();
-    window.location.hash = "#review";
   } catch (err) {
     setText("dashboardError", `Citation iteration failed: ${err.message}`);
   }
@@ -2065,13 +2067,6 @@ async function loadReviewClick(event) {
   try {
     await loadReview();
   } catch (err) {
-    if (String(err.message || "").includes("run_not_found")) {
-      const recovered = await recoverLatestDiscoveryRun();
-      if (recovered) {
-        await loadReview();
-        return;
-      }
-    }
     setText("reviewError", `Load failed: ${err.message}`);
   }
 }
@@ -2085,32 +2080,9 @@ function scheduleReviewAutoLoad(reason = "auto") {
       await loadReview();
       setText("reviewState", `Review queue updated (${reason}).`);
     } catch (err) {
-      if (String(err.message || "").includes("run_not_found")) {
-        const recovered = await recoverLatestDiscoveryRun();
-        if (recovered) {
-          await loadReview();
-          return;
-        }
-      }
       setText("reviewError", `Auto-load failed: ${err.message}`);
     }
   }, 250);
-}
-
-async function recoverLatestDiscoveryRun() {
-  try {
-    const queue = await apiGet("/v1/work-queue?limit=200&offset=0");
-    const first = (queue.items || []).find((row) => row.phase === "discovery" && row.run_id);
-    if (!first) return false;
-    const runId = first.run_id;
-    setLatestId("discovery", runId);
-    el("discoverRunIdInput").value = runId;
-    el("reviewRunIdInput").value = runId;
-    setText("reviewState", `Recovered latest available run: ${runId}`);
-    return true;
-  } catch (_err) {
-    return false;
-  }
 }
 
 async function handleReviewAction(event) {
@@ -2387,9 +2359,14 @@ async function exportManualCsv() {
 }
 
 async function documentsAcquirePending() {
-  const runId = state.documents.discoveryRunId || getDiscoveryRunId();
+  const runId = getDiscoveryRunId();
   if (!runId) {
     setText("documentsError", "Discovery run context is required.");
+    return;
+  }
+  const acceptedPending = Number((el("statusAwaitingDocs")?.textContent || "0").trim());
+  if (!Number.isFinite(acceptedPending) || acceptedPending <= 0) {
+    setText("documentsState", "No approved sources are waiting for download.");
     return;
   }
   emitTelemetryEvent("submit", el("documentsAcquirePendingBtn") || document.body, `action:process_approved_docs:start run_id=${runId}`);
@@ -2400,7 +2377,7 @@ async function documentsAcquirePending() {
     emitTelemetryEvent(
       "change",
       el("documentsAcquirePendingBtn") || document.body,
-      `action:process_approved_docs:success run_id=${runId} acq_run_id=${next.acq_run_id} accepted_count=${state.dashboard.accepted_waiting_docs}`,
+      `action:process_approved_docs:success run_id=${runId} acq_run_id=${next.acq_run_id} accepted_count=${(el("statusAwaitingDocs")?.textContent || "0").trim()}`,
     );
     setLatestId("acquisition", next.acq_run_id);
     el("documentsAcqRunIdInput").value = next.acq_run_id;
@@ -2940,9 +2917,23 @@ function init() {
     state.review.offset = 0;
     scheduleReviewAutoLoad("limit_changed");
   });
+  addListener("discoverRunIdInput", "change", () => {
+    const runId = (el("discoverRunIdInput").value || "").trim();
+    setLatestId("discovery", runId);
+  });
   addListener("reviewRunIdInput", "change", () => {
+    const runId = (el("reviewRunIdInput").value || "").trim();
+    setLatestId("discovery", runId);
     state.review.offset = 0;
     scheduleReviewAutoLoad("run_override_changed");
+  });
+  addListener("documentsAcqRunIdInput", "change", () => {
+    const runId = (el("documentsAcqRunIdInput").value || "").trim();
+    setLatestId("acquisition", runId);
+  });
+  addListener("searchParseRunIdInput", "change", () => {
+    const runId = (el("searchParseRunIdInput").value || "").trim();
+    setLatestId("parse", runId);
   });
   addListener("reviewMode", "change", () => setReviewMode(el("reviewMode").value));
   addListener("reviewRows", "click", handleReviewAction);

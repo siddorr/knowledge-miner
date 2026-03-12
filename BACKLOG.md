@@ -9,6 +9,7 @@ Status:
 - Updated on 2026-03-12: LAN access workflow docs (#21) and HMI request-storm reduction controls (#22) are implemented.
 - Updated on 2026-03-12: Session save/load workflow (#23) is implemented with auto-restore and history.
 - Updated on 2026-03-12: GUI Team Notes v1.1 alignment (#24) is implemented for task-first UX.
+- Updated on 2026-03-12: Run/session context pinning (#25) and review-to-documents handoff hardening (#26) are implemented.
 
 ## High Priority
 
@@ -1211,3 +1212,95 @@ Definition of done for Phase 4.3:
   - default review queue shows only `needs_review` while still allowing audit of auto-accept/reject decisions
   - documents page wording/action model follows `Download` / `Upload PDF`
   - advanced diagnostics remain available but do not block/interrupt primary workflow
+
+3. [x] P0 - Fix run/session context drift (no implicit session switch)
+- Problem:
+  - User starts action in one visible session, but the operation can execute for another run ID.
+  - Citation iteration appears "not working" because results are written to a different run than the one shown.
+- Required behavior:
+  - one active session context in UI at a time
+  - no automatic run/session switch unless explicitly requested by user
+  - all actions (`next citation iteration`, review decisions, document processing) must target active run only
+- UX requirements:
+  - always show active run/session clearly in top area
+  - block action with clear warning if active run is missing/stale
+  - `Use Latest` stays opt-in and never auto-applied
+- Acceptance criteria:
+  - submitted action payload run_id always equals currently displayed run_id
+  - polling/results remain pinned to the same run after action starts
+  - no cross-run updates without explicit user-triggered switch event
+
+4. [x] P0 - Fix "finished review -> nothing happens" handoff to Documents
+- Observed bug signature (from logs):
+  - `action:process_approved_docs:error ... Cannot read properties of undefined (reading 'accepted_wa...')`
+  - UI starts processing with wrong fallback run (`run_parse_seed`) instead of active discovery run.
+  - Acquisition then targets placeholder seed item (`doi:10.1000/parse-seed`, `example.org`) and fails.
+- Required fix:
+  - `Download Documents` must read accepted-doc counters/state safely (null/undefined guarded)
+  - remove/disable invalid fallback run IDs (including `run_parse_seed`) for normal flow
+  - always bind Documents action to current active discovery run selected in UI
+  - if no accepted docs exist, show explicit message instead of silent no-op/error
+- Acceptance criteria:
+  - after final review decision, pressing `Download Documents` creates acquisition for same active run
+  - no frontend exception in hmi logs for `accepted_waiting_docs` access
+  - no acquisition attempts against placeholder DOI/example.org in real operator workflow
+
+5. [ ] P0 - Enforce canonical active run resolution for all UI actions
+- Problem:
+  - `getDiscoveryRunId()` prioritizes manual input overrides and can execute actions against stale run IDs.
+- Scope:
+  - make active run a single canonical source of truth in UI state
+  - action handlers must use canonical active run (not free-text field precedence)
+  - manual run-id input (if retained) must be explicit "switch context" action with confirmation
+- Affected actions:
+  - next citation iteration
+  - download documents / retry failed
+  - review queue load
+- Acceptance criteria:
+  - action telemetry run_id always matches visible active run
+  - no hidden/stale input value can redirect execution
+
+6. [ ] P0 - Make review decision API run-scoped to prevent cross-run decisions
+- Problem:
+  - `POST /v1/sources/{source_id}/review` is source-id scoped only; no run guard in request contract.
+- Scope:
+  - extend review request payload with `run_id` (or validate run context server-side)
+  - reject decision when source does not belong to active run context
+  - surface clear UI error and refresh guidance
+- Acceptance criteria:
+  - impossible to apply review decision to source outside selected run
+  - server responds with explicit conflict/error when run/source mismatch occurs
+
+7. [ ] P1 - Validate session-restore IDs before applying restored context
+- Problem:
+  - loading saved session can restore stale run IDs into inputs and reactivate invalid context.
+- Scope:
+  - on `Load Session`, validate restored discovery/acquisition/parse IDs exist
+  - if missing, clear invalid IDs and keep valid ones
+  - show per-field restore diagnostics in UI (restored/cleared)
+- Acceptance criteria:
+  - no stale run ID survives session restore silently
+  - restored session cannot trigger actions against deleted/nonexistent runs
+
+8. [ ] P1 - Guard document retry action against missing/invalid discovery_run_id
+- Problem:
+  - per-row `Retry` action can call acquisition without strict pre-validation of `discovery_run_id`.
+- Scope:
+  - require non-empty valid discovery_run_id before POST
+  - if invalid, block action and show actionable message
+  - log structured telemetry for blocked retry attempts
+- Acceptance criteria:
+  - retry never fires with empty/invalid run_id
+  - user gets deterministic message instead of generic failure
+
+9. [ ] P1 - Reduce repeated high-frequency polling loops in Review/Documents
+- Problem:
+  - repeated GET storms (`/discovery/runs/...` + `/sources`) increase race/noise and hide real state transitions.
+- Scope:
+  - coalesce review/doc refresh triggers (debounce + in-flight guard per section)
+  - suspend redundant refresh when no state delta (ETag/live update/event-driven path)
+  - cap fallback poll frequency under heavy activity
+- Acceptance criteria:
+  - GET rate drops materially during steady state
+  - no duplicate concurrent loads for same section/run/status tuple
+  - operator still sees timely updates after decision/action completion

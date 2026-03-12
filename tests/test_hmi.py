@@ -54,6 +54,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Review Sources:" in body
     assert "Resolve Errors:" in body
     assert "statusNextActionBtn" in body
+    assert "statusActiveDiscoveryRun" in body
     assert "useLatestRunBtn" in body
     assert "/hmi/static/hmi.js" in body
     assert "Run One Iteration" in body
@@ -148,9 +149,9 @@ def test_hmi_static_js_served():
     assert "applyReviewDecisionToSelected" in body
     assert "runBusy" in body
     assert "setGlobalBusy" in body
-    assert "recoverLatestDiscoveryRun" in body
     assert "resetStaleRunContext" in body
     assert "useLatestRunContext" in body
+    assert "Context unchanged until you switch explicitly." in body
     assert "stale_context_reset" in body
     assert "documentsAcquirePending" in body
     assert "documentsRetryFailed" in body
