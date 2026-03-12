@@ -178,3 +178,14 @@ def test_debug_db_context_is_disabled_by_default():
     client = TestClient(app)
     resp = client.get("/v1/debug/db-context", headers=_auth_headers())
     assert resp.status_code == 404
+
+
+def test_latest_runs_endpoint_returns_latest_ids():
+    _seed_phase42_records()
+    client = TestClient(app)
+    resp = client.get("/v1/runs/latest", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["discovery_run_id"] == "run_q_1"
+    assert body["acquisition_run_id"] == "acq_q_1"
+    assert body["parse_run_id"] == "parse_q_1"

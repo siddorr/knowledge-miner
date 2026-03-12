@@ -53,6 +53,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Accepted waiting docs:" in body
     assert "Document failures:" in body
     assert "statusNextActionBtn" in body
+    assert "useLatestRunBtn" in body
     assert "/hmi/static/hmi.js" in body
     assert "Run Discovery" in body
     assert "Load Review Queue" in body
@@ -136,6 +137,9 @@ def test_hmi_static_js_served():
     assert "runBusy" in body
     assert "setGlobalBusy" in body
     assert "recoverLatestDiscoveryRun" in body
+    assert "resetStaleRunContext" in body
+    assert "useLatestRunContext" in body
+    assert "stale_context_reset" in body
     assert "documentsAcquirePending" in body
     assert "documentsRetryFailed" in body
     assert "documentsCopySelected" in body

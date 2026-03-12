@@ -44,6 +44,9 @@ const state = {
     phase: "",
     updatedAt: "",
   },
+  stale: {
+    lastResetKey: "",
+  },
 };
 
 function el(id) {
@@ -348,6 +351,60 @@ function setLatestId(kind, value) {
   if (kind === "parse") setText("latestParseId", trimmed || "-");
 }
 
+function clearRunInputs() {
+  const ids = ["discoverRunIdInput", "reviewRunIdInput", "documentsAcqRunIdInput", "searchParseRunIdInput"];
+  for (const id of ids) {
+    const node = el(id);
+    if (node) node.value = "";
+  }
+}
+
+function resetStaleRunContext(reason) {
+  const key = `${reason}:${state.latest.discovery}:${state.latest.acquisition}:${state.latest.parse}`;
+  if (state.stale.lastResetKey === key) return false;
+  state.stale.lastResetKey = key;
+  setLatestId("discovery", "");
+  setLatestId("acquisition", "");
+  setLatestId("parse", "");
+  clearRunInputs();
+  state.review.selected.clear();
+  state.review.loaded = false;
+  state.documents.selected.clear();
+  state.documents.loaded = false;
+  state.search.loaded = false;
+  setText("reviewState", "No active runs found. Start from Build -> Run Discovery.");
+  setText("discoverState", "No active runs found. Start from Build -> Run Discovery.");
+  setText("documentsState", "No active runs found. Start from Build -> Run Discovery.");
+  emitTelemetryEvent("change", document.body, "stale_context_reset");
+  return true;
+}
+
+async function useLatestRunContext() {
+  const payload = await apiGet("/v1/runs/latest");
+  const d = (payload.discovery_run_id || "").trim();
+  const a = (payload.acquisition_run_id || "").trim();
+  const p = (payload.parse_run_id || "").trim();
+  if (!d && !a && !p) {
+    resetStaleRunContext("use_latest_none");
+    return false;
+  }
+  if (d) {
+    setLatestId("discovery", d);
+    el("discoverRunIdInput").value = d;
+    el("reviewRunIdInput").value = d;
+  }
+  if (a) {
+    setLatestId("acquisition", a);
+    el("documentsAcqRunIdInput").value = a;
+  }
+  if (p) {
+    setLatestId("parse", p);
+    el("searchParseRunIdInput").value = p;
+  }
+  setText("reviewState", "Loaded latest run context.");
+  return true;
+}
+
 function getDiscoveryRunId() {
   const override = (el("reviewRunIdInput") || {}).value || "";
   const discoverOverride = (el("discoverRunIdInput") || {}).value || "";
@@ -633,8 +690,10 @@ async function loadSystemStatus() {
     const ai = payload.ai_filter_active ? "ai:active" : `ai:${payload.ai_filter_warning ? "warning" : "disabled"}`;
     const db = payload.db_ready ? "db:ready" : `db:missing-${(payload.db_missing_tables || []).length}`;
     setText("systemBadges", `${payload.auth_mode} | ${db} | ${ai} | ${brave} | ${s2}`);
+    return payload;
   } catch (err) {
     setText("systemBadges", `status unavailable: ${err.message}`);
+    throw err;
   }
 }
 
@@ -694,7 +753,10 @@ async function loadDashboard() {
       recent = `status=${run.status}, accepted=${run.accepted_total}, discovered=${run.expanded_candidates_total}`;
       upsertRunRow("discovery", state.latest.discovery, run);
       renderRunsTable();
-    } catch (_err) {
+    } catch (err) {
+      if (String(err.message || "").includes("run_not_found")) {
+        resetStaleRunContext("dashboard_discovery_not_found");
+      }
       recent = `latest run unavailable (${state.latest.discovery})`;
     }
   }
@@ -726,7 +788,16 @@ async function loadDiscover() {
     setText("discoverSummary", "No discovery run selected.");
     return true;
   }
-  const run = await apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
+  let run;
+  try {
+    run = await apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
+  } catch (err) {
+    if (String(err.message || "").includes("run_not_found")) {
+      resetStaleRunContext("discover_not_found");
+      return true;
+    }
+    throw err;
+  }
   setLatestId("discovery", runId);
   upsertRunRow("discovery", runId, run);
   renderRunsTable();
@@ -755,14 +826,28 @@ async function loadDiscover() {
 async function loadReview() {
   setText("reviewError", "");
   const runId = getDiscoveryRunId();
-  if (!runId) throw new Error("discovery run id is required");
+  if (!runId) {
+    setText("reviewState", "No active runs found. Start from Build -> Run Discovery.");
+    renderTable("reviewRows", [], 5);
+    return true;
+  }
   const queueFilter = el("reviewStatusFilter").value;
   const status = queueFilter === "pending" ? "needs_review" : queueFilter === "later" ? "later" : queueFilter;
   const limit = Number(el("reviewLimit").value);
   const offset = state.review.offset;
-  const pageRaw = await apiGet(
-    `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`,
-  );
+  let pageRaw;
+  try {
+    pageRaw = await apiGet(
+      `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`,
+    );
+  } catch (err) {
+    if (String(err.message || "").includes("run_not_found")) {
+      resetStaleRunContext("review_not_found");
+      renderTable("reviewRows", [], 5);
+      return true;
+    }
+    throw err;
+  }
   const items = pageRaw.items || [];
   state.review.items = items;
   setLatestId("discovery", runId);
@@ -796,15 +881,31 @@ async function loadReview() {
 async function loadDocuments() {
   setText("documentsError", "");
   const acqRunId = getAcqRunId();
-  if (!acqRunId) throw new Error("acquisition run id is required");
+  if (!acqRunId) {
+    setText("documentsState", "No active runs found. Start from Build -> Run Discovery.");
+    renderTable("documentsRows", [], 4);
+    return true;
+  }
   const limit = Number(el("documentsLimit").value);
   const offset = state.documents.offset;
   const queueFilter = (el("documentsQueueFilter") || {}).value || "awaiting";
-  const [itemsPayload, queue, run] = await Promise.all([
-    apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/items?limit=${limit}&offset=${offset}`),
-    apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads?limit=${limit}&offset=${offset}`),
-    apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}`),
-  ]);
+  let itemsPayload;
+  let queue;
+  let run;
+  try {
+    [itemsPayload, queue, run] = await Promise.all([
+      apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/items?limit=${limit}&offset=${offset}`),
+      apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-downloads?limit=${limit}&offset=${offset}`),
+      apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}`),
+    ]);
+  } catch (err) {
+    if (String(err.message || "").includes("run_not_found")) {
+      resetStaleRunContext("documents_not_found");
+      renderTable("documentsRows", [], 4);
+      return true;
+    }
+    throw err;
+  }
   state.documents.acqRunMeta = run;
   const manualBySourceId = new Map((queue.items || []).map((row) => [row.source_id, row]));
   const normalized = (itemsPayload.items || []).map((row) => {
@@ -1729,7 +1830,13 @@ async function runPollCycle() {
   const section = activeSection();
   const interval = document.visibilityState === "hidden" ? POLL_BACKGROUND_MS : POLL_ACTIVE_MS;
   try {
-    await loadSystemStatus();
+    const sys = await loadSystemStatus();
+    if ((sys?.db_run_count || 0) === 0) {
+      resetStaleRunContext("db_run_count_zero");
+      setPollState(`Auto-refreshing #${section} every ${Math.round(interval / 1000)}s.`);
+      schedulePoll();
+      return;
+    }
     await refreshCurrentSection();
     setPollState(`Auto-refreshing #${section} every ${Math.round(interval / 1000)}s.`);
   } catch (err) {
@@ -1948,6 +2055,14 @@ function init() {
   addListener("copyDiscoveryIdBtn", "click", () => copyLatestId("discovery"));
   addListener("copyAcqIdBtn", "click", () => copyLatestId("acquisition"));
   addListener("copyParseIdBtn", "click", () => copyLatestId("parse"));
+  addListener("useLatestRunBtn", "click", async () => {
+    try {
+      const ok = await useLatestRunContext();
+      if (ok) await loadDashboard();
+    } catch (err) {
+      setText("reviewError", `Use Latest failed: ${err.message}`);
+    }
+  });
   addListener("statusNextActionBtn", "click", () => {
     const route = state.statusStrip.nextActionRoute || "build";
     window.location.hash = `#${route}`;
@@ -1964,9 +2079,16 @@ function init() {
   renderRunsTable();
   renderBuildTopics();
   setBuildTab(state.build.activeTab);
-  loadSystemStatus();
-  loadDashboard();
-  loadAiSettings();
+  (async () => {
+    try {
+      const sys = await loadSystemStatus();
+      if ((sys?.db_run_count || 0) === 0) resetStaleRunContext("init_db_run_count_zero");
+      else await loadDashboard();
+    } catch (_err) {
+      // keep shell interactive even when status bootstrap fails
+    }
+    loadAiSettings();
+  })();
   emitTelemetryEvent("navigate", document.body, activeSection());
   schedulePoll();
 }

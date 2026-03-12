@@ -299,6 +299,22 @@ def debug_db_context(
     return _not_found_diagnostics(db, run_id=run_id, source_id=source_id)
 
 
+@app.get("/v1/runs/latest")
+def get_latest_runs(
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> dict:
+    discovery = db.scalars(select(Run.id).order_by(Run.created_at.desc(), Run.id.desc()).limit(1)).first()
+    acquisition = db.scalars(select(AcquisitionRun.id).order_by(AcquisitionRun.created_at.desc(), AcquisitionRun.id.desc()).limit(1)).first()
+    parse = db.scalars(select(ParseRun.id).order_by(ParseRun.created_at.desc(), ParseRun.id.desc()).limit(1)).first()
+    return {
+        "discovery_run_id": discovery,
+        "acquisition_run_id": acquisition,
+        "parse_run_id": parse,
+    }
+
+
 @app.get("/v1/work-queue", response_model=WorkQueueResponse)
 def get_work_queue(
     limit: int = Query(default=100, ge=1, le=1000),

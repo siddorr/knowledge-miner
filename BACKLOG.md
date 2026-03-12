@@ -185,7 +185,7 @@ Status:
   - UI test that `Manual Complete` and `Later` survive reload and are reflected in API data.
   - UI regression test for status-strip KPI correctness.
 
-10. [ ] P0 - Auto-reset stale HMI run context when DB is empty or run is invalid
+10. [x] P0 - Auto-reset stale HMI run context when DB is empty or run is invalid
 - Goal: prevent infinite polling/review loops on non-existent run IDs after restart/cleanup.
 - Problem observed:
   - HMI keeps polling old run IDs (for example `run_1dcfa040bb46`) while DB has `runs=0`, producing repeated `run_not_found/source_not_found`.
