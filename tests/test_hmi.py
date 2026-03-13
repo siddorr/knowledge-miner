@@ -115,7 +115,7 @@ def test_hmi_static_js_served():
     response = client.get("/hmi/static/hmi.js")
     assert response.status_code == 200
     body = response.text
-    assert "Stale data in #" in body
+    assert "./hmi/live_updates.js" in body
     assert "pollState" in body
     assert "Load failed:" in body
     assert "review-action" in body
@@ -167,11 +167,10 @@ def test_hmi_static_js_served():
     assert "footerAiReady" in body
     assert "footerDbReady" in body
     assert "openLiveUpdatesChannel" in body
-    assert "Live updates connected. Idle mode: interval polling paused." in body
     assert "scheduleReviewAutoLoad" in body
     assert "Leader tab mode" in body
     assert "Follower tab mode" in body
-    assert "Hidden tab: periodic refresh paused." in body
+    assert "createLiveUpdatesModule" in body
     assert "./hmi/state.js" in body
     assert "BroadcastChannel" in body
     assert "captureSessionState" in body
