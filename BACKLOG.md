@@ -41,6 +41,7 @@ Status:
   - `hmi/state.js` extracted and wired (state/constants moved out of monolith).
   - `hmi/telemetry.js` extracted and wired.
   - `hmi/documents.js` extracted and wired (documents action handlers/batch upload flow moved out).
+  - `hmi/review.js` extracted and wired (review actions, decisions, and shortcuts moved out).
 - Acceptance criteria:
   - no single frontend module exceeds ~800 lines
   - existing HMI acceptance tests pass
@@ -62,6 +63,7 @@ Status:
 - Progress:
   - `routes/settings.py` extracted and mounted; `/v1/settings/ai-filter` now served from router module.
   - `routes/system.py` extracted and mounted; `/healthz` now served from router module.
+  - `routes/system.py` now serves `/v1/runs/latest` and `/v1/work-queue`.
 - Acceptance criteria:
   - public API paths and response contracts unchanged
   - app startup/import stable
