@@ -1,111 +1,23 @@
 import { createApiClient } from "./hmi/api.js";
+import { createTelemetryClient } from "./hmi/telemetry.js";
+import {
+  AUTH_ENABLED,
+  BC_NAME,
+  LAUNCH_SECTION,
+  LEADER_HEARTBEAT_MS,
+  LEADER_STALE_MS,
+  LEADER_STORAGE_KEY,
+  POLL_ACTIVE_MS,
+  POLL_BACKGROUND_MS,
+  POLL_DISCONNECTED_IDLE_MS,
+  SESSIONS_AUTO_RESTORE_KEY,
+  SESSIONS_STORAGE_KEY,
+  SYSTEM_TOKEN,
+  TELEMETRY_INPUT_DEBOUNCE_MS,
+  createInitialState,
+} from "./hmi/state.js";
 
-const POLL_ACTIVE_MS = 5000;
-const POLL_BACKGROUND_MS = 15000;
-const POLL_DISCONNECTED_IDLE_MS = 30000;
-const TELEMETRY_INPUT_DEBOUNCE_MS = 400;
-const SESSIONS_STORAGE_KEY = "km_hmi_sessions_v1";
-const SESSIONS_AUTO_RESTORE_KEY = "km_hmi_sessions_auto_restore";
-const LEADER_STALE_MS = 6000;
-const LEADER_HEARTBEAT_MS = 2000;
-const LEADER_STORAGE_KEY = "km_hmi_leader";
-const BC_NAME = "km_hmi_updates";
-const SYSTEM_TOKEN = typeof window !== "undefined" ? window.__KM_HMI_DEFAULT_TOKEN__ || null : null;
-const AUTH_ENABLED = typeof window !== "undefined" ? window.__KM_HMI_AUTH_ENABLED__ !== false : true;
-const LAUNCH_SECTION = typeof window !== "undefined" ? window.__KM_HMI_LAUNCH_SECTION__ || "build" : "build";
-
-const state = {
-  apiKey: "",
-  tokenSource: "none",
-  pollTimer: null,
-  runRows: [],
-  latest: { discovery: "", acquisition: "", parse: "" },
-  build: {
-    topics: [{ id: "topic_default", name: "Default Topic" }],
-    activeTopicId: "topic_default",
-    activeTab: "runs",
-    stagedSourcesByTopic: { topic_default: [] },
-    sourceKeysByTopic: { topic_default: new Set() },
-    topicQueriesByTopic: { topic_default: "" },
-    coverageByTopic: {
-      topic_default: {
-        candidates: 0,
-        accepted: 0,
-        pending_review: 0,
-        awaiting_documents: 0,
-        failed_documents: 0,
-      },
-    },
-  },
-  review: {
-    offset: 0,
-    total: 0,
-    loaded: false,
-    expanded: new Set(),
-    selected: new Set(),
-    items: [],
-    mode: "table",
-    activeIndex: 0,
-    runChoices: [],
-  },
-  documents: {
-    offset: 0,
-    total: 0,
-    loaded: false,
-    selectedSourceId: "",
-    selected: new Set(),
-    items: [],
-    acqRunMeta: null,
-    discoveryRunId: "",
-  },
-  search: { loaded: false, payload: null, items: [], mode: "browse", docsById: new Map() },
-  context: {},
-  telemetry: {
-    sessionId: "",
-    inputTimers: new Map(),
-  },
-  statusStrip: {
-    nextActionRoute: "build",
-  },
-  busy: {
-    count: 0,
-    phase: "",
-    updatedAt: "",
-  },
-  stale: {
-    lastResetKey: "",
-  },
-  reviewAuto: {
-    timer: null,
-  },
-  live: {
-    connected: false,
-    eventSource: null,
-    queuedRefresh: null,
-  },
-  net: {
-    inflightGet: new Map(),
-    etagCache: new Map(),
-    requestCount: 0,
-    dedupHits: 0,
-    readThrottleUntil: 0,
-    readBackoffMs: 0,
-  },
-  refresh: {
-    inflight: new Map(),
-    lastAt: new Map(),
-  },
-  multiTab: {
-    tabId: `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-    isLeader: true,
-    heartbeatTimer: null,
-    channel: null,
-  },
-  sessions: {
-    items: [],
-    autoRestore: true,
-  },
-};
+const state = createInitialState();
 
 function el(id) {
   return document.getElementById(id);
@@ -333,108 +245,16 @@ function authHeaders() {
   return { Authorization: `Bearer ${state.apiKey}` };
 }
 
-function telemetryHeaders() {
-  if (AUTH_ENABLED && !state.apiKey) return null;
-  return { ...authHeaders(), "Content-Type": "application/json" };
-}
-
-function telemetrySessionId() {
-  if (state.telemetry.sessionId) return state.telemetry.sessionId;
-  const seed = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-  state.telemetry.sessionId = `hmi_${seed}`;
-  return state.telemetry.sessionId;
-}
-
-const SAFE_VALUE_PREVIEW_IDS = new Set([
-  "startDiscoverySeeds",
-  "searchQuery",
-  "globalSearchQuery",
-  "discoverRunIdInput",
-  "reviewRunIdInput",
-  "documentsAcqRunIdInput",
-  "searchParseRunIdInput",
-  "runIdInput",
-]);
-
-function controlIdFromTarget(target) {
-  if (!target) return "unknown";
-  const raw = target.id || target.name || target.getAttribute("data-action") || target.tagName.toLowerCase();
-  return String(raw).slice(0, 120);
-}
-
-function controlLabelFromTarget(target) {
-  if (!target) return null;
-  const aria = target.getAttribute("aria-label");
-  if (aria) return aria.slice(0, 160);
-  const text = (target.textContent || "").trim();
-  if (text) return text.slice(0, 160);
-  if (target.id) {
-    try {
-      const label = document.querySelector(`label[for="${CSS.escape(target.id)}"]`);
-      const labelText = (label?.textContent || "").trim();
-      if (labelText) return labelText.slice(0, 160);
-    } catch (_err) {
-      // ignore query/escape failures
-    }
-  }
-  return null;
-}
-
-function sanitizeValuePreview(target) {
-  if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement)) {
-    return null;
-  }
-  const controlId = controlIdFromTarget(target);
-  const inputType = target instanceof HTMLInputElement ? (target.type || "").toLowerCase() : "";
-  if (["password", "file", "hidden"].includes(inputType)) return "[redacted]";
-  if (!SAFE_VALUE_PREVIEW_IDS.has(controlId)) return "[redacted]";
-  const value = String(target.value || "").trim();
-  if (!value) return "";
-  if (value.length <= 120) return value;
-  return `${value.slice(0, 120)}...`;
-}
+const telemetry = createTelemetryClient({
+  state,
+  authEnabled: AUTH_ENABLED,
+  authHeaders,
+  activeSection,
+  telemetryInputDebounceMs: TELEMETRY_INPUT_DEBOUNCE_MS,
+});
 
 function emitTelemetryEvent(eventType, target, forcedValuePreview = undefined) {
-  const headers = telemetryHeaders();
-  if (!headers) return;
-  const sectionNode = target?.closest ? target.closest("section") : null;
-  const valuePreview = forcedValuePreview !== undefined ? forcedValuePreview : sanitizeValuePreview(target);
-  const payload = {
-    events: [
-      {
-        event_type: eventType,
-        control_id: controlIdFromTarget(target),
-        control_label: controlLabelFromTarget(target),
-        page: activeSection(),
-        section: sectionNode?.id || activeSection(),
-        session_id: telemetrySessionId(),
-        run_id: state.latest.discovery || null,
-        acq_run_id: state.latest.acquisition || null,
-        parse_run_id: state.latest.parse || null,
-        value_preview: valuePreview,
-        timestamp_ms: Date.now(),
-      },
-    ],
-  };
-  fetch("/v1/hmi/events", {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-    keepalive: true,
-  }).catch(() => {
-    // fire-and-forget: telemetry failure must not block UI
-  });
-}
-
-function emitDebouncedInputTelemetry(target) {
-  const controlId = controlIdFromTarget(target);
-  const prev = state.telemetry.inputTimers.get(controlId);
-  if (prev) clearTimeout(prev);
-  const timer = setTimeout(() => {
-    state.telemetry.inputTimers.delete(controlId);
-    emitTelemetryEvent("input", target);
-  }, TELEMETRY_INPUT_DEBOUNCE_MS);
-  state.telemetry.inputTimers.set(controlId, timer);
+  telemetry.emitEvent(eventType, target, forcedValuePreview);
 }
 
 async function apiGet(path) {
@@ -2926,44 +2746,7 @@ function addListener(id, event, handler) {
 }
 
 function initTelemetry() {
-  telemetrySessionId();
-  document.addEventListener(
-    "click",
-    (event) => {
-      const target = event.target instanceof HTMLElement ? event.target.closest("button, a, summary") : null;
-      if (!target) return;
-      emitTelemetryEvent("click", target);
-    },
-    true,
-  );
-  document.addEventListener(
-    "change",
-    (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement)) return;
-      emitTelemetryEvent("change", target);
-    },
-    true,
-  );
-  document.addEventListener(
-    "input",
-    (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return;
-      emitDebouncedInputTelemetry(target);
-    },
-    true,
-  );
-  document.addEventListener(
-    "submit",
-    (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLFormElement)) return;
-      emitTelemetryEvent("submit", target);
-    },
-    true,
-  );
-  window.addEventListener("hashchange", () => emitTelemetryEvent("navigate", document.body, activeSection()));
+  telemetry.init();
 }
 
 function initAuth() {

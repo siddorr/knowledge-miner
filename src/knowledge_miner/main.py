@@ -14,7 +14,6 @@ import re
 import os
 from contextlib import suppress
 from uuid import uuid4
-from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, Response, JSONResponse, StreamingResponse
@@ -42,6 +41,7 @@ from .parse import create_parse_run, enqueue_parse_run
 from .rate_limit import require_rate_limit
 from .logging_setup import configure_logging
 from .runtime_state import acquire_instance_lock, cleanup_runtime_state, log_cleanup_result
+from .routes.settings import router as settings_router
 from .schemas import (
     AcquisitionItemsListResponse,
     AcquisitionItemOut,
@@ -50,8 +50,6 @@ from .schemas import (
     AcquisitionRunCreateResponse,
     AcquisitionRunStatusResponse,
     ArtifactOut,
-    AISettingsResponse,
-    AISettingsUpdateRequest,
     HMIEventsIngestRequest,
     HMIEventsIngestResponse,
     ManualDownloadItemOut,
@@ -102,6 +100,7 @@ def _load_hmi_partial(name: str) -> str:
 
 # Create tables on module load for v1 local/dev simplicity.
 app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_static")
+app.include_router(settings_router)
 
 
 @app.on_event("startup")
@@ -738,74 +737,6 @@ def global_search(
                 break
 
     return GlobalSearchResponse(query=q, items=out[:limit], total=len(out[:limit]))
-
-
-def _mask_api_key(value: str | None) -> str | None:
-    if not value:
-        return None
-    if len(value) <= 4:
-        return "*" * len(value)
-    return f"{'*' * (len(value) - 4)}{value[-4:]}"
-
-
-def _build_ai_settings_response() -> AISettingsResponse:
-    ai_filter_active, ai_filter_warning = describe_ai_filter_runtime(
-        use_ai_filter=settings.use_ai_filter,
-        api_key=settings.ai_api_key,
-    )
-    return AISettingsResponse(
-        use_ai_filter=settings.use_ai_filter,
-        ai_filter_active=ai_filter_active,
-        ai_filter_warning=ai_filter_warning,
-        has_api_key=bool(settings.ai_api_key),
-        api_key_masked=_mask_api_key(settings.ai_api_key),
-        ai_model=settings.ai_model,
-        ai_base_url=settings.ai_base_url,
-    )
-
-
-def _validate_ai_model(value: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z0-9._:-]{1,120}", value))
-
-
-def _validate_ai_base_url(value: str) -> bool:
-    parsed = urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-
-@app.get("/v1/settings/ai-filter", response_model=AISettingsResponse)
-def get_ai_filter_settings(
-    _: str = Depends(require_api_key),
-    __: None = Depends(require_rate_limit),
-) -> AISettingsResponse:
-    return _build_ai_settings_response()
-
-
-@app.post("/v1/settings/ai-filter", response_model=AISettingsResponse)
-def update_ai_filter_settings(
-    payload: AISettingsUpdateRequest,
-    _: str = Depends(require_api_key),
-    __: None = Depends(require_rate_limit),
-) -> AISettingsResponse:
-    provided = payload.model_fields_set
-    if "use_ai_filter" in provided and payload.use_ai_filter is not None:
-        object.__setattr__(settings, "use_ai_filter", bool(payload.use_ai_filter))
-    if "ai_api_key" in provided:
-        normalized = (payload.ai_api_key or "").strip()
-        object.__setattr__(settings, "ai_api_key", normalized or None)
-    if "ai_model" in provided:
-        model = (payload.ai_model or "").strip()
-        if model and not _validate_ai_model(model):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_request")
-        if model:
-            object.__setattr__(settings, "ai_model", model)
-    if "ai_base_url" in provided:
-        base_url = (payload.ai_base_url or "").strip()
-        if base_url and not _validate_ai_base_url(base_url):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_request")
-        if base_url:
-            object.__setattr__(settings, "ai_base_url", base_url)
-    return _build_ai_settings_response()
 
 
 @app.get("/hmi")

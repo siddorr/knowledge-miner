@@ -38,6 +38,7 @@ Status:
   - keep behavior parity and existing UI flows.
 - Progress:
   - `hmi/api.js` extracted and wired.
+  - `hmi/state.js` extracted and wired (state/constants moved out of monolith).
 - Acceptance criteria:
   - no single frontend module exceeds ~800 lines
   - existing HMI acceptance tests pass
@@ -56,6 +57,8 @@ Status:
     - `routes/search.py`
     - `routes/settings.py`
   - keep shared auth/rate-limit/dependency wiring centralized.
+- Progress:
+  - `routes/settings.py` extracted and mounted; `/v1/settings/ai-filter` now served from router module.
 - Acceptance criteria:
   - public API paths and response contracts unchanged
   - app startup/import stable
@@ -77,6 +80,46 @@ Status:
   - no broken selectors/listeners in JS
   - full HMI renders and behaves the same
   - HTML validity preserved for composed output
+
+21. [ ] P1 - Move `Save` button to the top button row after `Advanced`
+- Goal:
+  - make session save visible in the primary top navigation/button line.
+- Scope:
+  - add a `Save` button immediately after `Advanced` in the top button row
+  - wire it to the existing save-session behavior
+  - avoid duplicate save logic or secondary inconsistent save paths
+  - preserve sensible order on desktop and mobile layouts
+- Acceptance criteria:
+  - top button order includes `... Advanced | Save`
+  - clicking top-row `Save` triggers the existing session save flow
+  - no regression in current session save/load behavior
+
+22. [ ] P0 - Remove run ID selection from Review pane and bind Review to active working session/topic
+- Goal:
+  - Review must work automatically on the current working session/topic without exposing run-ID selection to the operator.
+- Scope:
+  - remove/hide Review run-ID selector/input from the Review pane
+  - auto-bind Review queue loading to the active session/topic context
+  - when session/topic changes, Review must switch context automatically and refresh rows
+  - if no active working session/topic exists, show an operator-facing actionable state instead of technical run-ID controls
+- Acceptance criteria:
+  - Review pane has no run-ID selection control
+  - Review rows always reflect the active working session/topic
+  - changing working session/topic updates Review automatically
+  - no manual run-ID entry is required anywhere in the primary Review workflow
+
+23. [ ] P1 - Replace `topic` terminology in primary UX with `session` or equivalent workflow language
+- Goal:
+  - use operator-friendly workflow terminology; `topic` should not be the primary concept if `session` is a better fit.
+- Scope:
+  - audit primary HMI labels, status strip text, button text, and workflow copy for `topic`
+  - replace primary-user-facing `topic` wording with `session` or another approved workflow term
+  - keep internal implementation names unchanged where renaming code would add unnecessary risk
+  - update docs to match the chosen operator-facing terminology
+- Acceptance criteria:
+  - primary HMI no longer relies on `topic` as the main operator-facing concept
+  - session/workflow wording is consistent across Build/Review/Documents/Library
+  - internal code may still use `topic` where safe, but user-facing text is aligned
 
 21. [x] P2 - Keep backlog maintainable by archiving completed items
 - Completed:

@@ -26,7 +26,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Later" in body
     assert "Accept Selected" in body
     assert "Reject Selected" in body
-    assert "Download Documents" in body
+    assert "Documents Queue" in body
     assert "Article Details" in body
     assert "Copy Error" in body
     assert "Copy Runs Error" in body
@@ -136,9 +136,9 @@ def test_hmi_static_js_served():
     assert "/v1/work-queue" in body
     assert "/v1/system/status" in body
     assert "/v1/search/global" in body
-    assert "/v1/hmi/events" in body
+    assert "./hmi/telemetry.js" in body
     assert "emitTelemetryEvent" in body
-    assert "emitDebouncedInputTelemetry" in body
+    assert "telemetry.init()" in body
     assert "initTelemetry" in body
     assert "LAUNCH_SECTION" in body
     assert "updateStatusStrip" in body
@@ -170,13 +170,23 @@ def test_hmi_static_js_served():
     assert "Leader tab mode" in body
     assert "Follower tab mode" in body
     assert "Hidden tab: periodic refresh paused." in body
-    assert "inflightGet" in body
+    assert "./hmi/state.js" in body
     assert "BroadcastChannel" in body
     assert "captureSessionState" in body
     assert "loadSelectedSession" in body
     assert "review_autoload:resolved_run" in body
     assert "review_autoload:no_run_context" in body
     assert "review_autoload:multiple_runs" in body
+
+
+def test_hmi_static_telemetry_module_served():
+    client = TestClient(app)
+    response = client.get("/hmi/static/hmi/telemetry.js")
+    assert response.status_code == 200
+    body = response.text
+    assert "/v1/hmi/events" in body
+    assert "emitDebouncedInput" in body
+    assert "createTelemetryClient" in body
 
 
 def test_hmi_prefills_system_token_when_configured():
