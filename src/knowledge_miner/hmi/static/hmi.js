@@ -1,6 +1,8 @@
 import { createApiClient } from "./hmi/api.js";
 import { createDocumentsModule } from "./hmi/documents.js";
+import { createLibraryModule } from "./hmi/library.js";
 import { createReviewModule } from "./hmi/review.js";
+import { createSessionModule } from "./hmi/session.js";
 import { createTelemetryClient } from "./hmi/telemetry.js";
 import {
   AUTH_ENABLED,
@@ -291,6 +293,40 @@ const review = createReviewModule({
   activeSection,
 });
 
+const library = createLibraryModule({
+  state,
+  el,
+  setText,
+  renderTable,
+  escapeHtml,
+  apiGet,
+  apiPost,
+  runBusy,
+  getParseRunId,
+  setLatestId,
+  setContext,
+});
+
+const sessionModule = createSessionModule({
+  state,
+  el,
+  setText,
+  escapeHtml,
+  activeSection,
+  setLatestId,
+  sourceFingerprint,
+  renderBuildTopics,
+  setBuildTab,
+  apiGet,
+  loadDashboard,
+  scheduleReviewAutoLoad,
+  refreshDocuments,
+  runSearch,
+  addListener,
+  sessionsStorageKey: SESSIONS_STORAGE_KEY,
+  sessionsAutoRestoreKey: SESSIONS_AUTO_RESTORE_KEY,
+});
+
 async function apiGet(path) {
   if (!apiClient) throw new Error("api_not_initialized");
   return apiClient.get(path);
@@ -330,265 +366,43 @@ function setContext(patch) {
 }
 
 function loadSessionsFromStorage() {
-  try {
-    const raw = localStorage.getItem(SESSIONS_STORAGE_KEY);
-    if (!raw) {
-      state.sessions.items = [];
-      return;
-    }
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error("invalid_session_format");
-    state.sessions.items = parsed.filter((row) => row && typeof row.id === "string" && row.state);
-  } catch (_err) {
-    state.sessions.items = [];
-    localStorage.removeItem(SESSIONS_STORAGE_KEY);
-    setText("sessionState", "Session store was corrupted and has been reset.");
-  }
+  return sessionModule.loadSessionsFromStorage();
 }
 
 function saveSessionsToStorage() {
-  localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(state.sessions.items.slice(0, 20)));
+  return sessionModule.saveSessionsToStorage();
 }
 
 function sessionSummaryLabel(item) {
-  const stamp = item.updated_at ? new Date(item.updated_at).toLocaleString() : "-";
-  const name = item.name || "unnamed";
-  return `${name} (${stamp})`;
+  return sessionModule.sessionSummaryLabel(item);
 }
 
 function renderSessionHistory() {
-  const select = el("sessionHistorySelect");
-  if (!select) return;
-  const items = state.sessions.items || [];
-  if (!items.length) {
-    select.innerHTML = '<option value="">No saved sessions</option>';
-    setText("sessionState", "No saved sessions.");
-    return;
-  }
-  select.innerHTML = items
-    .map((item, idx) => `<option value="${escapeHtml(item.id)}"${idx === 0 ? " selected" : ""}>${escapeHtml(sessionSummaryLabel(item))}</option>`)
-    .join("");
-  setText("sessionState", `Saved sessions: ${items.length}`);
+  return sessionModule.renderSessionHistory();
 }
 
 function captureSessionState() {
-  return {
-    section: activeSection(),
-    latest: { ...state.latest },
-    build: {
-      activeTopicId: state.build.activeTopicId,
-      activeTab: state.build.activeTab,
-      topics: state.build.topics,
-      stagedSourcesByTopic: Object.fromEntries(
-        Object.entries(state.build.stagedSourcesByTopic).map(([k, v]) => [k, Array.from(v || [])]),
-      ),
-      topicQueriesByTopic: state.build.topicQueriesByTopic,
-    },
-    review: {
-      offset: state.review.offset,
-      statusFilter: el("reviewStatusFilter")?.value || "pending",
-      limit: el("reviewLimit")?.value || "50",
-      selected: Array.from(state.review.selected),
-    },
-    documents: {
-      offset: state.documents.offset,
-      queueFilter: el("documentsQueueFilter")?.value || "awaiting",
-      limit: el("documentsLimit")?.value || "50",
-      selected: Array.from(state.documents.selected),
-      acqRunIdInput: el("documentsAcqRunIdInput")?.value || "",
-      manualSourceId: el("manualUploadSourceId")?.value || "",
-    },
-    library: {
-      query: el("searchQuery")?.value || "",
-      limit: el("searchLimit")?.value || "20",
-      topicFilter: el("libraryTopicFilter")?.value || "",
-      yearFilter: el("libraryYearFilter")?.value || "",
-      docsFilter: el("libraryDocsFilter")?.value || "all",
-      parsedFilter: el("libraryParsedFilter")?.value || "all",
-      parseRunIdInput: el("searchParseRunIdInput")?.value || "",
-    },
-    ids: {
-      discoverRunIdInput: el("discoverRunIdInput")?.value || "",
-      reviewRunIdInput: el("reviewRunIdInput")?.value || "",
-      startAcqRunId: el("startAcqRunId")?.value || "",
-      startParseAcqRunId: el("startParseAcqRunId")?.value || "",
-    },
-  };
+  return sessionModule.captureSessionState();
 }
 
 function applySessionState(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") throw new Error("invalid_session_payload");
-  const section = snapshot.section || "build";
-  setLatestId("discovery", snapshot.latest?.discovery || "");
-  setLatestId("acquisition", snapshot.latest?.acquisition || "");
-  setLatestId("parse", snapshot.latest?.parse || "");
-
-  if (snapshot.build) {
-    state.build.activeTopicId = snapshot.build.activeTopicId || state.build.activeTopicId;
-    state.build.activeTab = snapshot.build.activeTab || state.build.activeTab;
-    if (Array.isArray(snapshot.build.topics) && snapshot.build.topics.length) state.build.topics = snapshot.build.topics;
-    if (snapshot.build.stagedSourcesByTopic && typeof snapshot.build.stagedSourcesByTopic === "object") {
-      state.build.stagedSourcesByTopic = Object.fromEntries(
-        Object.entries(snapshot.build.stagedSourcesByTopic).map(([k, v]) => [k, Array.from(v || [])]),
-      );
-      state.build.sourceKeysByTopic = Object.fromEntries(
-        Object.entries(state.build.stagedSourcesByTopic).map(([k, values]) => [k, new Set(values.map((raw) => sourceFingerprint(raw)))]),
-      );
-    }
-    if (snapshot.build.topicQueriesByTopic && typeof snapshot.build.topicQueriesByTopic === "object") {
-      state.build.topicQueriesByTopic = snapshot.build.topicQueriesByTopic;
-    }
-  }
-
-  state.review.offset = Number(snapshot.review?.offset || 0);
-  state.review.selected = new Set((snapshot.review?.selected || []).map((id) => String(id)));
-  if (el("reviewStatusFilter")) el("reviewStatusFilter").value = snapshot.review?.statusFilter || "pending";
-  if (el("reviewLimit")) el("reviewLimit").value = snapshot.review?.limit || "50";
-
-  state.documents.offset = Number(snapshot.documents?.offset || 0);
-  state.documents.selected = new Set((snapshot.documents?.selected || []).map((id) => String(id)));
-  if (el("documentsQueueFilter")) el("documentsQueueFilter").value = snapshot.documents?.queueFilter || "awaiting";
-  if (el("documentsLimit")) el("documentsLimit").value = snapshot.documents?.limit || "50";
-  if (el("manualUploadSourceId")) el("manualUploadSourceId").value = snapshot.documents?.manualSourceId || "";
-
-  if (el("searchQuery")) el("searchQuery").value = snapshot.library?.query || "";
-  if (el("searchLimit")) el("searchLimit").value = snapshot.library?.limit || "20";
-  if (el("libraryTopicFilter")) el("libraryTopicFilter").value = snapshot.library?.topicFilter || "";
-  if (el("libraryYearFilter")) el("libraryYearFilter").value = snapshot.library?.yearFilter || "";
-  if (el("libraryDocsFilter")) el("libraryDocsFilter").value = snapshot.library?.docsFilter || "all";
-  if (el("libraryParsedFilter")) el("libraryParsedFilter").value = snapshot.library?.parsedFilter || "all";
-  if (snapshot.library?.parseRunIdInput && !state.latest.parse) setLatestId("parse", snapshot.library.parseRunIdInput);
-  if (snapshot.documents?.acqRunIdInput && !state.latest.acquisition) setLatestId("acquisition", snapshot.documents.acqRunIdInput);
-  if (snapshot.ids?.discoverRunIdInput && !state.latest.discovery) setLatestId("discovery", snapshot.ids.discoverRunIdInput);
-
-  if (["build", "review", "documents", "library", "advanced", "discover"].includes(section)) {
-    window.location.hash = `#${section}`;
-  }
-  renderBuildTopics();
-  setBuildTab(state.build.activeTab);
+  return sessionModule.applySessionState(snapshot);
 }
 
 function saveCurrentSession() {
-  const id = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-  const name = (el("sessionNameInput")?.value || "").trim();
-  const snapshot = {
-    id,
-    name: name || `Session ${new Date().toLocaleString()}`,
-    updated_at: new Date().toISOString(),
-    state: captureSessionState(),
-  };
-  state.sessions.items = [snapshot, ...state.sessions.items].slice(0, 20);
-  saveSessionsToStorage();
-  renderSessionHistory();
-  setText("sessionState", `Session saved: ${snapshot.name}`);
+  return sessionModule.saveCurrentSession();
 }
 
 async function validateSessionSnapshot(snapshot) {
-  const clone = JSON.parse(JSON.stringify(snapshot || {}));
-  const notes = [];
-  const discoveryIds = new Set();
-  const acquisitionIds = new Set();
-  const parseIds = new Set();
-  const discoveryCandidates = [
-    clone.latest?.discovery,
-    clone.ids?.discoverRunIdInput,
-    clone.ids?.reviewRunIdInput,
-    clone.ids?.startAcqRunId,
-  ];
-  const acquisitionCandidates = [clone.latest?.acquisition, clone.documents?.acqRunIdInput, clone.ids?.startParseAcqRunId];
-  const parseCandidates = [clone.latest?.parse, clone.library?.parseRunIdInput];
-  for (const id of discoveryCandidates) if (id) discoveryIds.add(String(id));
-  for (const id of acquisitionCandidates) if (id) acquisitionIds.add(String(id));
-  for (const id of parseCandidates) if (id) parseIds.add(String(id));
-
-  const validDiscovery = new Set();
-  const validAcquisition = new Set();
-  const validParse = new Set();
-  await Promise.all(
-    Array.from(discoveryIds).map(async (id) => {
-      try {
-        await apiGet(`/v1/discovery/runs/${encodeURIComponent(id)}`);
-        validDiscovery.add(id);
-      } catch (_err) {
-        notes.push(`discovery cleared: ${id}`);
-      }
-    }),
-  );
-  await Promise.all(
-    Array.from(acquisitionIds).map(async (id) => {
-      try {
-        await apiGet(`/v1/acquisition/runs/${encodeURIComponent(id)}`);
-        validAcquisition.add(id);
-      } catch (_err) {
-        notes.push(`acquisition cleared: ${id}`);
-      }
-    }),
-  );
-  await Promise.all(
-    Array.from(parseIds).map(async (id) => {
-      try {
-        await apiGet(`/v1/parse/runs/${encodeURIComponent(id)}`);
-        validParse.add(id);
-      } catch (_err) {
-        notes.push(`parse cleared: ${id}`);
-      }
-    }),
-  );
-
-  const keepDiscovery = (v) => (v && validDiscovery.has(String(v)) ? String(v) : "");
-  const keepAcquisition = (v) => (v && validAcquisition.has(String(v)) ? String(v) : "");
-  const keepParse = (v) => (v && validParse.has(String(v)) ? String(v) : "");
-  clone.latest = clone.latest || {};
-  clone.ids = clone.ids || {};
-  clone.documents = clone.documents || {};
-  clone.library = clone.library || {};
-  clone.latest.discovery = keepDiscovery(clone.latest.discovery);
-  clone.ids.discoverRunIdInput = keepDiscovery(clone.ids.discoverRunIdInput);
-  clone.ids.reviewRunIdInput = keepDiscovery(clone.ids.reviewRunIdInput);
-  clone.ids.startAcqRunId = keepDiscovery(clone.ids.startAcqRunId);
-  clone.latest.acquisition = keepAcquisition(clone.latest.acquisition);
-  clone.documents.acqRunIdInput = keepAcquisition(clone.documents.acqRunIdInput);
-  clone.ids.startParseAcqRunId = keepAcquisition(clone.ids.startParseAcqRunId);
-  clone.latest.parse = keepParse(clone.latest.parse);
-  clone.library.parseRunIdInput = keepParse(clone.library.parseRunIdInput);
-  return { snapshot: clone, notes };
+  return sessionModule.validateSessionSnapshot(snapshot);
 }
 
 async function loadSelectedSession() {
-  const select = el("sessionHistorySelect");
-  const id = select?.value || "";
-  const item = state.sessions.items.find((row) => row.id === id);
-  if (!item) {
-    setText("sessionState", "Select a saved session first.");
-    return;
-  }
-  try {
-    const validated = await validateSessionSnapshot(item.state);
-    applySessionState(validated.snapshot);
-    await loadDashboard();
-    if (activeSection() === "review") scheduleReviewAutoLoad("session_restore");
-    if (activeSection() === "documents") await refreshDocuments(true);
-    if (activeSection() === "library") await runSearch();
-    if (validated.notes.length) setText("sessionState", `Session loaded with cleared stale IDs: ${validated.notes.join("; ")}`);
-    else setText("sessionState", `Session loaded: ${item.name}`);
-  } catch (err) {
-    setText("sessionState", `Session load failed: ${err.message}`);
-  }
+  return sessionModule.loadSelectedSession();
 }
 
 function deleteSelectedSession() {
-  const select = el("sessionHistorySelect");
-  const id = select?.value || "";
-  if (!id) {
-    setText("sessionState", "Select a saved session first.");
-    return;
-  }
-  const before = state.sessions.items.length;
-  state.sessions.items = state.sessions.items.filter((row) => row.id !== id);
-  saveSessionsToStorage();
-  renderSessionHistory();
-  if (state.sessions.items.length === before) setText("sessionState", "Session not found.");
-  else setText("sessionState", "Session deleted.");
+  return sessionModule.deleteSelectedSession();
 }
 
 function activeSection() {
@@ -663,7 +477,6 @@ function setLatestId(kind, value) {
     setText("latestDiscoveryId", trimmed || "-");
     setText("statusActiveDiscoveryRun", trimmed || "-");
     if (el("discoverRunIdInput")) el("discoverRunIdInput").value = trimmed;
-    if (el("reviewRunIdInput")) el("reviewRunIdInput").value = trimmed;
     if (el("startAcqRunId")) el("startAcqRunId").value = trimmed;
   }
   if (kind === "acquisition") {
@@ -682,7 +495,7 @@ function setLatestId(kind, value) {
 }
 
 function clearRunInputs() {
-  const ids = ["discoverRunIdInput", "reviewRunIdInput", "documentsAcqRunIdInput", "searchParseRunIdInput"];
+  const ids = ["discoverRunIdInput", "documentsAcqRunIdInput", "searchParseRunIdInput"];
   for (const id of ids) {
     const node = el(id);
     if (node) node.value = "";
@@ -945,7 +758,7 @@ function activeTopic() {
 function renderBuildDetails() {
   const topic = activeTopic();
   if (!topic) {
-    setText("buildDetails", "No topic selected.");
+    setText("buildDetails", "No session selected.");
     return;
   }
   const coverage = state.build.coverageByTopic[topic.id] || {
@@ -1108,7 +921,7 @@ function applyActiveTopicCoverageToShell() {
     awaitingDocs: c.awaiting_documents,
     docFailures: c.failed_documents,
     lastRunState: (el("statusLastRun")?.textContent || "").trim() || "none",
-    activeTopic: activeTopic()?.name || "Default Topic",
+    activeTopic: activeTopic()?.name || "Default Session",
   });
 }
 
@@ -1147,7 +960,7 @@ function updateStatusStrip({
   awaitingDocs,
   docFailures,
   lastRunState,
-  activeTopic = "Default Topic",
+  activeTopic = "Default Session",
 }) {
   setText("statusActiveTopic", activeTopic);
   setText("statusPendingReview", String(pendingReview));
@@ -1178,56 +991,33 @@ function pendingReviewRunIds(queueItems) {
   return Array.from(ids);
 }
 
-function hideReviewRunChooser() {
-  const wrap = el("reviewRunChooser");
-  if (wrap) wrap.hidden = true;
-  const select = el("reviewRunChooserSelect");
-  if (select) select.innerHTML = "";
-  state.review.runChoices = [];
-}
-
-function showReviewRunChooser(runIds) {
-  const ids = Array.from(new Set((runIds || []).map((id) => String(id || "").trim()).filter(Boolean)));
-  state.review.runChoices = ids;
-  const wrap = el("reviewRunChooser");
-  const select = el("reviewRunChooserSelect");
-  if (!wrap || !select) return;
-  if (!ids.length) {
-    wrap.hidden = true;
-    select.innerHTML = "";
-    return;
-  }
-  select.innerHTML = ids.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join("");
-  wrap.hidden = false;
-}
-
 async function ensureReviewRunContext() {
-  if (getDiscoveryRunId()) {
-    hideReviewRunChooser();
-    return true;
-  }
+  if (getDiscoveryRunId()) return true;
   const queue = await apiGet("/v1/work-queue?limit=200&offset=0");
   const runIds = pendingReviewRunIds(queue.items || []);
   if (runIds.length === 1) {
     setLatestId("discovery", runIds[0]);
-    hideReviewRunChooser();
     emitTelemetryEvent("change", el("review"), `review_autoload:resolved_run run_id=${runIds[0]}`);
     return true;
   }
   if (runIds.length > 1) {
-    showReviewRunChooser(runIds);
     emitTelemetryEvent("change", el("review"), `review_autoload:multiple_runs count=${runIds.length}`);
+    const latest = await apiGet("/v1/runs/latest");
+    const latestRunId = String(latest.discovery_run_id || "").trim();
+    if (latestRunId) {
+      setLatestId("discovery", latestRunId);
+      emitTelemetryEvent("change", el("review"), `review_autoload:resolved_run run_id=${latestRunId}`);
+      return true;
+    }
     return false;
   }
   const latest = await apiGet("/v1/runs/latest");
   const latestRunId = String(latest.discovery_run_id || "").trim();
   if (latestRunId) {
     setLatestId("discovery", latestRunId);
-    hideReviewRunChooser();
     emitTelemetryEvent("change", el("review"), `review_autoload:resolved_run run_id=${latestRunId}`);
     return true;
   }
-  hideReviewRunChooser();
   emitTelemetryEvent("change", el("review"), "review_autoload:no_run_context");
   return false;
 }
@@ -1332,7 +1122,7 @@ async function loadDashboard() {
     awaitingDocs: awaitingForUi,
     docFailures: failedForUi,
     lastRunState: recent,
-    activeTopic: activeTopic()?.name || "Default Topic",
+    activeTopic: activeTopic()?.name || "Default Session",
   });
   if (state.multiTab.isLeader) broadcastSnapshot();
   return true;
@@ -1387,11 +1177,7 @@ async function loadReview() {
     const resolved = await ensureReviewRunContext();
     runId = getDiscoveryRunId();
     if (!resolved || !runId) {
-      if (state.review.runChoices.length > 1) {
-        setText("reviewState", "Multiple runs have pending review. Select the run first.");
-      } else {
-        setText("reviewState", "No active runs found. Start from Discover -> Run One Iteration.");
-      }
+      setText("reviewState", "No active session context found. Start Discover to create a session.");
       state.review.total = 0;
       state.review.items = [];
       renderTable("reviewRows", [], 4);
@@ -1401,7 +1187,6 @@ async function loadReview() {
       return true;
     }
   }
-  hideReviewRunChooser();
   const queueFilter = el("reviewStatusFilter").value;
   const status = queueFilter === "pending" ? "needs_review" : queueFilter === "later" ? "later" : queueFilter;
   const limit = Number(el("reviewLimit").value);
@@ -1662,168 +1447,47 @@ async function refreshDocuments(force = false) {
 }
 
 function libraryFilters() {
-  return {
-    topic: (el("libraryTopicFilter")?.value || "").trim().toLowerCase(),
-    year: (el("libraryYearFilter")?.value || "").trim(),
-    docs: (el("libraryDocsFilter")?.value || "all").trim(),
-    parsed: (el("libraryParsedFilter")?.value || "all").trim(),
-  };
+  return library.libraryFilters();
 }
 
 function libraryDocPassesFilters(doc, filters) {
-  const hay = `${doc.title || ""} ${doc.source_id || ""}`.toLowerCase();
-  if (filters.topic && !hay.includes(filters.topic)) return false;
-  if (filters.year && String(doc.publication_year || "") !== filters.year) return false;
-  if (filters.docs === "available" && doc.status !== "parsed") return false;
-  if (filters.docs === "errors" && doc.status === "parsed") return false;
-  if (filters.parsed === "accept" && doc.decision !== "accept") return false;
-  if (filters.parsed === "reject" && doc.decision !== "reject") return false;
-  if (filters.parsed === "review" && doc.decision !== "review") return false;
-  if (filters.parsed === "unset" && !!doc.decision) return false;
-  return true;
+  return library.libraryDocPassesFilters(doc, filters);
 }
 
 function setSearchPreview(doc, snippet = "") {
-  if (!doc) {
-    setText("searchPreview", "No document selected.");
-    return;
-  }
-  setText(
-    "searchPreview",
-    JSON.stringify(
-      {
-        title: doc.title || "",
-        publication_year: doc.publication_year || null,
-        status: doc.status || "",
-        decision: doc.decision || "",
-        confidence: doc.confidence ?? null,
-        reason: doc.reason || "",
-        snippet: snippet || "",
-      },
-      null,
-      2,
-    ),
-  );
+  return library.setSearchPreview(doc, snippet);
 }
 
 function renderLibraryRows(items, modeLabel) {
-  renderTable(
-    "searchRows",
-    items.map((item, idx) => {
-      const meta = item.document
-        ? `${item.document.status || "-"} | year=${item.document.publication_year || "-"} | decision=${item.document.decision || "-"}`
-        : "-";
-      return `<tr><td>${escapeHtml(item.snippet || item.document?.title || item.document_id || "")}</td><td>${escapeHtml(meta)}</td><td><button type="button" class="search-action" data-action="doc" data-index="${idx}">Doc</button> <button type="button" class="search-action" data-action="text" data-index="${idx}">Text</button> <button type="button" class="search-action" data-action="source" data-index="${idx}">Source</button></td></tr>`;
-    }),
-    3,
-  );
-  setText("searchState", `${modeLabel}: ${items.length}`);
+  return library.renderLibraryRows(items, modeLabel);
 }
 
 async function ensureSearchDocsCache(parseRunId, force = false) {
-  if (!force && state.search.docsById.size && state.search.parseRunId === parseRunId) return;
-  const docsPayload = await apiGet(`/v1/parse/runs/${encodeURIComponent(parseRunId)}/documents?limit=1000&offset=0`);
-  const byId = new Map();
-  for (const doc of docsPayload.items || []) {
-    byId.set(doc.document_id, doc);
-  }
-  state.search.docsById = byId;
-  state.search.parseRunId = parseRunId;
+  return library.ensureSearchDocsCache(parseRunId, force);
 }
 
 async function runSearchData(payload) {
-  setText("searchError", "");
-  const filters = libraryFilters();
-  const result = await apiPost("/v1/search", payload);
-  await ensureSearchDocsCache(payload.parse_run_id, false);
-  const filtered = (result.items || [])
-    .map((row) => ({ ...row, document: state.search.docsById.get(row.document_id) || null }))
-    .filter((row) => (row.document ? libraryDocPassesFilters(row.document, filters) : true));
-  state.search.items = filtered;
-  state.search.mode = "search";
-  state.search.payload = payload;
-  renderLibraryRows(filtered, `Search results (${result.total} total matches)`);
-  state.search.loaded = true;
-  if (!filtered.length) setSearchPreview(null);
+  return library.runSearchData(payload);
 }
 
 async function loadLibraryBrowser(parseRunId) {
-  setText("searchError", "");
-  const filters = libraryFilters();
-  await ensureSearchDocsCache(parseRunId, true);
-  const rows = Array.from(state.search.docsById.values())
-    .filter((doc) => libraryDocPassesFilters(doc, filters))
-    .map((doc) => ({
-      document_id: doc.document_id,
-      source_id: doc.source_id,
-      score: 0,
-      snippet: doc.title || doc.document_id,
-      document: doc,
-    }));
-  rows.sort((a, b) => (a.document_id < b.document_id ? -1 : 1));
-  state.search.items = rows;
-  state.search.mode = "browse";
-  state.search.payload = { parse_run_id: parseRunId, query: "", limit: Number(el("searchLimit").value) };
-  renderLibraryRows(rows, "Corpus browser");
-  state.search.loaded = true;
-  if (!rows.length) setSearchPreview(null);
+  return library.loadLibraryBrowser(parseRunId);
 }
 
 async function runSearch(event) {
-  if (event) event.preventDefault();
-  setText("searchError", "");
-  try {
-    await runBusy("library_search", ["searchRunBtn"], async () => {
-      const parseRunId = getParseRunId();
-      if (!parseRunId) throw new Error("parse run id is required");
-      const query = el("searchQuery").value.trim();
-      const payload = {
-        parse_run_id: parseRunId,
-        query,
-        limit: Number(el("searchLimit").value),
-      };
-      if (!payload.query) {
-        await loadLibraryBrowser(parseRunId);
-        return;
-      }
-      await runSearchData(payload);
-    });
-  } catch (err) {
-    setText("searchError", `Search failed: ${err.message}`);
-  }
+  return library.runSearch(event);
 }
 
 async function showSearchDoc(index) {
-  const item = state.search.items[index];
-  if (!item) return;
-  const detail = await apiGet(`/v1/parse/documents/${encodeURIComponent(item.document_id)}`);
-  el("searchDocDetail").textContent = JSON.stringify(detail, null, 2);
-  setSearchPreview(detail, item.snippet || "");
+  return library.showSearchDoc(index);
 }
 
 async function showSearchText(index) {
-  const item = state.search.items[index];
-  if (!item) return;
-  const body = await apiGet(`/v1/parse/documents/${encodeURIComponent(item.document_id)}/text`);
-  el("searchDocText").textContent = body.text || "";
-  const doc = item.document || (state.search.docsById.get(item.document_id) || null);
-  if (doc) setSearchPreview(doc, item.snippet || "");
+  return library.showSearchText(index);
 }
 
 async function showSearchSource(index) {
-  const item = state.search.items[index];
-  if (!item) return;
-  const parseRunId = getParseRunId();
-  if (!parseRunId) throw new Error("parse run id is required");
-  const parseRun = await apiGet(`/v1/parse/runs/${encodeURIComponent(parseRunId)}`);
-  const acqRun = await apiGet(`/v1/acquisition/runs/${encodeURIComponent(parseRun.acq_run_id)}`);
-  setLatestId("acquisition", parseRun.acq_run_id);
-  setLatestId("discovery", acqRun.discovery_run_id);
-  setContext({ parse_run_id: parseRunId, acq_run_id: parseRun.acq_run_id, discovery_run_id: acqRun.discovery_run_id, source_id: item.source_id });
-  el("searchSourceContext").textContent = JSON.stringify(state.context, null, 2);
-  const doc = item.document || (state.search.docsById.get(item.document_id) || null);
-  if (doc) setSearchPreview(doc, item.snippet || "");
-  window.location.hash = "#review";
+  return library.showSearchSource(index);
 }
 
 async function loadAiSettings() {
@@ -1936,7 +1600,6 @@ async function startDiscoveryWithSeeds(seedQueries, buttonIds = ["createSessionB
   );
   setLatestId("discovery", result.run_id);
   el("discoverRunIdInput").value = result.run_id;
-  el("reviewRunIdInput").value = result.run_id;
   state.review.offset = 0;
   state.documents.offset = 0;
   setText("dashboardState", "Discovery iteration started. IDs are available in Advanced.");
@@ -2007,7 +1670,7 @@ function handleBuildTopicClick(event) {
 }
 
 function createNewTopic() {
-  const name = window.prompt("New topic name");
+  const name = window.prompt("New session name");
   if (!name) return;
   const normalized = name.trim();
   if (!normalized) return;
@@ -2032,7 +1695,7 @@ function handleAddSource(event) {
   event.preventDefault();
   const topic = activeTopic();
   if (!topic) {
-    setText("addSourceState", "Create/select topic first.");
+    setText("addSourceState", "Create/select session first.");
     return;
   }
   const doi = (el("addSourceDoi").value || "").trim();
@@ -2062,7 +1725,7 @@ function handleBulkSource(event) {
   event.preventDefault();
   const topic = activeTopic();
   if (!topic) {
-    setText("addSourceState", "Create/select topic first.");
+    setText("addSourceState", "Create/select session first.");
     return;
   }
   const lines = (el("bulkSourceInput").value || "")
@@ -2100,7 +1763,7 @@ function handleBuildQuery(event) {
   if (topic) {
     state.build.topicQueriesByTopic[topic.id] = query;
   }
-  setText("buildQueryState", `Saved topic query for ${activeTopic()?.name || "topic"}.`);
+  setText("buildQueryState", `Saved session query for ${activeTopic()?.name || "session"}.`);
   renderBuildTopics();
 }
 
@@ -2323,18 +1986,7 @@ async function uploadBatchDocuments(event) {
 }
 
 async function handleSearchAction(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLElement) || !target.classList.contains("search-action")) return;
-  const action = target.dataset.action || "";
-  const index = Number(target.dataset.index || "-1");
-  if (index < 0) return;
-  try {
-    if (action === "doc") await showSearchDoc(index);
-    else if (action === "text") await showSearchText(index);
-    else if (action === "source") await showSearchSource(index);
-  } catch (err) {
-    setText("searchError", `Action failed: ${err.message}`);
-  }
+  return library.handleSearchAction(event);
 }
 
 async function refreshCurrentSection() {
@@ -2545,24 +2197,7 @@ function initPagination() {
 }
 
 function initSessionPersistence() {
-  loadSessionsFromStorage();
-  const autoRestoreSaved = localStorage.getItem(SESSIONS_AUTO_RESTORE_KEY);
-  state.sessions.autoRestore = autoRestoreSaved == null ? true : autoRestoreSaved === "true";
-  const checkbox = el("autoRestoreSession");
-  if (checkbox) checkbox.checked = state.sessions.autoRestore;
-  renderSessionHistory();
-
-  addListener("saveSessionBtn", "click", saveCurrentSession);
-  addListener("loadSessionBtn", "click", () => {
-    loadSelectedSession().catch((err) => setText("sessionState", `Session load failed: ${err.message}`));
-  });
-  addListener("deleteSessionBtn", "click", deleteSelectedSession);
-  addListener("autoRestoreSession", "change", () => {
-    const enabled = !!el("autoRestoreSession").checked;
-    state.sessions.autoRestore = enabled;
-    localStorage.setItem(SESSIONS_AUTO_RESTORE_KEY, enabled ? "true" : "false");
-    setText("sessionState", enabled ? "Auto-restore enabled." : "Auto-restore disabled.");
-  });
+  return sessionModule.initSessionPersistence();
 }
 
 function init() {
@@ -2630,12 +2265,6 @@ function init() {
     const runId = (el("discoverRunIdInput").value || "").trim();
     setLatestId("discovery", runId);
   });
-  addListener("reviewRunIdInput", "change", () => {
-    const runId = (el("reviewRunIdInput").value || "").trim();
-    setLatestId("discovery", runId);
-    state.review.offset = 0;
-    scheduleReviewAutoLoad("run_override_changed");
-  });
   addListener("documentsAcqRunIdInput", "change", () => {
     const runId = (el("documentsAcqRunIdInput").value || "").trim();
     setLatestId("acquisition", runId);
@@ -2659,18 +2288,6 @@ function init() {
   addListener("fastLaterBtn", "click", () => fastReviewDecision("later"));
   addListener("fastPrevBtn", "click", () => fastReviewMove(-1));
   addListener("fastNextBtn", "click", () => fastReviewMove(1));
-  addListener("reviewRunChooserUseBtn", "click", async () => {
-    const selected = (el("reviewRunChooserSelect")?.value || "").trim();
-    if (!selected) {
-      setText("reviewError", "Select a run first.");
-      return;
-    }
-    setLatestId("discovery", selected);
-    hideReviewRunChooser();
-    emitTelemetryEvent("change", el("reviewRunChooserUseBtn"), `review_autoload:resolved_run run_id=${selected}`);
-    await refreshReview(true);
-  });
-
   addListener("documentsForm", "submit", async (event) => {
     event.preventDefault();
     state.documents.offset = 0;

@@ -16,7 +16,7 @@ from contextlib import suppress
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, HTMLResponse, Response, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
@@ -34,13 +34,15 @@ from .ai_filter import describe_ai_filter_runtime
 from .auth import require_api_key
 from .config import is_sqlite_url, settings
 from .db import Base, SessionLocal, database_readiness, engine, get_db
-from .discovery import create_run, enqueue_run, export_sources_raw, review_source
-from .iteration import build_next_queries, extract_keywords
+from .discovery import enqueue_run  # compatibility export for tests/patching
 from .models import AcquisitionItem, AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Run, Source
 from .parse import create_parse_run, enqueue_parse_run
 from .rate_limit import require_rate_limit
 from .logging_setup import configure_logging
 from .runtime_state import acquire_instance_lock, cleanup_runtime_state, log_cleanup_result
+from .routes.discovery import router as discovery_router
+from .routes.hmi import router as hmi_router
+from .routes.search import router as search_router
 from .routes.settings import router as settings_router
 from .routes.system import router as system_router
 from .schemas import (
@@ -51,8 +53,6 @@ from .schemas import (
     AcquisitionRunCreateResponse,
     AcquisitionRunStatusResponse,
     ArtifactOut,
-    HMIEventsIngestRequest,
-    HMIEventsIngestResponse,
     ManualDownloadItemOut,
     ManualDownloadsListResponse,
     ManualUploadRequest,
@@ -68,19 +68,9 @@ from .schemas import (
     ParseRunCreateRequest,
     ParseRunCreateResponse,
     ParseRunStatusResponse,
-    RunCreateRequest,
-    RunCreateResponse,
-    CitationIterationRequest,
     RunStatusResponse,
-    SearchRequest,
-    GlobalSearchResponse,
-    GlobalSearchResultOut,
-    SearchResponse,
-    SearchResultOut,
     SystemStatusResponse,
     SourceOut,
-    SourceReviewRequest,
-    SourceReviewResponse,
     SourcesListResponse,
 )
 
@@ -93,12 +83,11 @@ HOT_READ_WARN_COUNT = 60
 _hot_read_buckets: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _hot_read_metrics: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "limited": 0})
 
-
-def _load_hmi_partial(name: str) -> str:
-    return (HMI_DIR / "partials" / name).read_text(encoding="utf-8")
-
 # Create tables on module load for v1 local/dev simplicity.
 app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_static")
+app.include_router(discovery_router)
+app.include_router(hmi_router)
+app.include_router(search_router)
 app.include_router(settings_router)
 app.include_router(system_router)
 
@@ -213,27 +202,6 @@ async def request_trace_middleware(request: Request, call_next):
             response.status_code,
         )
     return response
-
-
-def _hash_user_agent(user_agent: str | None) -> str:
-    raw = (user_agent or "").strip()
-    if not raw:
-        return "none"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def _sanitize_hmi_value_preview(value: str | None) -> str | None:
-    if value is None:
-        return None
-    trimmed = value.strip()
-    if not trimmed:
-        return ""
-    lowered = trimmed.lower()
-    if any(token in lowered for token in ("bearer ", "api_key", "password", "token", "sk-")):
-        return "[redacted]"
-    if len(trimmed) > 120:
-        return f"{trimmed[:120]}..."
-    return trimmed
 
 
 def _iso_or_none(value) -> str | None:
@@ -370,29 +338,6 @@ def _format_sse(event_name: str, payload: dict) -> str:
     return f"event: {event_name}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
 
-def _build_citation_iteration_queries(db: Session, run_id: str) -> list[str]:
-    rows = db.scalars(
-        select(Source)
-        .where(Source.run_id == run_id, Source.accepted.is_(True))
-        .order_by(Source.relevance_score.desc(), Source.id.asc())
-        .limit(300)
-    ).all()
-    texts: list[str] = []
-    for row in rows:
-        if row.title:
-            texts.append(row.title)
-        if row.abstract:
-            texts.append(row.abstract)
-    keywords = extract_keywords(texts, top_k=20)
-    queries = build_next_queries(keywords, max_queries=10)
-    if queries:
-        return queries
-    previous = db.get(Run, run_id)
-    if previous and previous.seed_queries:
-        return list(previous.seed_queries[:5])
-    return ["ultrapure water semiconductor process control"]
-
-
 @app.get("/v1/system/status", response_model=SystemStatusResponse)
 def get_system_status(
     request: Request,
@@ -480,220 +425,6 @@ async def stream_hmi_events(
             await asyncio.sleep(1.0)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
-@app.get("/v1/debug/db-context")
-def debug_db_context(
-    run_id: str | None = Query(default=None),
-    source_id: str | None = Query(default=None),
-    _: str = Depends(require_api_key),
-    __: None = Depends(require_rate_limit),
-    db: Session = Depends(get_db),
-) -> dict:
-    if not settings.enable_debug_endpoints:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
-    return _not_found_diagnostics(db, run_id=run_id, source_id=source_id)
-
-
-@app.post("/v1/hmi/events", response_model=HMIEventsIngestResponse, status_code=status.HTTP_202_ACCEPTED)
-def ingest_hmi_events(
-    payload: HMIEventsIngestRequest,
-    request: Request,
-    _: str = Depends(require_api_key),
-    __: None = Depends(require_rate_limit),
-) -> HMIEventsIngestResponse:
-    ua_hash = _hash_user_agent(request.headers.get("user-agent"))
-    for event in payload.events:
-        record = {
-            "event_type": event.event_type,
-            "control_id": event.control_id,
-            "control_label": event.control_label,
-            "page": event.page,
-            "section": event.section,
-            "session_id": event.session_id,
-            "run_id": event.run_id,
-            "acq_run_id": event.acq_run_id,
-            "parse_run_id": event.parse_run_id,
-            "value_preview": _sanitize_hmi_value_preview(event.value_preview),
-            "timestamp_ms": event.timestamp_ms,
-            "ua_hash": ua_hash,
-        }
-        logger.info("hmi_event %s", json.dumps(record, sort_keys=True, ensure_ascii=True))
-    return HMIEventsIngestResponse(accepted=len(payload.events))
-
-
-@app.get("/v1/search/global", response_model=GlobalSearchResponse)
-def global_search(
-    q: str = Query(..., min_length=1),
-    limit: int = Query(default=50, ge=1, le=200),
-    _: str = Depends(require_api_key),
-    __: None = Depends(require_rate_limit),
-    db: Session = Depends(get_db),
-) -> GlobalSearchResponse:
-    needle = q.strip().lower()
-    out: list[GlobalSearchResultOut] = []
-
-    for run in db.scalars(select(Run).order_by(Run.updated_at.desc(), Run.id.asc())).all():
-        if needle in run.id.lower() or any(needle in seed.lower() for seed in run.seed_queries):
-            out.append(
-                GlobalSearchResultOut(
-                    result_type="run",
-                    id=run.id,
-                    label=f"Discovery run {run.id}",
-                    snippet=f"status={run.status} accepted={run.accepted_total}",
-                    context={"run_id": run.id, "phase": "discovery"},
-                )
-            )
-        if len(out) >= limit:
-            break
-
-    if len(out) < limit:
-        for source in db.scalars(select(Source).order_by(Source.updated_at.desc(), Source.id.asc())).all():
-            blob = f"{source.id} {source.title} {source.doi or ''} {source.abstract or ''}".lower()
-            if needle in blob:
-                out.append(
-                    GlobalSearchResultOut(
-                        result_type="source",
-                        id=source.id,
-                        label=source.title,
-                        snippet=source.abstract[:180] if source.abstract else None,
-                        context={"run_id": source.run_id, "source_id": source.id, "phase": "discovery"},
-                    )
-                )
-            if len(out) >= limit:
-                break
-
-    if len(out) < limit:
-        for item in db.scalars(select(AcquisitionItem).order_by(AcquisitionItem.updated_at.desc(), AcquisitionItem.id.asc())).all():
-            blob = f"{item.id} {item.source_id} {item.status} {item.last_error or ''}".lower()
-            if needle in blob:
-                out.append(
-                    GlobalSearchResultOut(
-                        result_type="acquisition_item",
-                        id=item.id,
-                        label=f"Acquisition item {item.id}",
-                        snippet=f"status={item.status} source={item.source_id}",
-                        context={"acq_run_id": item.acq_run_id, "source_id": item.source_id, "phase": "acquisition"},
-                    )
-                )
-            if len(out) >= limit:
-                break
-
-    if len(out) < limit:
-        for doc in db.scalars(select(ParsedDocument).order_by(ParsedDocument.updated_at.desc(), ParsedDocument.id.asc())).all():
-            blob = f"{doc.id} {doc.title or ''} {doc.status} {doc.source_id}".lower()
-            if needle in blob:
-                out.append(
-                    GlobalSearchResultOut(
-                        result_type="parsed_document",
-                        id=doc.id,
-                        label=doc.title or doc.id,
-                        snippet=f"status={doc.status}",
-                        context={"parse_run_id": doc.parse_run_id, "document_id": doc.id, "phase": "parse"},
-                    )
-                )
-            if len(out) >= limit:
-                break
-
-    if len(out) < limit:
-        for chunk in db.scalars(select(DocumentChunk).order_by(DocumentChunk.id.asc())).all():
-            if needle in (chunk.text or "").lower():
-                out.append(
-                    GlobalSearchResultOut(
-                        result_type="chunk",
-                        id=chunk.id,
-                        label=f"Chunk {chunk.id}",
-                        snippet=(chunk.text or "")[:180],
-                        context={
-                            "parse_run_id": chunk.parse_run_id,
-                            "document_id": chunk.parsed_document_id,
-                            "chunk_id": chunk.id,
-                            "phase": "parse",
-                        },
-                    )
-                )
-            if len(out) >= limit:
-                break
-
-    return GlobalSearchResponse(query=q, items=out[:limit], total=len(out[:limit]))
-
-
-@app.get("/hmi")
-def hmi_shell(db: Session = Depends(get_db)) -> HTMLResponse:
-    run_count = db.scalar(select(func.count()).select_from(Run)) or 0
-    if run_count == 0:
-        launch_section = "build"
-    else:
-        review_count = db.scalar(
-            select(func.count()).select_from(Source).where(Source.review_status == "needs_review")
-        ) or 0
-        if review_count > 0:
-            launch_section = "review"
-        else:
-            failed_docs_count = db.scalar(
-                select(func.count())
-                .select_from(AcquisitionItem)
-                .where(AcquisitionItem.status.in_(("failed", "partial")))
-            ) or 0
-            launch_section = "documents" if failed_docs_count > 0 else "build"
-    template = (HMI_DIR / "index.html").read_text(encoding="utf-8")
-    token_json = json.dumps(settings.hmi_api_token) if settings.auth_enabled and settings.hmi_api_token else "null"
-    auth_enabled_json = "true" if settings.auth_enabled else "false"
-    launch_section_json = json.dumps(launch_section)
-    static_version = str(
-        max(
-            int((HMI_DIR / "static" / "hmi.js").stat().st_mtime),
-            int((HMI_DIR / "static" / "hmi.css").stat().st_mtime),
-        )
-    )
-    html = (
-        template
-        .replace("__HMI_DEFAULT_TOKEN_JSON__", token_json)
-        .replace("__HMI_AUTH_ENABLED__", auth_enabled_json)
-        .replace("__HMI_LAUNCH_SECTION_JSON__", launch_section_json)
-        .replace("__HMI_STATIC_VERSION__", static_version)
-        .replace("__PARTIAL_NAV__", _load_hmi_partial("nav.html"))
-        .replace("__PARTIAL_STATUS_STRIP__", _load_hmi_partial("status_strip.html"))
-        .replace("__PARTIAL_REVIEW__", _load_hmi_partial("review.html"))
-        .replace("__PARTIAL_DOCUMENTS__", _load_hmi_partial("documents.html"))
-        .replace("__PARTIAL_LIBRARY__", _load_hmi_partial("library.html"))
-        .replace("__PARTIAL_ADVANCED__", _load_hmi_partial("advanced.html"))
-    )
-    return HTMLResponse(content=html)
-
-
-@app.post("/v1/discovery/runs", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
-def create_discovery_run(
-    payload: RunCreateRequest,
-    background_tasks: BackgroundTasks,
-    _: str = Depends(require_api_key),
-    __: None = Depends(require_rate_limit),
-    db: Session = Depends(get_db),
-) -> RunCreateResponse:
-    # Discovery execution is operator-driven: each trigger executes a single iteration only.
-    run = create_run(db, payload.seed_queries, 1, ai_filter_enabled=payload.ai_filter_enabled)
-    background_tasks.add_task(enqueue_run, run.id)
-    return RunCreateResponse(run_id=run.id, status=run.status)
-
-
-@app.post("/v1/discovery/runs/{run_id}/next-citation-iteration", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
-def create_citation_iteration_run(
-    run_id: str,
-    payload: CitationIterationRequest,
-    background_tasks: BackgroundTasks,
-    _: str = Depends(require_api_key),
-    __: None = Depends(require_rate_limit),
-    db: Session = Depends(get_db),
-) -> RunCreateResponse:
-    previous = db.get(Run, run_id)
-    if previous is None:
-        logger.warning("run_not_found %s", _not_found_diagnostics(db, run_id=run_id))
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
-    queries = _build_citation_iteration_queries(db, run_id)
-    ai_filter_enabled = previous.ai_filter_active if payload.ai_filter_enabled is None else payload.ai_filter_enabled
-    run = create_run(db, queries, 1, ai_filter_enabled=ai_filter_enabled)
-    background_tasks.add_task(enqueue_run, run.id)
-    return RunCreateResponse(run_id=run.id, status=run.status)
 
 
 @app.get("/v1/discovery/runs/{run_id}", response_model=RunStatusResponse)
@@ -821,47 +552,6 @@ def list_sources(
         limit=limit,
         offset=offset,
     )
-
-
-@app.post("/v1/sources/{source_id:path}/review", response_model=SourceReviewResponse)
-def source_review(
-    source_id: str,
-    payload: SourceReviewRequest,
-    _: str = Depends(require_api_key),
-    __: None = Depends(require_rate_limit),
-    db: Session = Depends(get_db),
-) -> SourceReviewResponse:
-    source = db.get(Source, source_id)
-    if source is None:
-        logger.warning("source_not_found %s", _not_found_diagnostics(db, source_id=source_id))
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="source_not_found; hint=reload_review_queue_or_check_discovery_run_context",
-        )
-    if payload.run_id and payload.run_id != source.run_id:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_context_mismatch")
-    try:
-        updated = review_source(db, source, payload.decision)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_request") from exc
-    return SourceReviewResponse(source_id=updated.id, accepted=updated.accepted, decision_source="human_review")
-
-
-@app.get("/v1/exports/sources_raw")
-def export_sources(
-    run_id: str = Query(..., min_length=1),
-    _: str = Depends(require_api_key),
-    __: None = Depends(require_rate_limit),
-    db: Session = Depends(get_db),
-):
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
-    if run.status != "completed":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_not_complete")
-
-    path = export_sources_raw(db, run_id)
-    return FileResponse(path=path, media_type="application/json", filename="sources_raw.json")
 
 
 @app.post("/v1/acquisition/runs", response_model=AcquisitionRunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -1467,47 +1157,3 @@ def get_parsed_document_text(
     if not doc.body_text:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="document_not_parsed")
     return ParsedDocumentTextResponse(document_id=doc.id, text=doc.body_text)
-
-
-@app.post("/v1/search", response_model=SearchResponse)
-def search_corpus(
-    payload: SearchRequest,
-    _: str = Depends(require_api_key),
-    __: None = Depends(require_rate_limit),
-    db: Session = Depends(get_db),
-) -> SearchResponse:
-    run = db.get(ParseRun, payload.parse_run_id)
-    if run is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
-    needle = payload.query.strip().lower()
-    if not needle:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_request")
-
-    chunks = db.scalars(
-        select(DocumentChunk).where(DocumentChunk.parse_run_id == payload.parse_run_id).order_by(DocumentChunk.id.asc())
-    ).all()
-    scored: list[tuple[DocumentChunk, float]] = []
-    for chunk in chunks:
-        hay = chunk.text.lower()
-        hits = hay.count(needle)
-        if hits <= 0:
-            continue
-        score = float(hits)
-        scored.append((chunk, score))
-    scored.sort(key=lambda x: (-x[1], x[0].id))
-    page = scored[: payload.limit]
-
-    docs = {doc.id: doc for doc in db.scalars(select(ParsedDocument).where(ParsedDocument.parse_run_id == payload.parse_run_id)).all()}
-    return SearchResponse(
-        items=[
-            SearchResultOut(
-                document_id=chunk.parsed_document_id,
-                chunk_id=chunk.id,
-                source_id=docs[chunk.parsed_document_id].source_id if chunk.parsed_document_id in docs else "",
-                score=score,
-                snippet=chunk.text[:300],
-            )
-            for chunk, score in page
-        ],
-        total=len(scored),
-    )

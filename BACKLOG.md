@@ -42,6 +42,7 @@ Status:
   - `hmi/telemetry.js` extracted and wired.
   - `hmi/documents.js` extracted and wired (documents action handlers/batch upload flow moved out).
   - `hmi/review.js` extracted and wired (review actions, decisions, and shortcuts moved out).
+  - `hmi/library.js` extracted and wired (library/search/browse actions moved out).
 - Acceptance criteria:
   - no single frontend module exceeds ~800 lines
   - existing HMI acceptance tests pass
@@ -64,6 +65,9 @@ Status:
   - `routes/settings.py` extracted and mounted; `/v1/settings/ai-filter` now served from router module.
   - `routes/system.py` extracted and mounted; `/healthz` now served from router module.
   - `routes/system.py` now serves `/v1/runs/latest` and `/v1/work-queue`.
+  - `routes/hmi.py` extracted and mounted; `/hmi` and `/v1/hmi/events` now served from router module.
+  - `routes/search.py` extracted and mounted; `/v1/search/global` and `/v1/search` now served from router module.
+  - `routes/discovery.py` extracted and mounted for discovery run creation/iteration/review/export endpoints.
 - Acceptance criteria:
   - public API paths and response contracts unchanged
   - app startup/import stable
@@ -86,7 +90,7 @@ Status:
   - full HMI renders and behaves the same
   - HTML validity preserved for composed output
 
-21. [ ] P1 - Move `Save` button to the top button row after `Advanced`
+21. [x] P1 - Move `Save` button to the top button row after `Advanced`
 - Goal:
   - make session save visible in the primary top navigation/button line.
 - Scope:
@@ -99,7 +103,7 @@ Status:
   - clicking top-row `Save` triggers the existing session save flow
   - no regression in current session save/load behavior
 
-22. [ ] P0 - Remove run ID selection from Review pane and bind Review to active working session/topic
+22. [x] P0 - Remove run ID selection from Review pane and bind Review to active working session/topic
 - Goal:
   - Review must work automatically on the current working session/topic without exposing run-ID selection to the operator.
 - Scope:
@@ -113,7 +117,7 @@ Status:
   - changing working session/topic updates Review automatically
   - no manual run-ID entry is required anywhere in the primary Review workflow
 
-23. [ ] P1 - Replace `topic` terminology in primary UX with `session` or equivalent workflow language
+23. [x] P1 - Replace `topic` terminology in primary UX with `session` or equivalent workflow language
 - Goal:
   - use operator-friendly workflow terminology; `topic` should not be the primary concept if `session` is a better fit.
 - Scope:

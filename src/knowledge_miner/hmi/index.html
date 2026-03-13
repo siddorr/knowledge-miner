@@ -25,12 +25,12 @@
   <main class="stack">
     <section id="build" class="panel">
       <h2>Discover</h2>
-      <p class="muted">Topic workspace for source building, query planning, and runs.</p>
+      <p class="muted">Session workspace for source building, query planning, and runs.</p>
       <div class="build-layout">
         <aside class="build-topics panel-sub">
           <div class="row compact">
-            <strong>Topics</strong>
-            <button id="newTopicBtn" type="button">+ New Topic</button>
+            <strong>Sessions</strong>
+            <button id="newTopicBtn" type="button">+ New Session</button>
           </div>
           <div id="buildTopicList" class="topic-list"></div>
         </aside>
@@ -72,7 +72,7 @@
             <p id="addSourceState" class="muted"></p>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Topic</th><th>Source</th></tr></thead>
+                <thead><tr><th>Session</th><th>Source</th></tr></thead>
                 <tbody id="buildSourcesRows"></tbody>
               </table>
             </div>
@@ -81,7 +81,7 @@
           <section id="buildTabPanelQueries" class="build-tab-panel" hidden>
             <form id="buildQueryForm" class="row">
               <label>
-                Topic Query
+                Session Query
                 <input id="buildTopicQuery" type="text" placeholder="ultrapure water semiconductor">
                 <button type="button" class="copy-value-btn" data-target-id="buildTopicQuery">Copy</button>
               </label>
@@ -119,7 +119,7 @@
 
         <aside class="build-details panel-sub">
           <h3>Details</h3>
-          <pre id="buildDetails" class="metrics">No topic selected.</pre>
+          <pre id="buildDetails" class="metrics">No session selected.</pre>
         </aside>
       </div>
       <div class="row compact">

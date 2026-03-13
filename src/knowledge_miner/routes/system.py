@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..auth import require_api_key
+from ..config import settings
 from ..db import get_db
 from ..models import AcquisitionItem, AcquisitionRun, ParseRun, ParsedDocument, Run, Source
 from ..rate_limit import require_rate_limit
@@ -32,6 +33,25 @@ def _reason_text(reason_code: str | None, status_value: str | None) -> str | Non
     if status_value == "needs_review":
         return "AI/heuristic requires human relevance decision."
     return None
+
+
+def _not_found_diagnostics(db: Session, *, run_id: str | None = None, source_id: str | None = None) -> dict:
+    run_count = db.scalar(select(func.count()).select_from(Run)) or 0
+    source_count = db.scalar(select(func.count()).select_from(Source)) or 0
+    latest_run_ids = db.scalars(select(Run.id).order_by(Run.created_at.desc(), Run.id.desc()).limit(5)).all()
+    latest_source_ids = db.scalars(select(Source.id).order_by(Source.created_at.desc(), Source.id.desc()).limit(5)).all()
+    has_run = bool(run_id and db.get(Run, run_id))
+    has_source = bool(source_id and db.get(Source, source_id))
+    return {
+        "run_count": int(run_count),
+        "source_count": int(source_count),
+        "latest_run_ids": latest_run_ids,
+        "latest_source_ids": latest_source_ids,
+        "requested_run_id": run_id,
+        "requested_source_id": source_id,
+        "requested_run_exists": has_run,
+        "requested_source_exists": has_source,
+    }
 
 
 @router.get("/v1/runs/latest")
@@ -132,3 +152,17 @@ def get_work_queue(
 
     page = rows[offset : offset + limit]
     return WorkQueueResponse(items=page, total=len(rows), limit=limit, offset=offset)
+
+
+@router.get("/v1/debug/db-context")
+def debug_db_context(
+    run_id: str | None = Query(default=None),
+    source_id: str | None = Query(default=None),
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> dict:
+    if not settings.enable_debug_endpoints:
+        from fastapi import HTTPException, status  # lazy import to avoid expanding top-level imports
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    return _not_found_diagnostics(db, run_id=run_id, source_id=source_id)

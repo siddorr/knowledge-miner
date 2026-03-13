@@ -13,7 +13,7 @@ def test_hmi_shell_route_and_navigation():
     body = response.text
     assert "Knowledge Miner Task Dashboard" in body
     assert "Discover" in body
-    assert "+ New Topic" in body
+    assert "+ New Session" in body
     assert "Add Sources" in body
     assert "Queries" in body
     assert "Runs" in body
@@ -38,7 +38,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Library" in body
     assert "Unified browser + search. Leave query empty to browse corpus." in body
     assert "Load Library" in body
-    assert "Topic Contains" in body
+    assert "Session Contains" in body
     assert "Parsed Decision" in body
     assert "searchPreview" in body
     assert "Advanced" in body
@@ -64,9 +64,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Mode" in body
     assert "Fast review" in body
     assert "Refresh Review Queue" in body
-    assert "reviewRunChooser" in body
-    assert "reviewRunChooserSelect" in body
-    assert "reviewRunChooserUseBtn" in body
+    assert "reviewRunChooser" not in body
     assert "Start Acquisition" in body
     assert "Start Parse" in body
     assert "Score" in body
@@ -88,6 +86,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Save AI Settings" in body
     assert "Session State" in body
     assert "Save Session" in body
+    assert "topSaveSessionBtn" in body
     assert "Load Session" in body
     assert "Auto-restore latest" in body
     assert "AI Filter" in body
