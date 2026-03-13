@@ -323,6 +323,7 @@ const sessionModule = createSessionModule({
   refreshDocuments,
   runSearch,
   addListener,
+  createNewSession: createNewTopic,
   sessionsStorageKey: SESSIONS_STORAGE_KEY,
   sessionsAutoRestoreKey: SESSIONS_AUTO_RESTORE_KEY,
 });

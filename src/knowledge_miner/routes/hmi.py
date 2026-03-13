@@ -80,6 +80,7 @@ def hmi_shell(db: Session = Depends(get_db)) -> HTMLResponse:
         .replace("__HMI_AUTH_ENABLED__", auth_enabled_json)
         .replace("__HMI_LAUNCH_SECTION_JSON__", launch_section_json)
         .replace("__HMI_STATIC_VERSION__", static_version)
+        .replace("__PARTIAL_CONTROLS__", _load_hmi_partial("controls.html"))
         .replace("__PARTIAL_NAV__", _load_hmi_partial("nav.html"))
         .replace("__PARTIAL_STATUS_STRIP__", _load_hmi_partial("status_strip.html"))
         .replace("__PARTIAL_REVIEW__", _load_hmi_partial("review.html"))
@@ -118,4 +119,3 @@ def ingest_hmi_events(
         }
         logger.info("hmi_event %s", json.dumps(record, sort_keys=True, ensure_ascii=True))
     return HMIEventsIngestResponse(accepted=len(payload.events))
-

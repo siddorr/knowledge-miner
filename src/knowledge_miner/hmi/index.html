@@ -9,18 +9,20 @@
 <body>
   <header class="topbar">
     <h1>Knowledge Miner Task Dashboard</h1>
-    <p>First-time-user flow: Discover -> Review -> Documents -> Library.</p>
+    <p>First-time-user flow: Discover -> Review -> Documents -> Library Export.</p>
+    <section id="inProgressBanner" class="pollbar inline" aria-live="polite" hidden>
+      <strong>Work in progress:</strong>
+      <span id="inProgressState" class="muted">Idle</span>
+      <progress id="statusProgressBar" max="100" value="0"></progress>
+    </section>
+    __PARTIAL_STATUS_STRIP__
   </header>
 
-  <section id="inProgressBanner" class="pollbar" aria-live="polite" hidden>
-    <strong>Work in progress:</strong>
-    <span id="inProgressState" class="muted">Idle</span>
-    <progress id="statusProgressBar" max="100" value="0"></progress>
+  __PARTIAL_CONTROLS__
+
+  <section id="navigationRow" class="nav-row">
+    __PARTIAL_NAV__
   </section>
-
-  __PARTIAL_NAV__
-
-  __PARTIAL_STATUS_STRIP__
 
   <main class="stack">
     <section id="build" class="panel">
@@ -30,7 +32,6 @@
         <aside class="build-topics panel-sub">
           <div class="row compact">
             <strong>Sessions</strong>
-            <button id="newTopicBtn" type="button">+ New Session</button>
           </div>
           <div id="buildTopicList" class="topic-list"></div>
         </aside>

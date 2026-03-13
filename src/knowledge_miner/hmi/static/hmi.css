@@ -18,6 +18,7 @@ body {
   background: linear-gradient(180deg, #f8f8f2 0%, var(--bg) 40%);
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   line-height: 1.4;
+  padding-bottom: 72px;
 }
 
 .topbar {
@@ -38,7 +39,9 @@ body {
 .authbar,
 .nav,
 .pollbar,
-.idbar {
+.idbar,
+.controls-row,
+.nav-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -55,6 +58,27 @@ body {
   padding: 12px 18px;
   border-bottom: 1px solid var(--line);
   background: #f8faf6;
+}
+
+.topbar .status-strip {
+  margin-top: 12px;
+  padding: 10px 0 0;
+  border-bottom: none;
+  border-top: 1px solid var(--line);
+  background: transparent;
+}
+
+.pollbar.inline {
+  border: none;
+  padding: 8px 0 0;
+}
+
+.controls-row {
+  background: #f9faf5;
+}
+
+.controls-history {
+  min-width: 220px;
 }
 
 .idrow {
@@ -276,6 +300,17 @@ th {
   color: #a21b1b;
   background: #fdeaea;
   border-color: #e1a7a7;
+}
+
+footer.pollbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  background: #f5f6ef;
+  border-top: 1px solid var(--line);
+  border-bottom: none;
 }
 
 @media (max-width: 720px) {

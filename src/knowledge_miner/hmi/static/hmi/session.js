@@ -15,6 +15,7 @@ export function createSessionModule(deps) {
     refreshDocuments,
     runSearch,
     addListener,
+    createNewSession,
     sessionsStorageKey,
     sessionsAutoRestoreKey,
   } = deps;
@@ -284,6 +285,11 @@ export function createSessionModule(deps) {
 
     addListener("saveSessionBtn", "click", saveCurrentSession);
     addListener("topSaveSessionBtn", "click", saveCurrentSession);
+    addListener("topLoadSessionBtn", "click", () => {
+      loadSelectedSession().catch((err) => setText("sessionState", `Session load failed: ${err.message}`));
+    });
+    addListener("topDeleteSessionBtn", "click", deleteSelectedSession);
+    addListener("topNewSessionBtn", "click", createNewSession);
     addListener("loadSessionBtn", "click", () => {
       loadSelectedSession().catch((err) => setText("sessionState", `Session load failed: ${err.message}`));
     });
@@ -310,4 +316,3 @@ export function createSessionModule(deps) {
     initSessionPersistence,
   };
 }
-
