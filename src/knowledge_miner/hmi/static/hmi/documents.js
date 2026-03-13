@@ -77,7 +77,8 @@ export function createDocumentsModule(deps) {
 
     if (action === "upload") {
       state.documents.selectedSourceId = sourceId;
-      el("manualUploadSourceId").value = sourceId;
+      const sourceInput = el("manualUploadSourceId");
+      if (sourceInput) sourceInput.value = sourceId;
       setText("documentsState", `Upload target selected: ${sourceId}`);
       el("manualUploadFile").focus();
       return;
@@ -116,7 +117,7 @@ export function createDocumentsModule(deps) {
     setText("documentsError", "");
     try {
       const acqRunId = await ensureAcquisitionRunContext({ retryFailedOnly: false });
-      const sourceId = (el("manualUploadSourceId").value || "").trim() || state.documents.selectedSourceId;
+      const sourceId = ((el("manualUploadSourceId")?.value || "").trim()) || state.documents.selectedSourceId;
       const fileInput = el("manualUploadFile");
       const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
       if (!sourceId) throw new Error("source id is required");

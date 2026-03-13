@@ -4,6 +4,7 @@ import { createDocumentsModule } from "./hmi/documents.js";
 import { createLibraryModule } from "./hmi/library.js";
 import { createLiveUpdatesModule } from "./hmi/live_updates.js";
 import { createReviewModule } from "./hmi/review.js";
+import { createRunContextModule } from "./hmi/run_context.js";
 import { createSessionModule } from "./hmi/session.js";
 import { createTelemetryClient } from "./hmi/telemetry.js";
 import {
@@ -276,6 +277,18 @@ function emitTelemetryEvent(eventType, target, forcedValuePreview = undefined) {
   telemetry.emitEvent(eventType, target, forcedValuePreview);
 }
 
+const runContext = createRunContextModule({
+  state,
+  el,
+  setText,
+  activeSection,
+  scheduleReviewAutoLoad,
+  apiGet,
+  apiPost,
+  emitTelemetryEvent,
+  resetStaleRunContext,
+});
+
 const documents = createDocumentsModule({
   state,
   el,
@@ -447,13 +460,13 @@ function deleteSelectedSession() {
 function activeSection() {
   const fallback = ["build", "review", "documents", "library", "advanced"].includes(LAUNCH_SECTION) ? LAUNCH_SECTION : "build";
   const id = window.location.hash.replace("#", "") || fallback;
-  const valid = ["build", "discover", "review", "documents", "library", "advanced"];
+  const valid = ["build", "review", "documents", "library", "advanced"];
   return valid.includes(id) ? id : fallback;
 }
 
 function updateSectionVisibility() {
   const current = activeSection();
-  for (const id of ["build", "discover", "review", "documents", "library", "advanced"]) {
+  for (const id of ["build", "review", "documents", "library", "advanced"]) {
     const node = el(id);
     if (!node) continue;
     node.hidden = id !== current;
@@ -493,31 +506,11 @@ function renderRunsTable() {
 }
 
 function setLatestId(kind, value) {
-  const trimmed = (value || "").trim();
-  state.latest[kind] = trimmed;
-  if (kind === "discovery") {
-    setText("latestDiscoveryId", trimmed || "-");
-    setText("statusActiveDiscoveryRun", trimmed || "-");
-    if (el("discoverRunIdInput")) el("discoverRunIdInput").value = trimmed;
-    if (el("startAcqRunId")) el("startAcqRunId").value = trimmed;
-  }
-  if (kind === "acquisition") {
-    setText("latestAcqId", trimmed || "-");
-    if (el("documentsAcqRunIdInput")) el("documentsAcqRunIdInput").value = trimmed;
-    if (el("startParseAcqRunId")) el("startParseAcqRunId").value = trimmed;
-  }
-  if (kind === "parse") {
-    setText("latestParseId", trimmed || "-");
-    if (el("searchParseRunIdInput")) el("searchParseRunIdInput").value = trimmed;
-  }
-  if (kind === "discovery" && activeSection() === "review") {
-    state.review.offset = 0;
-    scheduleReviewAutoLoad("run_context_changed");
-  }
+  return runContext.setLatestId(kind, value);
 }
 
 function clearRunInputs() {
-  const ids = ["discoverRunIdInput", "documentsAcqRunIdInput", "searchParseRunIdInput"];
+  const ids = ["documentsAcqRunIdInput", "searchParseRunIdInput"];
   for (const id of ids) {
     const node = el(id);
     if (node) node.value = "";
@@ -545,93 +538,31 @@ function resetStaleRunContext(reason) {
 }
 
 async function useLatestRunContext(interactive = false) {
-  const payload = await apiGet("/v1/runs/latest");
-  const d = (payload.discovery_run_id || "").trim();
-  const a = (payload.acquisition_run_id || "").trim();
-  const p = (payload.parse_run_id || "").trim();
-  if (!d && !a && !p) {
-    resetStaleRunContext("use_latest_none");
-    return false;
-  }
-  const prev = { ...state.latest };
-  const changed = (!!d && d !== prev.discovery) || (!!a && a !== prev.acquisition) || (!!p && p !== prev.parse);
-  if (interactive && changed) {
-    const ok = window.confirm(
-      `Switch active context?\nDiscovery: ${prev.discovery || "-"} -> ${d || prev.discovery || "-"}\nAcquisition: ${prev.acquisition || "-"} -> ${a || prev.acquisition || "-"}\nParse: ${prev.parse || "-"} -> ${p || prev.parse || "-"}`,
-    );
-    if (!ok) return false;
-  }
-  if (d) setLatestId("discovery", d);
-  if (a) setLatestId("acquisition", a);
-  if (p) setLatestId("parse", p);
-  if (changed) {
-    emitTelemetryEvent(
-      "change",
-      el("useLatestRunBtn") || document.body,
-      `context_switch discovery:${prev.discovery || "-"}->${state.latest.discovery || "-"} acq:${prev.acquisition || "-"}->${state.latest.acquisition || "-"} parse:${prev.parse || "-"}->${state.latest.parse || "-"}`,
-    );
-  }
-  setText("reviewState", "Loaded latest run context.");
-  return true;
+  return runContext.useLatestRunContext(interactive);
 }
 
 function getDiscoveryRunId() {
-  return (state.latest.discovery || "").trim();
+  return runContext.getDiscoveryRunId();
 }
 
 function getAcqRunId() {
-  return (state.latest.acquisition || "").trim();
+  return runContext.getAcqRunId();
 }
 
 function getParseRunId() {
-  return (state.latest.parse || "").trim();
+  return runContext.getParseRunId();
 }
 
 async function ensureDiscoveryRunExists(runId) {
-  if (!runId) throw new Error("discovery run context is required");
-  try {
-    await apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
-    return true;
-  } catch (err) {
-    if (String(err.message || "").includes("run_not_found")) {
-      throw new Error("Active discovery run is missing. Use Latest or start a new run.");
-    }
-    throw err;
-  }
+  return runContext.ensureDiscoveryRunExists(runId);
 }
 
 async function ensureAcquisitionRunExists(acqRunId) {
-  if (!acqRunId) throw new Error("acquisition run context is required");
-  try {
-    await apiGet(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}`);
-    return true;
-  } catch (err) {
-    if (String(err.message || "").includes("run_not_found")) {
-      throw new Error("Active acquisition run is missing. Use Latest or start acquisition again.");
-    }
-    throw err;
-  }
+  return runContext.ensureAcquisitionRunExists(acqRunId);
 }
 
 async function ensureAcquisitionRunContext({ retryFailedOnly = false } = {}) {
-  let acqRunId = getAcqRunId();
-  if (acqRunId) {
-    try {
-      await ensureAcquisitionRunExists(acqRunId);
-      return acqRunId;
-    } catch (err) {
-      if (!String(err.message || "").includes("run_not_found")) throw err;
-      setLatestId("acquisition", "");
-      acqRunId = "";
-    }
-  }
-
-  const runId = getDiscoveryRunId();
-  if (!runId) throw new Error("discovery run context is required");
-  await ensureDiscoveryRunExists(runId);
-  const next = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: retryFailedOnly });
-  setLatestId("acquisition", next.acq_run_id);
-  return next.acq_run_id;
+  return runContext.ensureAcquisitionRunContext({ retryFailedOnly });
 }
 
 function statusToUi(status) {
@@ -825,7 +756,6 @@ function copyFeedbackIdForTarget(sourceNode, explicitFeedbackId = "") {
   if (sectionId === "review") return "reviewState";
   if (sectionId === "documents") return "documentsState";
   if (sectionId === "library") return "searchState";
-  if (sectionId === "discover") return "discoverState";
   if (sectionId === "advanced") return "idCopyState";
   return "addSourceState";
 }
@@ -866,6 +796,10 @@ function updateStatusStrip({
   else if (docFailures > 0 || awaitingDocs > 0) state.statusStrip.nextActionRoute = "documents";
   else state.statusStrip.nextActionRoute = "build";
   setText("statusNextActionBtn", `Next: ${state.statusStrip.nextActionRoute}`);
+}
+
+function updateReviewHeader(pendingCount) {
+  setText("reviewHeader", `Review Sources - Pending: ${pendingCount}`);
 }
 
 function abstractView(text, expanded) {
@@ -986,6 +920,15 @@ async function loadDashboard() {
   const pendingBadge = pendingForUi > 0 && !reviewContextResolvable ? 0 : pendingForUi;
   setText("reviewNavBadge", String(pendingBadge));
   setText("documentsNavBadge", String(awaitingForUi));
+  setText("discoverSummaryDiscovered", String(sources.length));
+  const approvedCount = sources.filter((row) => row.accepted || row.review_status === "auto_accept" || row.review_status === "human_accept").length;
+  const rejectedCount = sources.filter((row) => row.review_status === "auto_reject" || row.review_status === "human_reject").length;
+  const reviewedCount = Math.max(0, sources.length - pendingBadge);
+  setText("discoverSummaryApproved", String(approvedCount));
+  setText("discoverSummaryRejected", String(rejectedCount));
+  setText("discoverSummaryReviewed", String(reviewedCount));
+  setText("discoverSummaryPending", String(pendingBadge));
+  updateReviewHeader(pendingBadge);
   renderBuildTopics();
 
   let recent = "No run loaded";
@@ -993,6 +936,10 @@ async function loadDashboard() {
     try {
       const run = await apiGet(`/v1/discovery/runs/${encodeURIComponent(state.latest.discovery)}`);
       recent = `status=${run.status}, accepted=${run.accepted_total}, discovered=${run.expanded_candidates_total}`;
+      setText("discoverIteration", String(run.current_iteration ?? "-"));
+      if (Array.isArray(run.seed_queries) && run.seed_queries.length) {
+        setText("discoverQueryList", run.seed_queries.join(", "));
+      }
       upsertRunRow("discovery", state.latest.discovery, run);
       renderRunsTable();
     } catch (err) {
@@ -1021,48 +968,6 @@ async function loadDashboard() {
     activeTopic: activeTopic()?.name || "Default Session",
   });
   if (state.multiTab.isLeader) broadcastSnapshot();
-  return true;
-}
-
-async function loadDiscover() {
-  setText("discoverError", "");
-  const runId = getDiscoveryRunId();
-  if (!runId) {
-    setText("discoverSummary", "No discovery run selected.");
-    return true;
-  }
-  let run;
-  try {
-    run = await apiGet(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
-  } catch (err) {
-    if (String(err.message || "").includes("run_not_found")) {
-      resetStaleRunContext("discover_not_found");
-      return true;
-    }
-    throw err;
-  }
-  setLatestId("discovery", runId);
-  upsertRunRow("discovery", runId, run);
-  renderRunsTable();
-  setText(
-    "discoverSummary",
-    JSON.stringify(
-      {
-        run_id: run.run_id,
-        status: run.status,
-        seed_queries: run.seed_queries,
-        current_iteration: run.current_iteration,
-        accepted_total: run.accepted_total,
-        expanded_candidates_total: run.expanded_candidates_total,
-        citation_edges_total: run.citation_edges_total,
-        ai_filter_active: run.ai_filter_active,
-        ai_filter_warning: run.ai_filter_warning,
-      },
-      null,
-      2,
-    ),
-  );
-  setText("discoverState", `Loaded run ${runId}`);
   return true;
 }
 
@@ -1153,9 +1058,9 @@ async function loadReview() {
 async function loadDocuments() {
   setText("documentsError", "");
   const acqRunId = getAcqRunId();
-  const limit = Number(el("documentsLimit").value);
+  const limit = Number(el("documentsLimit")?.value || "50");
   const offset = state.documents.offset;
-  const queueFilter = (el("documentsQueueFilter") || {}).value || "awaiting";
+  const queueFilter = (el("documentsQueueFilter") || {}).value || "all";
   if (!acqRunId) {
     const discoveryRunId = getDiscoveryRunId();
     state.documents.discoveryRunId = discoveryRunId || "";
@@ -1342,7 +1247,7 @@ function reviewRefreshKey() {
 
 function documentsRefreshKey() {
   const acqRunId = getAcqRunId();
-  const queue = el("documentsQueueFilter")?.value || "awaiting";
+  const queue = el("documentsQueueFilter")?.value || "all";
   const limit = el("documentsLimit")?.value || "50";
   return `documents:${acqRunId}:${queue}:${state.documents.offset}:${limit}:${getDiscoveryRunId()}`;
 }
@@ -1508,12 +1413,12 @@ async function startDiscoveryWithSeeds(seedQueries, buttonIds = ["createSessionB
     }),
   );
   setLatestId("discovery", result.run_id);
-  el("discoverRunIdInput").value = result.run_id;
+  setText("discoverIteration", "1");
+  setText("discoverQueryList", seedQueries.join(", "));
   state.review.offset = 0;
   state.documents.offset = 0;
   setText("dashboardState", "Discovery iteration started. IDs are available in Advanced.");
   await loadDashboard();
-  await loadDiscover();
   window.location.hash = "#review";
 }
 
@@ -1548,8 +1453,8 @@ async function runNextCitationIteration() {
       "dashboardState",
       `Citation iteration started from active run ${runId}. New run created: ${result.run_id}. Context unchanged until you switch explicitly.`,
     );
+    setText("discoverIteration", "next");
     await loadDashboard();
-    await loadDiscover();
   } catch (err) {
     setText("dashboardError", `Citation iteration failed: ${err.message}`);
   }
@@ -1837,7 +1742,6 @@ function libraryExcludeSelected() {
 async function refreshCurrentSection() {
   const section = activeSection();
   if (section === "build") return loadDashboard();
-  if (section === "discover") return loadDiscover();
   if (section === "review" && state.review.loaded) return refreshReview();
   if (section === "documents" && state.documents.loaded) return refreshDocuments();
   if (section === "library" && state.search.loaded) return runSearch();
@@ -1985,28 +1889,10 @@ function init() {
   addListener("bulkSourceForm", "submit", handleBulkSource);
   addListener("buildQueryForm", "submit", handleBuildQuery);
   addListener("build", "click", handleCopyValueClick);
-  addListener("discover", "click", handleCopyValueClick);
   addListener("review", "click", handleCopyValueClick);
   addListener("documents", "click", handleCopyValueClick);
   addListener("library", "click", handleCopyValueClick);
   addListener("advanced", "click", handleCopyValueClick);
-  addListener("loadDiscoverBtn", "click", async () => {
-    try {
-      await loadDiscover();
-    } catch (err) {
-      setText("discoverError", `Load failed: ${err.message}`);
-    }
-  });
-  addListener("discoverTechnicalForm", "submit", async (event) => {
-    event.preventDefault();
-    try {
-      await loadDiscover();
-      setText("discoverTechState", "Technical listing settings saved.");
-    } catch (err) {
-      setText("discoverError", `Load failed: ${err.message}`);
-    }
-  });
-  addListener("downloadSourcesRawBtn", "click", exportSourcesRaw);
 
   addListener("reviewRefreshBtn", "click", async () => {
     try {
@@ -2022,10 +1908,6 @@ function init() {
   addListener("reviewLimit", "change", () => {
     state.review.offset = 0;
     scheduleReviewAutoLoad("limit_changed");
-  });
-  addListener("discoverRunIdInput", "change", () => {
-    const runId = (el("discoverRunIdInput").value || "").trim();
-    setLatestId("discovery", runId);
   });
   addListener("documentsAcqRunIdInput", "change", () => {
     const runId = (el("documentsAcqRunIdInput").value || "").trim();
@@ -2050,8 +1932,7 @@ function init() {
   addListener("fastLaterBtn", "click", () => fastReviewDecision("later"));
   addListener("fastPrevBtn", "click", () => fastReviewMove(-1));
   addListener("fastNextBtn", "click", () => fastReviewMove(1));
-  addListener("documentsForm", "submit", async (event) => {
-    event.preventDefault();
+  addListener("documentsViewIssuesBtn", "click", async () => {
     state.documents.offset = 0;
     try {
       await runBusy("documents_view", ["documentsViewIssuesBtn"], async () => {
@@ -2081,6 +1962,8 @@ function init() {
   addListener("libraryExportZipBtn", "click", libraryExportPdfZip);
   addListener("libraryIncludeSelectedBtn", "click", libraryIncludeSelected);
   addListener("libraryExcludeSelectedBtn", "click", libraryExcludeSelected);
+  addListener("libraryDetailAddBtn", "click", libraryIncludeSelected);
+  addListener("libraryDetailRemoveBtn", "click", libraryExcludeSelected);
 
   addListener("loadAiSettingsBtn", "click", loadAiSettings);
   addListener("saveAiSettingsBtn", "click", saveAiSettings);

@@ -28,6 +28,13 @@
     <section id="build" class="panel">
       <h2>Discover</h2>
       <p class="muted">Session workspace for source building, query planning, and runs.</p>
+      <div class="row compact summary-row">
+        <span>Discovered: <strong id="discoverSummaryDiscovered">0</strong></span>
+        <span>Approved: <strong id="discoverSummaryApproved">0</strong></span>
+        <span>Rejected: <strong id="discoverSummaryRejected">0</strong></span>
+        <span>Reviewed: <strong id="discoverSummaryReviewed">0</strong></span>
+        <span>Pending: <strong id="discoverSummaryPending">0</strong></span>
+      </div>
       <div class="build-layout">
         <aside class="build-topics panel-sub">
           <div class="row compact">
@@ -44,6 +51,8 @@
           </div>
 
           <section id="buildTabPanelAddSources" class="build-tab-panel">
+            <details>
+              <summary>Advanced source ingest</summary>
             <form id="addSourceForm" class="row">
               <label>
                 DOI
@@ -77,6 +86,7 @@
                 <tbody id="buildSourcesRows"></tbody>
               </table>
             </div>
+            </details>
           </section>
 
           <section id="buildTabPanelQueries" class="build-tab-panel" hidden>
@@ -108,12 +118,11 @@
               <button id="createSessionBtn" type="submit">Run One Iteration</button>
               <button id="runNextCitationBtn" type="button">Run Next Citation Iteration</button>
             </form>
+            <p class="muted">Iteration: <span id="discoverIteration">-</span></p>
             <p id="dashboardState" class="muted"></p>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Needs Review</th><th>Download Issues</th><th>Parse Errors</th><th>Recent Discovery</th></tr></thead>
-                <tbody id="dashboardCards"></tbody>
-              </table>
+            <div class="row compact">
+              <strong>Query list:</strong>
+              <span id="discoverQueryList" class="muted">-</span>
             </div>
           </section>
         </section>
@@ -127,49 +136,6 @@
         <button type="button" class="copy-value-btn" data-target-id="dashboardError" data-feedback-id="dashboardState">Copy Error</button>
       </div>
       <p id="dashboardError" class="error"></p>
-    </section>
-
-    <section id="discover" class="panel">
-      <h2>Discover</h2>
-      <p class="muted">Latest run summary and export only.</p>
-      <div class="row compact">
-        <button id="loadDiscoverBtn" type="button">Load Latest Run</button>
-        <button id="downloadSourcesRawBtn" type="button">Export sources_raw</button>
-      </div>
-      <p id="discoverState" class="muted"></p>
-      <pre id="discoverSummary" class="metrics">No discovery run selected.</pre>
-      <details>
-        <summary>Technical details</summary>
-        <form id="discoverTechnicalForm" class="row">
-          <label>
-            Discovery Run ID
-            <input id="discoverRunIdInput" type="text" placeholder="run_...">
-          </label>
-          <label>
-            Status filter
-            <select id="discoverStatusFilter">
-              <option value="accepted">accepted</option>
-              <option value="rejected">rejected</option>
-              <option value="needs_review">needs_review</option>
-              <option value="all" selected>all</option>
-            </select>
-          </label>
-          <label>
-            Limit
-            <select id="discoverLimit">
-              <option value="25">25</option>
-              <option value="50" selected>50</option>
-              <option value="100">100</option>
-            </select>
-          </label>
-          <button type="submit">Load Technical Listing</button>
-        </form>
-        <p id="discoverTechState" class="muted"></p>
-      </details>
-      <div class="row compact">
-        <button type="button" class="copy-value-btn" data-target-id="discoverError" data-feedback-id="discoverState">Copy Error</button>
-      </div>
-      <p id="discoverError" class="error"></p>
     </section>
 
     __PARTIAL_REVIEW__

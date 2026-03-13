@@ -5,9 +5,9 @@ Operating guide for contributors and AI coding agents in this repository.
 ## 1. Documentation Precedence
 
 When docs conflict, use this order:
-1. `CURRENT_SCOPE.md`
-2. `ARCHITECTURE.md`
-3. `UI_SPEC.md`
+1. `UI_SPEC.md` for UI/HMI contract and user-facing workflow
+2. `CURRENT_SCOPE.md`
+3. `ARCHITECTURE.md`
 4. `PIPELINE_RULES.md`
 5. `DATA_SCHEMA.md`
 6. `BACKLOG.md`
@@ -39,6 +39,8 @@ Out of scope unless explicitly requested:
 2. Keep task pages free of mandatory manual ID entry.
 3. Keep technical controls in `Advanced` or explicit technical drawers.
 4. Show status as text + color, never color-only.
+5. Prefer `Session` over `Topic` in user-facing text unless a transition note explicitly says otherwise.
+6. Treat `Library Export` as the canonical final workflow stage label.
 
 ## 5. Pipeline Rules Compliance
 

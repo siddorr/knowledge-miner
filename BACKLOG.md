@@ -182,6 +182,7 @@ Status:
   - `hmi/documents.js` extracted and wired.
   - `hmi/review.js` extracted and wired.
   - `hmi/library.js` extracted and wired.
+  - `hmi/run_context.js` extracted and wired.
 - Acceptance criteria:
   - no single frontend module exceeds ~800 lines
   - existing HMI acceptance tests pass
@@ -269,14 +270,14 @@ Status:
 8. Frontend modularization (`hmi.js`)
 - Current: partial extraction completed (`api/state/telemetry/review/documents/library/session`), orchestration still oversized.
 - Target: pending.
-- Owner task: #13 (open)
+- Owner task: #13 (in progress)
 
 9. Backend router split (`main.py`)
-- Current: partial extraction completed (`settings/system/hmi/search/discovery`), acquisition and parse routes remain in `main.py`.
-- Target: pending.
-- Owner task: #14 (open)
+- Current: extracted to dedicated domain routers (`settings/system/hmi/search/discovery/acquisition/parse`) and mounted.
+- Target: complete.
+- Owner task: #14 (done)
 
-16. [ ] P0 - Add HMI shell contract tests for the new workstation layout
+16. [x] P0 - Add HMI shell contract tests for the new workstation layout
 - Goal:
   - verify the implemented HMI matches the canonical shell structure.
 - Scope:
@@ -290,7 +291,7 @@ Status:
   - tests assert `New Session | Save | Load | Delete` in the controls row
   - tests assert `Discover | Review | Documents | Library Export | Advanced` in the nav row
 
-17. [ ] P0 - Add primary terminology contract tests for Session and Library Export
+17. [x] P0 - Add primary terminology contract tests for Session and Library Export
 - Goal:
   - prevent regression to deprecated user-facing naming.
 - Scope:
@@ -302,7 +303,7 @@ Status:
   - tests fail when deprecated labels appear in primary UX
   - remaining `topic` usage is allowed only in internal code or explicitly transitional contexts
 
-18. [ ] P0 - Add Review layout contract tests for the Rayyan-style screening workspace
+18. [x] P0 - Add Review layout contract tests for the Rayyan-style screening workspace
 - Goal:
   - verify Review matches the new two-pane triage design.
 - Scope:
@@ -317,7 +318,7 @@ Status:
   - tests fail when Review is not clearly two-pane
   - tests fail when Review exposes manual run-ID selection in the primary workflow
 
-19. [ ] P0 - Add Review session-binding behavior tests
+19. [x] P0 - Add Review session-binding behavior tests
 - Goal:
   - ensure Review automatically follows the active session rather than requiring manual technical context.
 - Scope:
@@ -331,7 +332,7 @@ Status:
   - Review state changes when the active session changes
   - queue counts match the active session context
 
-20. [ ] P0 - Add Documents layout and workflow contract tests
+20. [x] P0 - Add Documents layout and workflow contract tests
 - Goal:
   - verify Documents matches the new acquisition workstation design and still performs required actions.
 - Scope:
@@ -354,7 +355,7 @@ Status:
     - `status`
     - `source_link`
 
-21. [ ] P0 - Add Library Export contract tests
+21. [x] P0 - Add Library Export contract tests
 - Goal:
   - verify the final stage is an export workspace, not a generic library browser.
 - Scope:
@@ -369,7 +370,7 @@ Status:
   - tests fail if the final stage behaves like generic browsing instead of ranked export preparation
   - export controls are present and clearly tied to the selected export set
 
-22. [ ] P1 - Add Advanced isolation tests
+22. [x] P1 - Add Advanced isolation tests
 - Goal:
   - ensure technical complexity stays inside `Advanced` and does not leak into the primary workflow.
 - Scope:
@@ -380,7 +381,7 @@ Status:
 - Acceptance criteria:
   - tests fail if `Review`, `Documents`, or `Library Export` require low-level IDs or Advanced-only controls
 
-23. [ ] P1 - Add accessibility and responsive shell contract tests
+23. [x] P1 - Add accessibility and responsive shell contract tests
 - Goal:
   - verify key non-visual and layout-order rules of the new HMI design.
 - Scope:
@@ -392,7 +393,7 @@ Status:
   - tests fail when status meaning is only implicit
   - tests fail when shell ordering becomes ambiguous for responsive layouts
 
-24. [ ] P1 - Update existing HMI acceptance tests to the new design vocabulary and shell assumptions
+24. [x] P1 - Update existing HMI acceptance tests to the new design vocabulary and shell assumptions
 - Goal:
   - align existing tests with the new authoritative GUI contract instead of preserving legacy wording.
 - Scope:
@@ -405,3 +406,143 @@ Status:
     - `tests/test_acquisition_api.py`
 - Acceptance criteria:
   - existing acceptance tests no longer encode deprecated GUI terminology or old shell structure
+
+25. [x] P0 - Collapse Discover into one simple operator workspace matching the GUI spec
+- Goal:
+  - replace the current split `build` + `discover` model with one clear discovery screen.
+- Problem:
+  - current Discover is spread across a technical build console and a separate latest-run panel, which does not match the GUI specification.
+- Scope:
+  - remove the split between `build` and `discover` as separate operator stages
+  - expose one discovery surface with:
+    - active session query/topic input
+    - visible query list
+    - one primary run action
+    - iteration indicator
+    - single-row summary
+  - move add-source, bulk-source, and other technical source-ingest tools out of the primary discovery surface or behind secondary/advanced affordances
+- Acceptance criteria:
+  - Discover is one operator-oriented screen
+  - summary appears in one single row
+  - the main user does not need to understand `build` vs `discover`
+
+26. [x] P0 - Make Review header and interaction model match the Rayyan-style spec
+- Goal:
+  - make Review read like a focused screening workspace instead of an operations panel.
+- Problem:
+  - the current Review page is missing the explicit `Pending` framing and mixes triage with too many utility controls.
+- Scope:
+  - show a header like `Review Sources - Pending: N`
+  - add a visible keyboard-help row in the main review screen
+  - simplify or relocate secondary utility controls that overload the triage surface
+  - preserve two-pane review and fast triage
+- Acceptance criteria:
+  - Review foregrounds pending screening work
+  - keyboard guidance is visible without entering a hidden mode
+  - primary screening actions dominate the page
+
+27. [x] P0 - Remove technical and recovery leakage from the Documents main pane
+- Goal:
+  - keep the Documents screen aligned to the spec’s acquisition-focused operator flow.
+- Problem:
+  - the current Documents page exposes queue filters, pagination, copy utilities, manual source-id upload flow, and a `More` bucket in the main task page.
+- Scope:
+  - keep only the primary surface defined by the spec:
+    - summary row
+    - export CSV
+    - ranked document table
+    - `Download missing`
+    - `Retry failed`
+    - batch upload
+  - move technical/manual recovery controls out of the primary pane
+  - remove `Source ID for manual upload` from the main Documents workflow
+- Acceptance criteria:
+  - normal document handling does not require technical identifiers
+  - the Documents screen is materially simpler and spec-aligned
+
+28. [x] P0 - Rebuild Library Export as a true two-pane ranked export workspace
+- Goal:
+  - align Library Export with the GUI spec’s left-results / right-details model.
+- Problem:
+  - the current screen is table-plus-preview, with missing summary row and mismatched control labels.
+- Scope:
+  - add a summary row with:
+    - matching papers
+    - highest AI relevance
+    - lowest AI relevance
+  - implement a true two-pane layout:
+    - ranked results on the left
+    - paper details on the right
+  - change manual controls to:
+    - `Remove from export list`
+    - `Add to export list`
+  - add copy-title behavior near the link if retained by the spec
+- Acceptance criteria:
+  - Library Export is visually and behaviorally an export workspace
+  - summary row is visible
+  - details are shown beside results, not only below them
+
+29. [x] P0 - Remove technical details from the main Library Export operator screen
+- Goal:
+  - keep technical parsed/source internals out of the primary export workflow.
+- Problem:
+  - the current Library Export screen exposes parsed-document and source-context technical detail blocks directly in the main page.
+- Scope:
+  - move parsed detail, full text, and related source context out of the primary Library Export pane
+  - keep only operator-relevant export detail in the main workspace
+  - relocate technical inspection to `Advanced` or a clearly secondary diagnostic path
+- Acceptance criteria:
+  - Library Export focuses on ranking, review, and export
+  - technical parsed/source internals are not part of the default operator surface
+
+30. [x] P0 - Enforce Advanced-only ownership of technical IDs and stage-control forms
+- Goal:
+  - make `Advanced` the only place for run IDs, source IDs, and low-level stage-control forms.
+- Problem:
+  - technical IDs are still leaking into normal workflow pages such as Discover and Documents.
+- Scope:
+  - audit `Discover`, `Review`, `Documents`, and `Library Export` for:
+    - run-ID entry
+    - source-ID entry
+    - stage-control forms
+    - technical detail panes
+  - move those controls to `Advanced` or remove them
+- Acceptance criteria:
+  - normal workflow pages do not require technical IDs
+  - `Advanced` remains the single diagnostics/control surface
+
+31. [x] P1 - Resolve terminology inconsistencies inside the GUI description source
+- Goal:
+  - make the design reference internally consistent before final implementation sign-off.
+- Problem:
+  - the downloaded GUI description still uses `New Topic` and `Library` in the global-layout example while the approved project terminology is `Session` and `Library Export`.
+- Scope:
+  - normalize the project-facing interpretation of the spec to:
+    - `New Session`
+    - `Library Export`
+  - note the inconsistency explicitly in implementation/review docs
+  - ensure engineering and QA do not validate against conflicting labels
+- Acceptance criteria:
+  - there is one canonical terminology set for implementation and testing
+  - no developer has to guess whether `Topic` or `Session` is authoritative
+
+## GUI Spec Review Checklist
+
+- [ ] Global shell is `header/status -> controls -> navigation -> workspace -> footer`
+- [ ] Controls row shows `New Session | Save | Load | Delete`
+- [ ] Navigation shows `Discover | Review | Documents | Library Export | Advanced`
+- [ ] Discover is one screen, not split into competing `build` and `discover` operator workflows
+- [ ] Discover shows one single-row summary for discovered/approved/rejected/reviewed/pending
+- [ ] Review header shows pending count prominently
+- [ ] Review is clearly two-pane: list left, details right
+- [ ] Review shows visible keyboard help for `A`, `R`, `L`, and next-paper navigation
+- [ ] Review metadata order is `Year | Journal | Citations | Authors | Link`
+- [ ] Documents shows only the primary spec flow in the main pane
+- [ ] Documents includes summary row, export CSV, ranked table, actions row, and batch upload row
+- [ ] Documents does not require `Source ID` entry in the normal workflow
+- [ ] Library Export shows a summary row with counts/relevance range
+- [ ] Library Export is two-pane: ranked results left, details right
+- [ ] Library Export uses export-list controls matching the spec intent
+- [ ] Technical parsed/source internals are not shown in the main Library Export surface
+- [ ] `Advanced` is the only place for low-level IDs, run lookup, and stage controls
+- [ ] Footer is stable and shows system, AI, DB, and last-update status

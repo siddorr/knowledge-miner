@@ -1,6 +1,11 @@
 <section id="library" class="panel">
   <h2>Library Export</h2>
   <p class="muted">Ranked export workspace for final paper package generation.</p>
+  <div class="row compact summary-row">
+    <span>Matching papers: <strong id="librarySummaryMatches">0</strong></span>
+    <span>Highest AI relevance: <strong id="librarySummaryHighest">-</strong></span>
+    <span>Lowest AI relevance: <strong id="librarySummaryLowest">-</strong></span>
+  </div>
   <form id="searchForm" class="row">
     <label>
       Query
@@ -58,27 +63,28 @@
     </label>
     <button id="libraryExportZipBtn" type="button">Export ZIP with PDFs</button>
     <button id="libraryExportCsvBtn" type="button">Export Metadata CSV</button>
-    <button id="libraryIncludeSelectedBtn" type="button">Include selected</button>
-    <button id="libraryExcludeSelectedBtn" type="button">Exclude selected</button>
+    <button id="libraryIncludeSelectedBtn" type="button">Add to export list</button>
+    <button id="libraryExcludeSelectedBtn" type="button">Remove from export list</button>
   </div>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Select</th><th>Rank</th><th>AI Score</th><th>Year</th><th>Citations</th><th>Title</th></tr></thead>
-      <tbody id="searchRows"></tbody>
-    </table>
-  </div>
-  <p id="searchState" class="muted"></p>
-  <h3>Preview</h3>
-  <pre id="searchPreview" class="metrics">No document selected.</pre>
-  <details>
-    <summary>Technical details</summary>
-    <h3>Parsed Document Detail</h3>
-    <pre id="searchDocDetail" class="metrics">No document selected.</pre>
-    <h3>Parsed Document Full Text</h3>
-    <pre id="searchDocText" class="metrics">No document selected.</pre>
-    <h3>Related Source Context</h3>
-    <pre id="searchSourceContext" class="metrics">No source selected.</pre>
-  </details>
+  <section class="library-layout">
+    <section class="panel-sub">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Select</th><th>Rank</th><th>AI Score</th><th>Year</th><th>Citations</th><th>Title</th></tr></thead>
+          <tbody id="searchRows"></tbody>
+        </table>
+      </div>
+      <p id="searchState" class="muted"></p>
+    </section>
+    <section id="libraryDetailPanel" class="panel-sub">
+      <h3>Paper Details</h3>
+      <pre id="searchPreview" class="metrics">No document selected.</pre>
+      <div class="row compact">
+        <button id="libraryDetailAddBtn" type="button">Add to export list</button>
+        <button id="libraryDetailRemoveBtn" type="button">Remove from export list</button>
+      </div>
+    </section>
+  </section>
   <div class="row compact">
     <button type="button" class="copy-value-btn" data-target-id="searchError" data-feedback-id="searchState">Copy Error</button>
   </div>

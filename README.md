@@ -13,6 +13,7 @@ Current product includes:
 8. Save/Load Session workflow with history and optional auto-restore on app start.
 9. Direct Review -> Documents transition (no manual "send to documents" step).
 10. Run-context controls are kept in Advanced; task pages run on active session context.
+11. UI design authority now follows GUI Design Specification v1.1 through the in-repo `UI_SPEC.md`.
 
 ## Quick Start
 
@@ -88,7 +89,7 @@ Source of truth docs:
 1. `README.md` - entry point
 2. `CURRENT_SCOPE.md` - what exists now, scope boundaries, near-term direction
 3. `ARCHITECTURE.md` - system components, data flow, runtime boundaries
-4. `UI_SPEC.md` - canonical user workflow and HMI behavior contract (Discover/Review/Documents/Library/Advanced)
+4. `UI_SPEC.md` - canonical user workflow and HMI behavior contract (Discover/Review/Documents/Library Export/Advanced), rewritten to align with GUI Design Specification v1.1
 5. `PIPELINE_RULES.md` - discovery/decision/iteration rules
 6. `DATA_SCHEMA.md` - data model and constraints
 7. `BACKLOG.md` - active implementation tasks
@@ -97,7 +98,7 @@ Source of truth docs:
 
 Archived legacy docs are in `archive/`.
 UI navigation/source-of-truth model is defined only in `UI_SPEC.md`; archived UI docs are explicitly deprecated.
-Imported UX source (`Downloads/Knowledge_Miner_GUI_Spec.docx`) is reflected in `UI_SPEC.md` and tracked via `BACKLOG.md` Phase 4.3 tasks.
+Imported UX sources, including GUI Design Specification v1.1, are reflected in `UI_SPEC.md` and tracked via `BACKLOG.md`.
 
 ## Runtime Modes
 

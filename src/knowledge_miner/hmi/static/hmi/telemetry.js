@@ -2,7 +2,6 @@ const SAFE_VALUE_PREVIEW_IDS = new Set([
   "startDiscoverySeeds",
   "searchQuery",
   "globalSearchQuery",
-  "discoverRunIdInput",
   "reviewRunIdInput",
   "documentsAcqRunIdInput",
   "searchParseRunIdInput",
@@ -156,4 +155,3 @@ export function createTelemetryClient({
     ensureSession: telemetrySessionId,
   };
 }
-

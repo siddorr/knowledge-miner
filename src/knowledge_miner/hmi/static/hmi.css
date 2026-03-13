@@ -256,6 +256,13 @@ th {
   align-items: start;
 }
 
+.library-layout {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  align-items: start;
+}
+
 .summary-row {
   padding: 8px 10px;
   border: 1px solid var(--line);
@@ -345,6 +352,10 @@ footer.pollbar {
   }
 
   .review-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .library-layout {
     grid-template-columns: 1fr;
   }
 }

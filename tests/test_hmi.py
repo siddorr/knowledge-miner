@@ -33,7 +33,7 @@ def test_hmi_shell_route_and_navigation():
     assert "Copy Parse Error" in body
     assert "Documents" in body
     assert "Retry failed" in body
-    assert "Copy Selected DOI/URL" in body
+    assert "Copy Selected DOI/URL" not in body
     assert "documentsDetails" in body
     assert "Library Export" in body
     assert "Ranked export workspace for final paper package generation." in body
@@ -45,7 +45,7 @@ def test_hmi_shell_route_and_navigation():
     assert "reviewNavBadge" in body
     assert "documentsNavBadge" in body
     assert "reviewPaginationRow" in body
-    assert "documentsPaginationRow" in body
+    assert "documentsPaginationRow" not in body
     assert "UPW Knowledge Miner" in body
     assert "inProgressBanner" in body
     assert "inProgressState" in body

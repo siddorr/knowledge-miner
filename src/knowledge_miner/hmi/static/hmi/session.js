@@ -83,7 +83,7 @@ export function createSessionModule(deps) {
       },
       documents: {
         offset: state.documents.offset,
-        queueFilter: el("documentsQueueFilter")?.value || "awaiting",
+        queueFilter: el("documentsQueueFilter")?.value || "all",
         limit: el("documentsLimit")?.value || "50",
         selected: Array.from(state.documents.selected),
         acqRunIdInput: el("documentsAcqRunIdInput")?.value || "",
@@ -99,7 +99,6 @@ export function createSessionModule(deps) {
         parseRunIdInput: el("searchParseRunIdInput")?.value || "",
       },
       ids: {
-        discoverRunIdInput: el("discoverRunIdInput")?.value || "",
         startAcqRunId: el("startAcqRunId")?.value || "",
         startParseAcqRunId: el("startParseAcqRunId")?.value || "",
       },
@@ -137,7 +136,7 @@ export function createSessionModule(deps) {
 
     state.documents.offset = Number(snapshot.documents?.offset || 0);
     state.documents.selected = new Set((snapshot.documents?.selected || []).map((id) => String(id)));
-    if (el("documentsQueueFilter")) el("documentsQueueFilter").value = snapshot.documents?.queueFilter || "awaiting";
+    if (el("documentsQueueFilter")) el("documentsQueueFilter").value = snapshot.documents?.queueFilter || "all";
     if (el("documentsLimit")) el("documentsLimit").value = snapshot.documents?.limit || "50";
     if (el("manualUploadSourceId")) el("manualUploadSourceId").value = snapshot.documents?.manualSourceId || "";
 
@@ -149,9 +148,8 @@ export function createSessionModule(deps) {
     if (el("libraryParsedFilter")) el("libraryParsedFilter").value = snapshot.library?.parsedFilter || "all";
     if (snapshot.library?.parseRunIdInput && !state.latest.parse) setLatestId("parse", snapshot.library.parseRunIdInput);
     if (snapshot.documents?.acqRunIdInput && !state.latest.acquisition) setLatestId("acquisition", snapshot.documents.acqRunIdInput);
-    if (snapshot.ids?.discoverRunIdInput && !state.latest.discovery) setLatestId("discovery", snapshot.ids.discoverRunIdInput);
 
-    if (["build", "review", "documents", "library", "advanced", "discover"].includes(section)) {
+    if (["build", "review", "documents", "library", "advanced"].includes(section)) {
       window.location.hash = `#${section}`;
     }
     renderBuildTopics();
@@ -179,7 +177,7 @@ export function createSessionModule(deps) {
     const discoveryIds = new Set();
     const acquisitionIds = new Set();
     const parseIds = new Set();
-    const discoveryCandidates = [clone.latest?.discovery, clone.ids?.discoverRunIdInput, clone.ids?.startAcqRunId];
+    const discoveryCandidates = [clone.latest?.discovery, clone.ids?.startAcqRunId];
     const acquisitionCandidates = [clone.latest?.acquisition, clone.documents?.acqRunIdInput, clone.ids?.startParseAcqRunId];
     const parseCandidates = [clone.latest?.parse, clone.library?.parseRunIdInput];
     for (const id of discoveryCandidates) if (id) discoveryIds.add(String(id));
@@ -228,7 +226,6 @@ export function createSessionModule(deps) {
     clone.documents = clone.documents || {};
     clone.library = clone.library || {};
     clone.latest.discovery = keepDiscovery(clone.latest.discovery);
-    clone.ids.discoverRunIdInput = keepDiscovery(clone.ids.discoverRunIdInput);
     clone.ids.startAcqRunId = keepDiscovery(clone.ids.startAcqRunId);
     clone.latest.acquisition = keepAcquisition(clone.latest.acquisition);
     clone.documents.acqRunIdInput = keepAcquisition(clone.documents.acqRunIdInput);

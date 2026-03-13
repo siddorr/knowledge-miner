@@ -67,6 +67,12 @@ export function createLibraryModule(deps) {
 
   function renderLibraryRows(items, modeLabel) {
     ensureExportSelection();
+    const scores = items
+      .map((item) => Number(item.document?.relevance_score ?? item.score))
+      .filter((value) => Number.isFinite(value));
+    setText("librarySummaryMatches", String(items.length));
+    setText("librarySummaryHighest", scores.length ? String(Math.max(...scores)) : "-");
+    setText("librarySummaryLowest", scores.length ? String(Math.min(...scores)) : "-");
     renderTable(
       "searchRows",
       items.map((item, idx) => {

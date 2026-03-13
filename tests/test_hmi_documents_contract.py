@@ -29,10 +29,11 @@ def test_documents_table_columns_match_contract():
         assert f"<th>{label}</th>" in documents
 
 
-def test_documents_has_batch_upload_and_secondary_controls():
+def test_documents_has_batch_upload_and_primary_only_controls():
     documents = _documents_section()
     assert 'id="batchUploadForm"' in documents
     assert "Upload PDF Batch" in documents
-    assert "Select All" in documents
-    assert "Deselect All" in documents
-    assert "Copy Selected DOI/URL" in documents
+    assert "Source ID for manual upload" not in documents
+    assert "Select All" not in documents
+    assert "Deselect All" not in documents
+    assert "Copy Selected DOI/URL" not in documents

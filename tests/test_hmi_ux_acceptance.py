@@ -125,5 +125,5 @@ def test_hmi_first_time_flow_labels_and_no_required_manual_ids():
     assert "Load" in body
     assert "Fast review" in body
     assert "Library Export" in body
-    assert "Technical details" in body
+    assert "Library technical details" in body
     assert "Max iterations" not in body
