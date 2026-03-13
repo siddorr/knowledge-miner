@@ -93,6 +93,7 @@ Source of truth docs:
 6. `DATA_SCHEMA.md` - data model and constraints
 7. `BACKLOG.md` - active implementation tasks
 8. `AGENTS.md` - contributor/AI operating rules
+9. `MANUAL_LIVE_LOGIC_TEST.md` - live logic-test procedure and artifact expectations
 
 Archived legacy docs are in `archive/`.
 UI navigation/source-of-truth model is defined only in `UI_SPEC.md`; archived UI docs are explicitly deprecated.
@@ -122,8 +123,9 @@ set +a
 
 Typical settings:
 1. `USE_MOCK_CONNECTORS=false`
-2. `BRAVE_API_KEY=<key>`
-3. `SEMANTIC_SCHOLAR_API_KEY=<key>` (optional but recommended)
+2. `USE_SEMANTIC_SCHOLAR=false` (set `true` to enable Semantic Scholar connector)
+3. `BRAVE_API_KEY=<key>`
+4. `SEMANTIC_SCHOLAR_API_KEY=<key>` (optional; used only when `USE_SEMANTIC_SCHOLAR=true`)
 
 ## Logs and Runtime State
 

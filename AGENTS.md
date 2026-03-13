@@ -61,3 +61,18 @@ For changes touching policy/UI/workflows, add focused tests for:
 1. Prefer small, reviewable commits.
 2. Do not leave stale docs after behavior changes.
 3. Keep archive docs in `archive/`; do not treat them as active source of truth.
+
+## 8. Local Development Commands
+
+Use repository scripts and documented commands only. Do not invent ad-hoc startup commands when a project script exists.
+
+Canonical commands:
+1. Start server: `./run_server.sh`
+2. Server status: `./server_status.sh`
+3. Restart server: `./restart_server.sh`
+4. Health check: `curl -fsS http://127.0.0.1:8000/healthz`
+
+Rules:
+1. If `/healthz` succeeds, treat the server as already running and do not restart.
+2. If port 8000 is occupied by a non-project process, do not kill it; report it.
+3. Prefer repo-local scripts over inline shell chains.

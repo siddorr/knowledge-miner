@@ -924,6 +924,27 @@ async function ensureAcquisitionRunExists(acqRunId) {
   }
 }
 
+async function ensureAcquisitionRunContext({ retryFailedOnly = false } = {}) {
+  let acqRunId = getAcqRunId();
+  if (acqRunId) {
+    try {
+      await ensureAcquisitionRunExists(acqRunId);
+      return acqRunId;
+    } catch (err) {
+      if (!String(err.message || "").includes("run_not_found")) throw err;
+      setLatestId("acquisition", "");
+      acqRunId = "";
+    }
+  }
+
+  const runId = getDiscoveryRunId();
+  if (!runId) throw new Error("discovery run context is required");
+  await ensureDiscoveryRunExists(runId);
+  const next = await apiPost("/v1/acquisition/runs", { run_id: runId, retry_failed_only: retryFailedOnly });
+  setLatestId("acquisition", next.acq_run_id);
+  return next.acq_run_id;
+}
+
 function statusToUi(status) {
   if (["completed", "downloaded", "parsed", "accepted"].includes(status)) return "Ready";
   if (["failed", "error", "rejected", "partial"].includes(status)) return "Needs Action";
@@ -1662,7 +1683,7 @@ async function loadDocuments() {
     );
     setText("documentsPage", `offset=${state.documents.offset}, limit=${limit}, total=${total}`);
     applyPaginationControls("documents", total, state.documents.offset, limit);
-    setText("documentsState", `Approved sources ready: ${total}. Click Download Documents.`);
+    setText("documentsState", `Approved sources ready: ${total}. You can upload PDFs now or run auto-acquisition.`);
     if (!total) {
       setText("documentsDetails", "No approved sources yet. Continue review decisions first.");
     }
@@ -2323,7 +2344,7 @@ async function applyReviewDecisionToSelected(decision) {
   }
   state.review.selected.clear();
   if (decision === "accept") {
-    setText("reviewState", `Accepted ${ok}/${selected.length}. Open Documents and click Download Documents.`);
+    setText("reviewState", `Accepted ${ok}/${selected.length}. Open Documents to upload PDFs or run auto-acquisition.`);
   } else {
     setText("reviewState", `${decision} applied to ${ok}/${selected.length} selected rows.`);
   }
@@ -2343,7 +2364,7 @@ async function applySingleReviewDecision(sourceId, decision) {
   }
   try {
     await apiPost(`/v1/sources/${encodeURIComponent(sourceId)}/review`, { decision, run_id: runId });
-    if (decision === "accept") setText("reviewState", "Accepted. Click Download Documents next.");
+    if (decision === "accept") setText("reviewState", "Accepted. Open Documents to upload PDFs or run auto-acquisition.");
     else if (decision === "reject") setText("reviewState", "Rejected.");
     else setText("reviewState", "Moved to Later.");
     await refreshReview(true);
@@ -2521,11 +2542,10 @@ async function registerManualUpload(event) {
   event.preventDefault();
   setText("documentsError", "");
   try {
-    const acqRunId = getAcqRunId();
+    const acqRunId = await ensureAcquisitionRunContext({ retryFailedOnly: false });
     const sourceId = (el("manualUploadSourceId").value || "").trim() || state.documents.selectedSourceId;
     const fileInput = el("manualUploadFile");
     const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
-    if (!acqRunId) throw new Error("acquisition run id is required");
     if (!sourceId) throw new Error("source id is required");
     if (!file) throw new Error("file is required");
     const contentBase64 = await fileToBase64(file);
@@ -2738,11 +2758,6 @@ function toggleBatchUploadPanel() {
 async function uploadBatchDocuments(event) {
   event.preventDefault();
   setText("documentsError", "");
-  const acqRunId = getAcqRunId();
-  if (!acqRunId) {
-    setText("documentsError", "acquisition run id is required");
-    return;
-  }
   const input = el("batchUploadFiles");
   const files = input?.files ? Array.from(input.files) : [];
   if (!files.length) {
@@ -2751,6 +2766,7 @@ async function uploadBatchDocuments(event) {
   }
   try {
     const payload = await runBusy("batch_upload", ["batchUploadSubmitBtn"], async () => {
+      const acqRunId = await ensureAcquisitionRunContext({ retryFailedOnly: false });
       const form = new FormData();
       for (const file of files) form.append("files", file);
       requiredKey();

@@ -430,7 +430,8 @@ def get_system_status(
     provider_readiness = {
         "openalex": {"configured": bool(settings.openalex_base_url)},
         "semantic_scholar": {
-            "configured": bool(settings.semantic_scholar_base_url),
+            "enabled": settings.use_semantic_scholar,
+            "configured": bool(settings.use_semantic_scholar and settings.semantic_scholar_base_url),
             "api_key_present": bool(settings.semantic_scholar_api_key),
         },
         "brave": {

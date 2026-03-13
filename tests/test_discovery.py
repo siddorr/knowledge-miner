@@ -218,6 +218,52 @@ def test_dedup_merge_preserves_provenance_history():
         assert source.provenance_history[1]["parent_source_id"] == "parent-1"
 
 
+def test_ingest_recovers_when_initial_id_check_is_stale(monkeypatch):
+    with SessionLocal() as db:
+        run_a = create_run(db, ["upw"], max_iterations=1)
+        run_b = create_run(db, ["upw"], max_iterations=1)
+        shared_doi = "10.1000/upw-race"
+        base_candidate = {
+            "title": "UPW process monitoring",
+            "year": 2022,
+            "url": "https://example.org/upw-race",
+            "doi": shared_doi,
+            "abstract": "UPW quality monitoring in semiconductor fabs",
+            "source": "openalex",
+            "source_native_id": "oa_upw_race",
+            "openalex_id": "oa_upw_race",
+            "semantic_scholar_id": None,
+            "patent_office": None,
+            "patent_number": None,
+            "type": "academic",
+            "discovery_method": "seed_search",
+            "parent_source_id": None,
+        }
+        _ingest_candidates(db, run_a.id, 1, [base_candidate])
+
+        from knowledge_miner import discovery as discovery_module
+
+        original = discovery_module._run_scoped_source_id
+        call_count = {"value": 0}
+
+        def stale_once(db_session, run_id, canonical_sid):  # noqa: ANN001
+            call_count["value"] += 1
+            if call_count["value"] == 1:
+                return canonical_sid
+            return original(db_session, run_id, canonical_sid)
+
+        monkeypatch.setattr(discovery_module, "_run_scoped_source_id", stale_once)
+
+        candidate_b = dict(base_candidate)
+        candidate_b["source_native_id"] = "oa_upw_race_second"
+        candidate_b["openalex_id"] = "oa_upw_race_second"
+        _ingest_candidates(db, run_b.id, 1, [candidate_b])
+
+        inserted = db.scalars(select(Source).where(Source.run_id == run_b.id)).all()
+        assert len(inserted) == 1
+        assert inserted[0].id == f"doi:{shared_doi}::run:{run_b.id}"
+
+
 def test_export_includes_provenance_history():
     with SessionLocal() as db:
         run = create_run(db, ["upw"], max_iterations=1)

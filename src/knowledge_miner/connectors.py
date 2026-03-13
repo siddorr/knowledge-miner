@@ -298,15 +298,17 @@ class BraveConnector:
 
 
 def build_mock_connectors() -> list[Connector]:
-    return [
-        MockConnector("openalex", "academic"),
-        MockConnector("semantic_scholar", "academic"),
-        MockConnector("brave", "web"),
-    ]
+    out = [MockConnector("openalex", "academic"), MockConnector("brave", "web")]
+    if settings.use_semantic_scholar:
+        out.insert(1, MockConnector("semantic_scholar", "academic"))
+    return out
 
 
 def build_real_connectors() -> list[Connector]:
-    return [OpenAlexConnector(), SemanticScholarConnector(), BraveConnector()]
+    out: list[Connector] = [OpenAlexConnector(), BraveConnector()]
+    if settings.use_semantic_scholar:
+        out.insert(1, SemanticScholarConnector())
+    return out
 
 
 def build_connectors() -> list[Connector]:

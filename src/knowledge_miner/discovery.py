@@ -10,6 +10,7 @@ from typing import Iterable
 import uuid
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .ai_filter import AIRelevanceFilter, describe_ai_filter_runtime
@@ -561,35 +562,44 @@ def _ingest_candidates(
         elif observability is not None:
             observability.inc("rejected")
 
-        source = Source(
-            id=sid,
+        source_payload = {
+            "id": sid,
+            "run_id": run_id,
+            "title": c["title"],
+            "year": c.get("year"),
+            "url": c.get("url"),
+            "doi": c.get("doi"),
+            "abstract": c.get("abstract"),
+            "type": c["type"],
+            "source": c["source"],
+            "source_native_id": c.get("source_native_id"),
+            "patent_office": c.get("patent_office"),
+            "patent_number": c.get("patent_number"),
+            "iteration": iteration,
+            "discovery_method": c["discovery_method"],
+            "relevance_score": score,
+            "accepted": accepted,
+            "review_status": review_status,
+            "final_decision": review_status,
+            "decision_source": decision_source,
+            "heuristic_recommendation": heuristic_recommendation,
+            "heuristic_score": score,
+            "ai_decision": ai_decision,
+            "ai_confidence": ai_confidence,
+            "parent_source_id": c.get("parent_source_id"),
+            "provenance_history": [_provenance_event(c, iteration)],
+        }
+        inserted_sid = _insert_source_with_conflict_recovery(
+            db=db,
             run_id=run_id,
-            title=c["title"],
-            year=c.get("year"),
-            url=c.get("url"),
-            doi=c.get("doi"),
-            abstract=c.get("abstract"),
-            type=c["type"],
-            source=c["source"],
-            source_native_id=c.get("source_native_id"),
-            patent_office=c.get("patent_office"),
-            patent_number=c.get("patent_number"),
-            iteration=iteration,
-            discovery_method=c["discovery_method"],
-            relevance_score=score,
-            accepted=accepted,
-            review_status=review_status,
-            final_decision=review_status,
-            decision_source=decision_source,
-            heuristic_recommendation=heuristic_recommendation,
-            heuristic_score=score,
-            ai_decision=ai_decision,
-            ai_confidence=ai_confidence,
-            parent_source_id=c.get("parent_source_id"),
-            provenance_history=[_provenance_event(c, iteration)],
+            canonical_sid=canonical_sid,
+            source_payload=source_payload,
         )
-        db.add(source)
-        pending_source_ids.add(sid)
+        if inserted_sid is None:
+            if observability is not None:
+                observability.inc("dedup")
+            continue
+        pending_source_ids.add(inserted_sid)
     db.commit()
     return new_accepted_unique
 
@@ -600,6 +610,47 @@ def _run_scoped_source_id(db: Session, run_id: str, canonical_sid: str) -> str:
         return canonical_sid
     # Keep canonical ID when possible; add run scope only for cross-run PK conflicts.
     return f"{canonical_sid}::run:{run_id}"
+
+
+def _insert_source_with_conflict_recovery(
+    *,
+    db: Session,
+    run_id: str,
+    canonical_sid: str,
+    source_payload: dict,
+) -> str | None:
+    attempted_ids: list[str] = [str(source_payload["id"])]
+    last_exc: IntegrityError | None = None
+    idx = 0
+    while idx < len(attempted_ids):
+        sid = attempted_ids[idx]
+        payload = dict(source_payload)
+        payload["id"] = sid
+        try:
+            with db.begin_nested():
+                db.add(Source(**payload))
+                db.flush()
+            return sid
+        except IntegrityError as exc:
+            last_exc = exc
+            # Concurrent runs may claim the same canonical ID between pre-check and insert.
+            if "UNIQUE constraint failed: sources.id" not in str(exc):
+                raise
+            existing = db.get(Source, sid)
+            if existing is not None and existing.run_id == run_id:
+                return None
+            fresh_scoped_sid = _run_scoped_source_id(db, run_id, canonical_sid)
+            if fresh_scoped_sid not in attempted_ids:
+                attempted_ids.append(fresh_scoped_sid)
+        idx += 1
+
+    # One last lookup handles races where another insert in this run won the ID.
+    existing = db.get(Source, attempted_ids[-1])
+    if existing is not None and existing.run_id == run_id:
+        return None
+    if last_exc is not None:
+        raise last_exc
+    return None
 
 
 def _find_existing_source(db: Session, run_id: str, candidate: dict, candidate_id: str) -> Source | None:

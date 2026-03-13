@@ -56,6 +56,7 @@ class Settings:
     artifacts_dir: str = os.getenv("ARTIFACTS_DIR", "./artifacts")
     use_mock_connectors: bool = _as_bool(os.getenv("USE_MOCK_CONNECTORS"), default=True)
     openalex_base_url: str = os.getenv("OPENALEX_BASE_URL", "https://api.openalex.org")
+    use_semantic_scholar: bool = _as_bool(os.getenv("USE_SEMANTIC_SCHOLAR"), default=True)
     semantic_scholar_base_url: str = os.getenv("SEMANTIC_SCHOLAR_BASE_URL", "https://api.semanticscholar.org/graph/v1")
     semantic_scholar_api_key: str | None = _optional_env("SEMANTIC_SCHOLAR_API_KEY")
     brave_base_url: str = os.getenv("BRAVE_BASE_URL", "https://api.search.brave.com")
