@@ -42,6 +42,7 @@ from .rate_limit import require_rate_limit
 from .logging_setup import configure_logging
 from .runtime_state import acquire_instance_lock, cleanup_runtime_state, log_cleanup_result
 from .routes.settings import router as settings_router
+from .routes.system import router as system_router
 from .schemas import (
     AcquisitionItemsListResponse,
     AcquisitionItemOut,
@@ -101,6 +102,7 @@ def _load_hmi_partial(name: str) -> str:
 # Create tables on module load for v1 local/dev simplicity.
 app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_static")
 app.include_router(settings_router)
+app.include_router(system_router)
 
 
 @app.on_event("startup")
@@ -213,11 +215,6 @@ async def request_trace_middleware(request: Request, call_next):
             response.status_code,
         )
     return response
-
-
-@app.get("/healthz")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
 
 
 def _reason_text(reason_code: str | None, status_value: str | None) -> str | None:
