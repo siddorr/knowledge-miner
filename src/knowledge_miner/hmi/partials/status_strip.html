@@ -1,17 +1,17 @@
-<section id="topStatusStrip" class="status-strip" aria-label="Global status">
+<section id="topStatusStrip" class="status-strip" aria-label="Global session status">
   <strong id="statusProjectName">UPW Knowledge Miner</strong>
-  <strong>Pending Tasks</strong>
-  <button id="taskReviewBtn" type="button">Review Sources: <span id="statusPendingReview">0</span></button>
-  <button id="taskDocumentsBtn" type="button">Documents Queue: <span id="statusAwaitingDocs">0</span></button>
-  <button id="taskErrorsBtn" type="button">Resolve Errors: <span id="statusDocFailures">0</span></button>
-  <span>Session: <span id="statusActiveTopic">Default Session</span></span>
+  <span>Active Session: <strong id="statusActiveSession">Default Session</strong></span>
+  <span>Pending review: <strong id="statusPendingReview">0</strong></span>
+  <span>Awaiting documents: <strong id="statusAwaitingDocs">0</strong></span>
+  <span>Document failures: <strong id="statusDocFailures">0</strong></span>
+  <span>Active discovery run: <code id="statusActiveDiscoveryRun">-</code></span>
   <span>Recent activity: <span id="statusLastRun">none</span></span>
-  <button id="statusNextActionBtn" type="button">Next Action</button>
+  <button id="statusNextActionBtn" type="button">Next: build</button>
   <form id="quickKeywordForm" class="row compact">
     <label>
-      Search New Keywords
+      Search new keywords
       <input id="quickKeywordInput" type="text" placeholder="upw membrane fouling, semiconductor rinsing">
     </label>
-    <button id="quickKeywordSearchBtn" type="submit">Search New Keywords</button>
+    <button id="quickKeywordSearchBtn" type="submit">Search</button>
   </form>
 </section>

@@ -1,6 +1,25 @@
 <section id="documents" class="panel">
   <h2>Documents</h2>
   <p class="muted">Upload PDFs directly or run automatic acquisition when needed.</p>
+  <div class="row compact summary-row">
+    <span>Downloaded: <strong id="documentsSummaryDownloaded">0</strong></span>
+    <span>Failed: <strong id="documentsSummaryFailed">0</strong></span>
+    <span>Manual uploads: <strong id="documentsSummaryManual">0</strong></span>
+    <span>Pending: <strong id="documentsSummaryPending">0</strong></span>
+  </div>
+  <div class="row compact">
+    <button id="documentsAcquirePendingBtn" type="button">Download missing</button>
+    <button id="documentsRetryFailedBtn" type="button">Retry failed</button>
+    <button id="manualExportCsvBtn" type="button">Export CSV</button>
+  </div>
+  <form id="batchUploadForm" class="row">
+    <label>
+      PDF Batch
+      <input id="batchUploadFiles" type="file" accept=".pdf,.html,.htm,application/pdf,text/html" multiple>
+    </label>
+    <button id="batchUploadSubmitBtn" type="submit">Upload PDF Batch</button>
+  </form>
+  <pre id="batchUploadResults" class="metrics">No batch upload yet.</pre>
   <form id="documentsForm" class="row compact">
     <label>
       Queue
@@ -20,18 +39,8 @@
         <option value="100">100</option>
       </select>
     </label>
-    <button id="documentsViewIssuesBtn" type="submit">View Issues</button>
-    <button id="documentsAcquirePendingBtn" type="button">Auto Acquire</button>
-    <button id="openBatchUploadBtn" type="button">Upload PDF Batch</button>
+    <button id="documentsViewIssuesBtn" type="submit">Refresh</button>
   </form>
-  <form id="batchUploadForm" class="row" hidden>
-    <label>
-      PDF Batch
-      <input id="batchUploadFiles" type="file" accept=".pdf,.html,.htm,application/pdf,text/html" multiple>
-    </label>
-    <button id="batchUploadSubmitBtn" type="submit">Start Batch Upload</button>
-  </form>
-  <pre id="batchUploadResults" class="metrics">No batch upload yet.</pre>
   <div id="documentsPaginationRow" class="row compact">
     <button id="documentsPrev" type="button">Prev</button>
     <button id="documentsNext" type="button">Next</button>
@@ -40,10 +49,11 @@
   <div class="row compact">
     <button id="documentsSelectAllBtn" type="button">Select All</button>
     <button id="documentsDeselectAllBtn" type="button">Deselect All</button>
+    <button id="documentsCopySelectedBtn" type="button">Copy Selected DOI/URL</button>
   </div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Select</th><th>Title</th><th>Problem</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Rank</th><th>Score</th><th>Year</th><th>Cit</th><th>Title</th><th>Status</th></tr></thead>
       <tbody id="documentsRows"></tbody>
     </table>
   </div>
@@ -60,9 +70,7 @@
   <details>
     <summary>More</summary>
     <div class="row compact">
-      <button id="documentsRetryFailedBtn" type="button">Retry Failed</button>
-      <button id="documentsCopySelectedBtn" type="button">Copy Selected DOI/URL</button>
-      <button id="manualExportCsvBtn" type="button">Export CSV</button>
+      <button id="openBatchUploadBtn" type="button">Toggle Batch Upload Panel</button>
     </div>
     <label>
       Source ID for manual upload

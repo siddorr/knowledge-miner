@@ -31,50 +31,55 @@
       </select>
     </label>
   </div>
-  <section id="reviewDetailPanel" class="panel-sub">
-    <h3>Article Details</h3>
-    <p><strong>Title:</strong> <span id="reviewDetailTitle">No source selected.</span></p>
-    <p><strong>Score:</strong> <span id="reviewDetailScore">-</span></p>
-    <p><strong>Status:</strong> <span id="reviewDetailStatus">-</span></p>
-    <p><strong>Abstract:</strong></p>
-    <pre id="reviewDetailAbstract" class="metrics">No source selected.</pre>
-    <p><strong>Source:</strong> <a id="reviewDetailLink" href="#" target="_blank" rel="noopener noreferrer">Open source</a></p>
-    <p><strong>AI signals:</strong> <span id="reviewDetailSignals">-</span></p>
-    <div class="row compact">
-      <button id="reviewDetailAcceptBtn" type="button">Accept</button>
-      <button id="reviewDetailRejectBtn" type="button">Reject</button>
-      <button id="reviewDetailLaterBtn" type="button">Later</button>
-    </div>
+  <section class="review-layout">
+    <section class="panel-sub">
+      <div class="row compact">
+        <button id="reviewBatchAcceptBtn" type="button">Accept Selected</button>
+        <button id="reviewBatchRejectBtn" type="button">Reject Selected</button>
+        <button id="reviewSelectAllBtn" type="button">Select All</button>
+        <button id="reviewDeselectAllBtn" type="button">Deselect All</button>
+      </div>
+      <div id="reviewPaginationRow" class="row compact">
+        <button id="reviewPrev" type="button">Prev</button>
+        <button id="reviewNext" type="button">Next</button>
+        <span id="reviewPage" class="muted">offset=0</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Select</th><th>Year</th><th>Cit</th><th>Score</th><th>Title</th></tr></thead>
+          <tbody id="reviewRows"></tbody>
+        </table>
+      </div>
+    </section>
+    <section id="reviewDetailPanel" class="panel-sub">
+      <h3>Article Details</h3>
+      <p><strong>Title:</strong> <span id="reviewDetailTitle">No source selected.</span></p>
+      <p><strong>Status:</strong> <span id="reviewDetailStatus">-</span></p>
+      <p><strong>Metadata:</strong> <span id="reviewDetailMeta">Year: - | Journal: - | Citations: - | Authors: - | Link: -</span></p>
+      <p><strong>AI score:</strong> <span id="reviewDetailScore">-</span></p>
+      <p><strong>AI signals:</strong> <span id="reviewDetailSignals">-</span></p>
+      <p><strong>Abstract:</strong></p>
+      <pre id="reviewDetailAbstract" class="metrics">No source selected.</pre>
+      <p><strong>Source:</strong> <a id="reviewDetailLink" href="#" target="_blank" rel="noopener noreferrer">Open source</a></p>
+      <div class="row compact">
+        <button id="reviewDetailAcceptBtn" type="button">Accept</button>
+        <button id="reviewDetailRejectBtn" type="button">Reject</button>
+        <button id="reviewDetailLaterBtn" type="button">Later</button>
+      </div>
+      <section id="fastReviewPanel" class="panel-sub" hidden>
+        <h3>Fast Review</h3>
+        <p id="fastReviewPosition" class="muted">Paper 0 of 0</p>
+        <pre id="fastReviewCard" class="metrics">No source selected.</pre>
+        <div class="row compact">
+          <button id="fastPrevBtn" type="button">Prev</button>
+          <button id="fastAcceptBtn" type="button">[A] Accept</button>
+          <button id="fastRejectBtn" type="button">[R] Reject</button>
+          <button id="fastLaterBtn" type="button">[L] Later</button>
+          <button id="fastNextBtn" type="button">Next</button>
+        </div>
+      </section>
+    </section>
   </section>
-  <section id="fastReviewPanel" class="panel-sub" hidden>
-    <h3>Fast Review</h3>
-    <p id="fastReviewPosition" class="muted">Paper 0 of 0</p>
-    <pre id="fastReviewCard" class="metrics">No source selected.</pre>
-    <div class="row compact">
-      <button id="fastPrevBtn" type="button">Prev</button>
-      <button id="fastAcceptBtn" type="button">[A] Accept</button>
-      <button id="fastRejectBtn" type="button">[R] Reject</button>
-      <button id="fastLaterBtn" type="button">[L] Later</button>
-      <button id="fastNextBtn" type="button">Next</button>
-    </div>
-  </section>
-  <div class="row compact">
-    <button id="reviewBatchAcceptBtn" type="button">Accept Selected</button>
-    <button id="reviewBatchRejectBtn" type="button">Reject Selected</button>
-    <button id="reviewSelectAllBtn" type="button">Select All</button>
-    <button id="reviewDeselectAllBtn" type="button">Deselect All</button>
-  </div>
-  <div id="reviewPaginationRow" class="row compact">
-    <button id="reviewPrev" type="button">Prev</button>
-    <button id="reviewNext" type="button">Next</button>
-    <span id="reviewPage" class="muted">offset=0</span>
-  </div>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Select</th><th>Title</th><th>Score</th><th>Status</th></tr></thead>
-      <tbody id="reviewRows"></tbody>
-    </table>
-  </div>
   <button id="reviewRefreshBtn" type="button">Refresh Review Queue</button>
   <p id="reviewState" class="muted"></p>
   <div class="row compact">

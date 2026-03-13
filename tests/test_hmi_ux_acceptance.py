@@ -95,7 +95,7 @@ def test_hmi_route_exposes_operator_first_shell_and_advanced_section():
     assert "Discover" in body
     assert "Review" in body
     assert "Documents" in body
-    assert "Library" in body
+    assert "Library Export" in body
     assert "Advanced" in body
     assert "Global Search" in body
 
@@ -114,16 +114,16 @@ def test_hmi_first_time_flow_labels_and_no_required_manual_ids():
     response = client.get("/hmi")
     assert response.status_code == 200
     body = response.text
-    assert "First-time-user flow: Discover -> Review -> Documents -> Library." in body
+    assert "First-time-user flow: Discover -> Review -> Documents -> Library Export." in body
     assert "Run One Iteration" in body
     assert "Run Next Citation Iteration" in body
-    assert "Search New Keywords" in body
+    assert "Search new keywords" in body
     assert "Queue auto-loads when you open Review or change filters." in body
     assert "Refresh Review Queue" in body
-    assert "View Issues" in body
-    assert "Save Session" in body
-    assert "Load Session" in body
+    assert "Refresh" in body
+    assert "Save" in body
+    assert "Load" in body
     assert "Fast review" in body
-    assert "Library" in body
+    assert "Library Export" in body
     assert "Technical details" in body
     assert "Max iterations" not in body

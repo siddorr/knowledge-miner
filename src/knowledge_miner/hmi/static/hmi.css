@@ -249,6 +249,20 @@ th {
   grid-template-columns: 220px 1fr 300px;
 }
 
+.review-layout {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.summary-row {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fcfcf8;
+}
+
 .panel-sub {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -327,6 +341,10 @@ footer.pollbar {
   }
 
   .build-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .review-layout {
     grid-template-columns: 1fr;
   }
 }

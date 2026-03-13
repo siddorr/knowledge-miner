@@ -332,11 +332,8 @@ def test_manual_downloads_csv_endpoint(monkeypatch):
     assert resp.status_code == 200
     assert "text/csv" in resp.headers.get("content-type", "")
     body = resp.text
-    assert (
-        "item_id,source_id,status,attempt_count,last_error,title,doi,source_url,selected_url,manual_url_candidates,reason_code,legal_candidates"
-        in body
-    )
-    assert "acq_item_manual_1" in body
+    assert "title,authors,year,journal,citations,ai_score,status,source_link" in body
+    assert "UPW control in semiconductor lines" in body
 
 
 def test_manual_upload_registration(monkeypatch, tmp_path: Path):

@@ -7,6 +7,7 @@ export function createLibraryModule(deps) {
     escapeHtml,
     apiGet,
     apiPost,
+    apiDownload,
     runBusy,
     getParseRunId,
     setLatestId,
@@ -20,6 +21,10 @@ export function createLibraryModule(deps) {
       docs: (el("libraryDocsFilter")?.value || "all").trim(),
       parsed: (el("libraryParsedFilter")?.value || "all").trim(),
     };
+  }
+
+  function ensureExportSelection() {
+    if (!(state.search.exportSelection instanceof Set)) state.search.exportSelection = new Set();
   }
 
   function libraryDocPassesFilters(doc, filters) {
@@ -40,12 +45,14 @@ export function createLibraryModule(deps) {
       setText("searchPreview", "No document selected.");
       return;
     }
+    const authors = Array.isArray(doc.authors) ? doc.authors.slice(0, 3).join(", ") : doc.authors || "-";
+    const metadata = `Year: ${doc.publication_year || "-"} | Journal: ${doc.journal || "-"} | Citations: ${doc.citations || doc.citation_count || "-"} | Authors: ${authors} | Link: ${doc.url || "-"}`;
     setText(
       "searchPreview",
       JSON.stringify(
         {
           title: doc.title || "",
-          publication_year: doc.publication_year || null,
+          metadata,
           status: doc.status || "",
           decision: doc.decision || "",
           confidence: doc.confidence ?? null,
@@ -59,15 +66,18 @@ export function createLibraryModule(deps) {
   }
 
   function renderLibraryRows(items, modeLabel) {
+    ensureExportSelection();
     renderTable(
       "searchRows",
       items.map((item, idx) => {
-        const meta = item.document
-          ? `${item.document.status || "-"} | year=${item.document.publication_year || "-"} | decision=${item.document.decision || "-"}`
-          : "-";
-        return `<tr><td>${escapeHtml(item.snippet || item.document?.title || item.document_id || "")}</td><td>${escapeHtml(meta)}</td><td><button type="button" class="search-action" data-action="doc" data-index="${idx}">Doc</button> <button type="button" class="search-action" data-action="text" data-index="${idx}">Text</button> <button type="button" class="search-action" data-action="source" data-index="${idx}">Source</button></td></tr>`;
+        const checked = state.search.exportSelection.has(item.document_id) ? " checked" : "";
+        const year = item.document?.publication_year ?? "-";
+        const score = item.document?.relevance_score ?? item.score ?? "-";
+        const citations = item.document?.citations ?? item.document?.citation_count ?? "-";
+        const title = item.document?.title || item.snippet || item.document_id || "";
+        return `<tr><td><input type="checkbox" class="library-select" data-document-id="${escapeHtml(item.document_id)}"${checked}></td><td>${idx + 1}</td><td>${escapeHtml(String(score))}</td><td>${escapeHtml(String(year))}</td><td>${escapeHtml(String(citations))}</td><td><button type="button" class="search-action" data-action="doc" data-index="${idx}">${escapeHtml(title)}</button> <button type="button" class="search-action" data-action="text" data-index="${idx}">Text</button> <button type="button" class="search-action" data-action="source" data-index="${idx}">Source</button></td></tr>`;
       }),
-      3,
+      6,
     );
     setText("searchState", `${modeLabel}: ${items.length}`);
   }
@@ -185,7 +195,16 @@ export function createLibraryModule(deps) {
 
   async function handleSearchAction(event) {
     const target = event.target;
-    if (!(target instanceof HTMLElement) || !target.classList.contains("search-action")) return;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.classList.contains("library-select")) {
+      ensureExportSelection();
+      const documentId = target.dataset.documentId || "";
+      if (!documentId) return;
+      if (target.checked) state.search.exportSelection.add(documentId);
+      else state.search.exportSelection.delete(documentId);
+      return;
+    }
+    if (!target.classList.contains("search-action")) return;
     const action = target.dataset.action || "";
     const index = Number(target.dataset.index || "-1");
     if (index < 0) return;
@@ -196,6 +215,73 @@ export function createLibraryModule(deps) {
     } catch (err) {
       setText("searchError", `Action failed: ${err.message}`);
     }
+  }
+
+  function selectedExportRows() {
+    ensureExportSelection();
+    const selected = state.search.items.filter((row) => state.search.exportSelection.has(row.document_id));
+    if (selected.length) return selected;
+    const size = Number(el("libraryExportSize")?.value || "20");
+    return state.search.items.slice(0, Math.max(1, size));
+  }
+
+  function csvCell(value) {
+    const raw = String(value ?? "");
+    const escaped = raw.replaceAll('"', '""');
+    return `"${escaped}"`;
+  }
+
+  async function exportMetadataCsv() {
+    const rows = selectedExportRows();
+    const header = ["title", "authors", "year", "journal", "citations", "ai_score", "status", "source_link"];
+    const lines = [header.join(",")];
+    for (const row of rows) {
+      const doc = row.document || {};
+      lines.push(
+        [
+          csvCell(doc.title || row.snippet || row.document_id),
+          csvCell(doc.authors || ""),
+          csvCell(doc.publication_year || ""),
+          csvCell(doc.journal || ""),
+          csvCell(doc.citations || doc.citation_count || ""),
+          csvCell(doc.relevance_score ?? row.score ?? ""),
+          csvCell(doc.status || ""),
+          csvCell(doc.url || ""),
+        ].join(","),
+      );
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `library_export_${Date.now()}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    setText("searchState", `Exported metadata CSV for ${rows.length} rows.`);
+  }
+
+  async function exportPdfZip() {
+    const parseRunId = getParseRunId();
+    if (!parseRunId) throw new Error("parse run id is required");
+    const parseRun = await apiGet(`/v1/parse/runs/${encodeURIComponent(parseRunId)}`);
+    if (!parseRun?.acq_run_id) throw new Error("acquisition run id not found");
+    await apiDownload(`/v1/acquisition/runs/${encodeURIComponent(parseRun.acq_run_id)}/manifest`, `library_export_${parseRun.acq_run_id}.json`);
+    setText("searchState", "Downloaded acquisition manifest. ZIP export endpoint is planned.");
+  }
+
+  function includeSelected() {
+    ensureExportSelection();
+    const size = Number(el("libraryExportSize")?.value || "20");
+    for (const row of state.search.items.slice(0, Math.max(1, size))) state.search.exportSelection.add(row.document_id);
+    renderLibraryRows(state.search.items, "Library export selection");
+  }
+
+  function excludeSelected() {
+    ensureExportSelection();
+    state.search.exportSelection.clear();
+    renderLibraryRows(state.search.items, "Library export selection");
   }
 
   return {
@@ -211,6 +297,9 @@ export function createLibraryModule(deps) {
     showSearchText,
     showSearchSource,
     handleSearchAction,
+    exportMetadataCsv,
+    exportPdfZip,
+    includeSelected,
+    excludeSelected,
   };
 }
-

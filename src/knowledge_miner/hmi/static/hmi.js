@@ -106,7 +106,9 @@ function broadcastMessage(type, payload = {}) {
 function broadcastSnapshot() {
   if (!state.multiTab.isLeader) return;
   broadcastMessage("ui_snapshot", {
-    systemBadges: (el("systemBadges")?.textContent || "").trim(),
+    footerSystemReady: (el("footerSystemReady")?.textContent || "").trim(),
+    footerAiReady: (el("footerAiReady")?.textContent || "").trim(),
+    footerDbReady: (el("footerDbReady")?.textContent || "").trim(),
     pollState: (el("pollState")?.textContent || "").trim(),
     pendingReview: (el("statusPendingReview")?.textContent || "0").trim(),
     awaitingDocs: (el("statusAwaitingDocs")?.textContent || "0").trim(),
@@ -121,7 +123,9 @@ function broadcastSnapshot() {
 
 function applySnapshot(payload) {
   if (!payload) return;
-  if (payload.systemBadges) setText("systemBadges", payload.systemBadges);
+  if (payload.footerSystemReady) setText("footerSystemReady", payload.footerSystemReady);
+  if (payload.footerAiReady) setText("footerAiReady", payload.footerAiReady);
+  if (payload.footerDbReady) setText("footerDbReady", payload.footerDbReady);
   if (payload.pollState) setPollState(`Follower sync: ${payload.pollState}`);
   if (payload.pendingReview !== undefined) setText("statusPendingReview", String(payload.pendingReview));
   if (payload.awaitingDocs !== undefined) setText("statusAwaitingDocs", String(payload.awaitingDocs));
@@ -293,7 +297,7 @@ const review = createReviewModule({
   activeSection,
 });
 
-const library = createLibraryModule({
+  const library = createLibraryModule({
   state,
   el,
   setText,
@@ -301,6 +305,7 @@ const library = createLibraryModule({
   escapeHtml,
   apiGet,
   apiPost,
+  apiDownload,
   runBusy,
   getParseRunId,
   setLatestId,
@@ -647,6 +652,7 @@ function renderReviewDetails(row) {
     setText("reviewDetailTitle", "No source selected.");
     setText("reviewDetailScore", "-");
     setText("reviewDetailStatus", "-");
+    setText("reviewDetailMeta", "Year: - | Journal: - | Citations: - | Authors: - | Link: -");
     setText("reviewDetailAbstract", "No source selected.");
     setText("reviewDetailSignals", "-");
     const link = el("reviewDetailLink");
@@ -656,6 +662,15 @@ function renderReviewDetails(row) {
   setText("reviewDetailTitle", row.title || "");
   setText("reviewDetailScore", String(row.heuristic_score ?? row.relevance_score ?? "-"));
   setText("reviewDetailStatus", reviewStatusLabel(row));
+  const year = row.year ?? "-";
+  const journal = row.journal || "-";
+  const citations = row.citations ?? row.citation_count ?? "-";
+  const authors = Array.isArray(row.authors) ? row.authors.slice(0, 3).join(", ") : row.authors || "-";
+  const link = row.url || "-";
+  setText(
+    "reviewDetailMeta",
+    `Year: ${year} | Journal: ${journal} | Citations: ${citations} | Authors: ${authors} | Link: ${link}`,
+  );
   setText("reviewDetailAbstract", row.abstract || "");
   setText("reviewDetailSignals", formatReviewSignals(row));
   const link = el("reviewDetailLink");
@@ -757,12 +772,12 @@ function activeTopic() {
 }
 
 function renderBuildDetails() {
-  const topic = activeTopic();
-  if (!topic) {
+  const session = activeTopic();
+  if (!session) {
     setText("buildDetails", "No session selected.");
     return;
   }
-  const coverage = state.build.coverageByTopic[topic.id] || {
+  const coverage = state.build.coverageByTopic[session.id] || {
     candidates: 0,
     accepted: 0,
     pending_review: 0,
@@ -773,10 +788,10 @@ function renderBuildDetails() {
     "buildDetails",
     JSON.stringify(
       {
-        topic_id: topic.id,
-        topic_name: topic.name,
+        session_id: session.id,
+        session_name: session.name,
         selected_tab: state.build.activeTab,
-        topic_query: state.build.topicQueriesByTopic[topic.id] || "",
+        session_query: state.build.topicQueriesByTopic[session.id] || "",
         latest_discovery_run: state.latest.discovery || null,
         coverage,
       },
@@ -784,16 +799,16 @@ function renderBuildDetails() {
       2,
     ),
   );
-  setText("statusActiveTopic", topic.name);
+  setText("statusActiveSession", session.name);
 }
 
 function renderBuildSources() {
-  const topic = activeTopic();
-  const topicId = topic?.id || "";
-  const rows = state.build.stagedSourcesByTopic[topicId] || [];
+  const session = activeTopic();
+  const sessionId = session?.id || "";
+  const rows = state.build.stagedSourcesByTopic[sessionId] || [];
   renderTable(
     "buildSourcesRows",
-    rows.map((value) => `<tr><td>${escapeHtml(topic?.name || "")}</td><td>${escapeHtml(value)}</td></tr>`),
+    rows.map((value) => `<tr><td>${escapeHtml(session?.name || "")}</td><td>${escapeHtml(value)}</td></tr>`),
     2,
   );
 }
@@ -963,7 +978,7 @@ function updateStatusStrip({
   lastRunState,
   activeTopic = "Default Session",
 }) {
-  setText("statusActiveTopic", activeTopic);
+  setText("statusActiveSession", activeTopic);
   setText("statusPendingReview", String(pendingReview));
   setText("statusAwaitingDocs", String(awaitingDocs));
   setText("statusDocFailures", String(docFailures));
@@ -1029,14 +1044,16 @@ async function loadSystemStatus() {
     const provider = payload.provider_readiness || {};
     const brave = provider.brave && provider.brave.api_key_present ? "brave:ready" : "brave:missing-key";
     const s2 = provider.semantic_scholar && provider.semantic_scholar.api_key_present ? "s2:ready" : "s2:limited";
-    const ai = payload.ai_filter_active ? "ai:active" : `ai:${payload.ai_filter_warning ? "warning" : "disabled"}`;
-    const db = payload.db_ready ? "db:ready" : `db:missing-${(payload.db_missing_tables || []).length}`;
-    const authBadge = payload.auth_enabled ? "Auth: Yes" : "Auth: No";
-    setText("systemBadges", `${authBadge} | ${db} | ${ai} | ${brave} | ${s2}`);
+    const ai = payload.ai_filter_active ? "active" : payload.ai_filter_warning ? "warning" : "disabled";
+    const db = payload.db_ready ? "ready" : `missing-${(payload.db_missing_tables || []).length}`;
+    const sys = payload.auth_enabled ? "ready" : "auth-disabled";
+    setText("footerSystemReady", `System readiness: ${sys} (${brave}, ${s2})`);
+    setText("footerAiReady", `AI readiness: ${ai}`);
+    setText("footerDbReady", `DB readiness: ${db}`);
     if (state.multiTab.isLeader) broadcastSnapshot();
     return payload;
   } catch (err) {
-    setText("systemBadges", `status unavailable: ${err.message}`);
+    setText("footerSystemReady", `System readiness: unavailable (${err.message})`);
     throw err;
   }
 }
@@ -1181,7 +1198,7 @@ async function loadReview() {
       setText("reviewState", "No active session context found. Start Discover to create a session.");
       state.review.total = 0;
       state.review.items = [];
-      renderTable("reviewRows", [], 4);
+      renderTable("reviewRows", [], 5);
       renderReviewDetails(null);
       renderFastReviewCard();
       applyPaginationControls("review", 0, state.review.offset, Number(el("reviewLimit").value));
@@ -1203,7 +1220,7 @@ async function loadReview() {
       setText("reviewError", "Active run is unavailable. Click Use Latest to switch explicitly, or start a new run.");
       state.review.total = 0;
       state.review.items = [];
-      renderTable("reviewRows", [], 4);
+      renderTable("reviewRows", [], 5);
       renderReviewDetails(null);
       renderFastReviewCard();
       applyPaginationControls("review", 0, state.review.offset, limit);
@@ -1234,13 +1251,14 @@ async function loadReview() {
   }
   renderTable(
     "reviewRows",
-    items.map((s) => {
+    items.map((s, idx) => {
       const checked = state.review.selected.has(s.id) ? " checked" : "";
       const score = s.heuristic_score ?? s.relevance_score ?? "-";
-      const statusLabel = reviewStatusLabel(s);
-      return `<tr data-source-id="${escapeHtml(s.id)}"><td><input type="checkbox" class="review-select" data-source-id="${escapeHtml(s.id)}"${checked}></td><td><button type="button" class="review-action" data-action="preview" data-source-id="${escapeHtml(s.id)}">${escapeHtml(s.title || "")}</button></td><td>${escapeHtml(String(score))}</td><td>${escapeHtml(statusLabel)}</td></tr>`;
+      const year = s.year ?? "-";
+      const citations = s.citations ?? s.citation_count ?? "-";
+      return `<tr data-source-id="${escapeHtml(s.id)}"><td><input type="checkbox" class="review-select" data-source-id="${escapeHtml(s.id)}"${checked}></td><td>${escapeHtml(String(year))}</td><td>${escapeHtml(String(citations))}</td><td>${escapeHtml(String(score))}</td><td><button type="button" class="review-action" data-action="preview" data-source-id="${escapeHtml(s.id)}">${idx + 1}. ${escapeHtml(s.title || "")}</button></td></tr>`;
     }),
-    4,
+    5,
   );
   if (items.length) {
     if (state.review.activeIndex >= items.length) state.review.activeIndex = 0;
@@ -1267,7 +1285,7 @@ async function loadDocuments() {
       setText("documentsState", "No active runs found. Start from Discover -> Run One Iteration.");
       state.documents.total = 0;
       state.documents.items = [];
-      renderTable("documentsRows", [], 4);
+      renderTable("documentsRows", [], 6);
       applyPaginationControls("documents", 0, state.documents.offset, limit);
       updateDocumentsSelectionControls();
       return true;
@@ -1280,7 +1298,7 @@ async function loadDocuments() {
     } catch (err) {
       if (String(err.message || "").includes("run_not_found")) {
         resetStaleRunContext("documents_discovery_not_found");
-        renderTable("documentsRows", [], 4);
+        renderTable("documentsRows", [], 6);
         return true;
       }
       throw err;
@@ -1314,12 +1332,13 @@ async function loadDocuments() {
     state.documents.items = pageRows;
     renderTable(
       "documentsRows",
-      pageRows.map((item) => {
+      pageRows.map((item, idx) => {
         const checked = state.documents.selected.has(item.source_id) ? " checked" : "";
         const openUrl = item.source_url || "";
-        return `<tr><td><input type="checkbox" class="documents-select" data-source-id="${escapeHtml(item.source_id)}"${checked}></td><td><button type="button" class="documents-action" data-action="select" data-source-id="${escapeHtml(item.source_id)}">${escapeHtml(item.title || "")}</button></td><td>${escapeHtml(item.problem)}</td><td>${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : "-"}</td></tr>`;
+        const status = `approved${checked ? " (selected)" : ""}`;
+        return `<tr><td>${idx + 1}</td><td>-</td><td>-</td><td>-</td><td><button type="button" class="documents-action" data-action="select" data-source-id="${escapeHtml(item.source_id)}">${escapeHtml(item.title || "")}</button></td><td>${escapeHtml(status)} ${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open</a>` : ""} <input type="checkbox" class="documents-select" data-source-id="${escapeHtml(item.source_id)}"${checked}></td></tr>`;
       }),
-      4,
+      6,
     );
     setText("documentsPage", `offset=${state.documents.offset}, limit=${limit}, total=${total}`);
     applyPaginationControls("documents", total, state.documents.offset, limit);
@@ -1344,7 +1363,7 @@ async function loadDocuments() {
     if (String(err.message || "").includes("run_not_found")) {
       resetStaleRunContext("documents_not_found");
       state.documents.total = 0;
-      renderTable("documentsRows", [], 4);
+      renderTable("documentsRows", [], 6);
       applyPaginationControls("documents", 0, state.documents.offset, limit);
       return true;
     }
@@ -1394,7 +1413,7 @@ async function loadDocuments() {
 
   renderTable(
     "documentsRows",
-    pageRows.map((item) => {
+    pageRows.map((item, idx) => {
       const openUrl = item.selected_url || item.source_url || "";
       const checked = state.documents.selected.has(item.source_id) ? " checked" : "";
       const openLink = openUrl ? ` <a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : "";
@@ -1406,13 +1425,24 @@ async function loadDocuments() {
       } else if (item.status === "downloaded") {
         nextStep = "Acquired";
       }
-      return `<tr><td><input type="checkbox" class="documents-select" data-source-id="${escapeHtml(item.source_id)}"${checked}></td><td><button type="button" class="documents-action" data-action="select" data-source-id="${escapeHtml(item.source_id)}">${escapeHtml(item.title || "")}</button></td><td>${escapeHtml(item.problem)}</td><td>${nextStep}${openLink}</td></tr>`;
+      const score = item.score ?? "-";
+      const year = item.year ?? "-";
+      const citations = item.citations ?? "-";
+      return `<tr><td>${idx + 1}</td><td>${escapeHtml(String(score))}</td><td>${escapeHtml(String(year))}</td><td>${escapeHtml(String(citations))}</td><td><button type="button" class="documents-action" data-action="select" data-source-id="${escapeHtml(item.source_id)}">${escapeHtml(item.title || "")}</button></td><td>${nextStep}${openLink} <input type="checkbox" class="documents-select" data-source-id="${escapeHtml(item.source_id)}"${checked}></td></tr>`;
     }),
-    4,
+    6,
   );
   setText("documentsPage", `offset=${state.documents.offset}, limit=${limit}, total=${total}`);
   applyPaginationControls("documents", total, state.documents.offset, limit);
   setText("documentsState", `Loaded ${total} items for ${acqRunId}`);
+  const downloadedCount = normalized.filter((row) => row.status === "downloaded").length;
+  const failedCount = normalized.filter((row) => row.status === "failed" || row.status === "partial").length;
+  const manualCount = normalized.filter((row) => row.reason_code === "manual_complete").length;
+  const pendingCount = normalized.filter((row) => row.status === "queued").length;
+  setText("documentsSummaryDownloaded", String(downloadedCount));
+  setText("documentsSummaryFailed", String(failedCount));
+  setText("documentsSummaryManual", String(manualCount));
+  setText("documentsSummaryPending", String(pendingCount));
   if (!total) {
     if (run.status === "queued" || run.status === "running") {
       setText("documentsDetails", "Acquisition is still processing. Items will appear as they are resolved.");
@@ -1990,6 +2020,30 @@ async function handleSearchAction(event) {
   return library.handleSearchAction(event);
 }
 
+async function libraryExportMetadataCsv() {
+  try {
+    await library.exportMetadataCsv();
+  } catch (err) {
+    setText("searchError", `Export failed: ${err.message}`);
+  }
+}
+
+async function libraryExportPdfZip() {
+  try {
+    await library.exportPdfZip();
+  } catch (err) {
+    setText("searchError", `Export failed: ${err.message}`);
+  }
+}
+
+function libraryIncludeSelected() {
+  library.includeSelected();
+}
+
+function libraryExcludeSelected() {
+  library.excludeSelected();
+}
+
 async function refreshCurrentSection() {
   const section = activeSection();
   if (section === "build") return loadDashboard();
@@ -2315,6 +2369,11 @@ function init() {
   addListener("searchForm", "submit", runSearch);
   addListener("libraryFilterForm", "submit", runSearch);
   addListener("searchRows", "click", handleSearchAction);
+  addListener("searchRows", "change", handleSearchAction);
+  addListener("libraryExportCsvBtn", "click", libraryExportMetadataCsv);
+  addListener("libraryExportZipBtn", "click", libraryExportPdfZip);
+  addListener("libraryIncludeSelectedBtn", "click", libraryIncludeSelected);
+  addListener("libraryExcludeSelectedBtn", "click", libraryExcludeSelected);
 
   addListener("loadAiSettingsBtn", "click", loadAiSettings);
   addListener("saveAiSettingsBtn", "click", saveAiSettings);
@@ -2349,9 +2408,6 @@ function init() {
     const route = state.statusStrip.nextActionRoute || "build";
     window.location.hash = `#${route}`;
   });
-  addListener("taskReviewBtn", "click", () => (window.location.hash = "#review"));
-  addListener("taskDocumentsBtn", "click", () => (window.location.hash = "#documents"));
-  addListener("taskErrorsBtn", "click", () => (window.location.hash = "#documents"));
 
   initPagination();
   document.addEventListener("keydown", handleReviewShortcuts);

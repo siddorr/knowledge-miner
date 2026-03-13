@@ -187,7 +187,8 @@ def test_e2e_failed_acquisition_to_manual_recovery_flow(monkeypatch, tmp_path):
         csv_resp = client.get(f"/v1/acquisition/runs/{acq_run_id}/manual-downloads.csv", headers=_auth_headers())
         assert csv_resp.status_code == 200
         assert "text/csv" in csv_resp.headers.get("content-type", "")
-        assert source_id in csv_resp.text
+        assert "title,authors,year,journal,citations,ai_score,status,source_link" in csv_resp.text
+        assert "UPW fallback source" in csv_resp.text
 
         payload = {
             "source_id": source_id,

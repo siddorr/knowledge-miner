@@ -52,11 +52,14 @@ export function createDocumentsModule(deps) {
     if (action === "select") {
       const item = state.documents.items.find((row) => row.source_id === sourceId);
       if (!item) return;
+      const authors = Array.isArray(item.authors) ? item.authors.slice(0, 3).join(", ") : item.authors || "-";
+      const metadata = `Year: ${item.year || "-"} | Journal: ${item.journal || "-"} | Citations: ${item.citations || "-"} | Authors: ${authors} | Link: ${item.source_url || item.selected_url || "-"}`;
       setText(
         "documentsDetails",
         JSON.stringify(
           {
             title: item.title,
+            metadata,
             source_id: item.source_id,
             doi: item.doi,
             source_url: item.source_url,
@@ -280,4 +283,3 @@ export function createDocumentsModule(deps) {
     uploadBatchDocuments,
   };
 }
-

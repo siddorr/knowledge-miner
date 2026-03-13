@@ -26,18 +26,18 @@ def test_hmi_shell_route_and_navigation():
     assert "Later" in body
     assert "Accept Selected" in body
     assert "Reject Selected" in body
-    assert "Documents Queue" in body
+    assert "Documents" in body
     assert "Article Details" in body
     assert "Copy Error" in body
     assert "Copy Runs Error" in body
     assert "Copy Parse Error" in body
     assert "Documents" in body
-    assert "Retry Failed" in body
+    assert "Retry failed" in body
     assert "Copy Selected DOI/URL" in body
     assert "documentsDetails" in body
     assert "Library Export" in body
-    assert "Unified browser + search. Leave query empty to browse corpus." in body
-    assert "Load Library" in body
+    assert "Ranked export workspace for final paper package generation." in body
+    assert "Load Ranked Results" in body
     assert "Session Contains" in body
     assert "Parsed Decision" in body
     assert "searchPreview" in body
@@ -50,9 +50,9 @@ def test_hmi_shell_route_and_navigation():
     assert "inProgressBanner" in body
     assert "inProgressState" in body
     assert "liveUpdatesState" in body
-    assert "Pending Tasks" in body
-    assert "Review Sources:" in body
-    assert "Resolve Errors:" in body
+    assert "Active Session:" in body
+    assert "Pending review:" in body
+    assert "Document failures:" in body
     assert "statusNextActionBtn" in body
     assert "statusActiveDiscoveryRun" in body
     assert "useLatestRunBtn" in body
@@ -60,7 +60,7 @@ def test_hmi_shell_route_and_navigation():
     assert "/hmi/static/hmi.css?v=" in body
     assert "Run One Iteration" in body
     assert "Run Next Citation Iteration" in body
-    assert "Search New Keywords" in body
+    assert "Search new keywords" in body
     assert "Mode" in body
     assert "Fast review" in body
     assert "Refresh Review Queue" in body
@@ -75,7 +75,7 @@ def test_hmi_shell_route_and_navigation():
     assert "__KM_HMI_DEFAULT_TOKEN__" in body
     assert "__KM_HMI_LAUNCH_SECTION__" in body
     assert "Max iterations" not in body
-    assert "View Issues" in body
+    assert "Refresh" in body
     assert "Upload PDF Batch" in body
     assert "statusProgressBar" in body
     assert "freshnessState" in body
@@ -89,7 +89,7 @@ def test_hmi_shell_route_and_navigation():
     assert "topSaveSessionBtn" in body
     assert "topLoadSessionBtn" in body
     assert "topDeleteSessionBtn" in body
-    assert "Load" in body
+    assert "Save" in body
     assert "Auto-restore latest" in body
     assert "AI Filter" in body
     assert "Global Search" in body
@@ -163,8 +163,9 @@ def test_hmi_static_js_served():
     assert "documentsCopySelected" in body
     assert "paginationState" in body
     assert "applyPaginationControls" in body
-    assert "Auth: No" in body
-    assert "Auth: Yes" in body
+    assert "footerSystemReady" in body
+    assert "footerAiReady" in body
+    assert "footerDbReady" in body
     assert "openLiveUpdatesChannel" in body
     assert "Live updates connected. Idle mode: interval polling paused." in body
     assert "scheduleReviewAutoLoad" in body
