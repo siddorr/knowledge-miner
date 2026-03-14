@@ -210,6 +210,25 @@ def test_create_acquisition_run_requires_completed_discovery_run(monkeypatch):
     assert resp.json()["detail"] == "run_not_complete"
 
 
+def test_stop_acquisition_run_marks_queued_run_failed(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    run_id, _ = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+    create_resp = client.post("/v1/acquisition/runs", json={"run_id": run_id}, headers=_auth_headers())
+    assert create_resp.status_code == 202
+    acq_run_id = create_resp.json()["acq_run_id"]
+
+    stop_resp = client.post(f"/v1/acquisition/runs/{acq_run_id}/stop", headers=_auth_headers())
+    assert stop_resp.status_code == 200
+    assert stop_resp.json()["message"] == "Acquisition run stopped."
+
+    with SessionLocal() as db:
+        run = db.get(AcquisitionRun, acq_run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error_message == "stopped_by_user"
+
+
 def test_acquisition_status_items_manifest_endpoints(monkeypatch):
     monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
     run_id, source_id = _seed_discovery_run(completed=True)

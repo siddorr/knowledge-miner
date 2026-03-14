@@ -26,6 +26,7 @@ from ..auth import require_api_key
 from ..db import get_db
 from ..models import AcquisitionItem, AcquisitionRun, Artifact, Source
 from ..rate_limit import require_rate_limit
+from ..runtime_state import request_run_stop
 from ..schemas import (
     AcquisitionItemsListResponse,
     AcquisitionItemOut,
@@ -192,6 +193,28 @@ def get_acq_run_status(
         started_at=_iso_or_none(run.created_at),
         updated_at=_iso_or_none(run.updated_at),
     )
+
+
+@router.post("/v1/acquisition/runs/{acq_run_id}/stop")
+def stop_acq_run(
+    acq_run_id: str,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> dict:
+    run = db.get(AcquisitionRun, acq_run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    if run.status not in {"queued", "running"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_not_running")
+    if run.status == "queued":
+        run.status = "failed"
+        run.error_message = "stopped_by_user"
+        db.commit()
+        return {"acq_run_id": run.id, "status": run.status, "message": "Acquisition run stopped."}
+
+    request_run_stop(base_dir=settings.runtime_state_dir, phase="acquisition", run_id=acq_run_id)
+    return {"acq_run_id": run.id, "status": run.status, "message": "Stop requested."}
 
 
 @router.get("/v1/acquisition/runs/{acq_run_id}/items", response_model=AcquisitionItemsListResponse)

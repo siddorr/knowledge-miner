@@ -235,6 +235,28 @@ def test_citation_iteration_requires_accepted_sources(monkeypatch):
     assert "Need at least 1 accepted paper" in response.json()["detail"]
 
 
+def test_stop_discovery_run_marks_queued_run_failed(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
+    client = TestClient(app)
+    response = client.post(
+        "/v1/discovery/runs",
+        json={"seed_queries": ["upw"], "max_iterations": 1},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+
+    stop_resp = client.post(f"/v1/discovery/runs/{run_id}/stop", headers=_auth_headers())
+    assert stop_resp.status_code == 200
+    assert stop_resp.json()["message"] == "Discovery run stopped."
+
+    with SessionLocal() as db:
+        run = db.get(Run, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error_message == "stopped_by_user"
+
+
 def test_citation_iteration_resume_endpoint(monkeypatch):
     monkeypatch.setattr(main_module, "enqueue_citation_iteration_run", lambda run_id, source_run_id: None)
     run_id = _seed_run_with_sources()

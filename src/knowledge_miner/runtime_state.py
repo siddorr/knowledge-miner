@@ -26,6 +26,10 @@ def _locks_dir(base_dir: str | Path) -> Path:
     return Path(base_dir) / "locks"
 
 
+def _stops_dir(base_dir: str | Path) -> Path:
+    return Path(base_dir) / "stops"
+
+
 def cleanup_runtime_state(*, base_dir: str | Path, enabled: bool) -> CleanupResult:
     locks_dir = _locks_dir(base_dir)
     if not enabled:
@@ -81,6 +85,28 @@ def release_run_lock(path: Path | None) -> None:
         path.unlink()
     except FileNotFoundError:
         return
+
+
+def _stop_path(*, base_dir: str | Path, phase: str, run_id: str) -> Path:
+    stops_dir = _stops_dir(base_dir)
+    stops_dir.mkdir(parents=True, exist_ok=True)
+    safe_run_id = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in run_id)
+    return stops_dir / f"{phase}_{safe_run_id}.stop"
+
+
+def request_run_stop(*, base_dir: str | Path, phase: str, run_id: str) -> Path:
+    path = _stop_path(base_dir=base_dir, phase=phase, run_id=run_id)
+    path.write_text("stop_requested\n", encoding="utf-8")
+    return path
+
+
+def clear_run_stop_request(*, base_dir: str | Path, phase: str, run_id: str) -> None:
+    path = _stop_path(base_dir=base_dir, phase=phase, run_id=run_id)
+    path.unlink(missing_ok=True)
+
+
+def is_run_stop_requested(*, base_dir: str | Path, phase: str, run_id: str) -> bool:
+    return _stop_path(base_dir=base_dir, phase=phase, run_id=run_id).exists()
 
 
 def log_cleanup_result(result: CleanupResult) -> None:

@@ -10,6 +10,7 @@ from knowledge_miner import acquisition
 from knowledge_miner.config import settings
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
+from knowledge_miner.runtime_state import request_run_stop
 
 
 def setup_function():
@@ -291,6 +292,32 @@ def test_retry_failed_only_without_previous_run_creates_no_items():
         assert items == []
 
 
+def test_execute_acquisition_run_stops_when_stop_requested(tmp_path):
+    run_id, _ = _seed_completed_run("https://publisher.example/paper.pdf")
+    original_artifacts_dir = settings.artifacts_dir
+    original_runtime_dir = settings.runtime_state_dir
+    try:
+        object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+        object.__setattr__(settings, "runtime_state_dir", str(tmp_path / "runtime"))
+        with SessionLocal() as db:
+            acq_run = acquisition.create_acquisition_run(db, run_id, retry_failed_only=False)
+
+        request_run_stop(base_dir=settings.runtime_state_dir, phase="acquisition", run_id=acq_run.id)
+        with SessionLocal() as db:
+            run = db.get(AcquisitionRun, acq_run.id)
+            assert run is not None
+            acquisition.execute_acquisition_run(db, run)
+            db.refresh(run)
+            assert run.status == "failed"
+            assert run.error_message == "stopped_by_user"
+            item = db.scalars(select(AcquisitionItem).where(AcquisitionItem.acq_run_id == run.id)).first()
+            assert item is not None
+            assert item.status == "queued"
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+        object.__setattr__(settings, "runtime_state_dir", original_runtime_dir)
+
+
 def test_execute_acquisition_run_mixed_success_and_failure(monkeypatch, tmp_path):
     run_id, source_ids = _seed_completed_run_with_two_sources()
     original_artifacts_dir = settings.artifacts_dir
@@ -391,7 +418,7 @@ def test_resolve_candidate_chain_includes_internal_repository_after_doi(monkeypa
     source = Source(
         id="s_internal",
         run_id="r1",
-        title="t",
+        title="Ultrapure water control",
         year=2020,
         url="https://publisher.example/paper",
         doi="10.1000/xyz",
@@ -424,7 +451,7 @@ def test_resolve_candidate_chain_includes_internal_repository_after_doi(monkeypa
         "unpaywall",
         "publisher",
     ]
-    assert chain[1]["candidate_url"] == "https://repo.example.org/service?doi=10.1000%2Fxyz"
+    assert chain[1]["candidate_url"] == "https://repo.example.org/service/10.1000/xyz"
 
 
 def test_create_acquisition_run_stores_internal_repository_url():
@@ -443,7 +470,7 @@ def test_acquire_source_content_prefers_internal_repository_pdf(monkeypatch):
     source = Source(
         id="s_internal_pdf",
         run_id="r1",
-        title="t",
+        title="Ultrapure water control",
         year=2020,
         url="https://publisher.example/paper",
         doi="10.1000/xyz",
@@ -501,7 +528,7 @@ def test_acquire_source_content_falls_through_internal_repository_html_to_later_
     source = Source(
         id="s_internal_html",
         run_id="r1",
-        title="t",
+        title="Ultrapure water control",
         year=2020,
         url="https://publisher.example/paper.pdf",
         doi="10.1000/xyz",
@@ -559,6 +586,120 @@ def test_acquire_source_content_falls_through_internal_repository_html_to_later_
     )
     assert result.kind == "pdf"
     assert result.selected_url_source == "publisher"
+
+
+def test_acquire_source_content_extracts_pdf_from_internal_repository_html(monkeypatch):
+    source = Source(
+        id="s_internal_embed",
+        run_id="r1",
+        title="Ultrapure water control",
+        year=2020,
+        url="https://publisher.example/paper",
+        doi="10.1000/xyz",
+        abstract=None,
+        type="academic",
+        source="openalex",
+        source_native_id=None,
+        patent_office=None,
+        patent_number=None,
+        iteration=1,
+        discovery_method="seed_search",
+        relevance_score=0.0,
+        accepted=False,
+        review_status="auto_reject",
+        ai_decision=None,
+        ai_confidence=None,
+        parent_source_id=None,
+        provenance_history=[],
+    )
+
+    def fake_download(url: str, *, timeout_seconds: float, max_bytes: int):  # noqa: ANN001
+        del timeout_seconds, max_bytes
+        if url == "https://doi.org/10.1000/xyz":
+            return acquisition.DownloadResult(
+                kind=None,
+                mime_type=None,
+                content=None,
+                url=url,
+                error="http_403",
+                retryable=False,
+            )
+        if url == "https://repo.example.org/service/10.1000/xyz":
+            html = b'<html><head><meta name="citation_pdf_url" content="/storage/abc/paper.pdf"></head></html>'
+            return acquisition.DownloadResult(
+                kind="html",
+                mime_type="text/html",
+                content=html,
+                url=url,
+                error=None,
+                retryable=False,
+            )
+        if url == "https://repo.example.org/storage/abc/paper.pdf":
+            return acquisition.DownloadResult(
+                kind="pdf",
+                mime_type="application/pdf",
+                content=b"%PDF-1.4 embedded",
+                url=url,
+                error=None,
+                retryable=False,
+            )
+        return acquisition.DownloadResult(
+            kind=None,
+            mime_type=None,
+            content=None,
+            url=url,
+            error="http_404",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(acquisition, "_download_url", fake_download)
+    monkeypatch.setattr(acquisition, "_lookup_openalex_oa_url", lambda _s: None)
+    monkeypatch.setattr(acquisition, "_lookup_unpaywall_oa_url", lambda _s: None)
+
+    result = acquisition._acquire_source_content(  # noqa: SLF001
+        source,
+        internal_repository_base_url="https://repo.example.org/service",
+    )
+    assert result.kind == "pdf"
+    assert result.selected_url_source == "internal_repository"
+    internal_attempt = next(
+        attempt for attempt in result.resolution_attempts if attempt["candidate_source"] == "internal_repository"
+    )
+    assert internal_attempt["download_attempts_count"] == 2
+    assert internal_attempt["download_result"] == "pdf"
+
+
+def test_resolve_candidate_chain_skips_internal_repository_without_doi(monkeypatch):
+    source = Source(
+        id="s_internal_no_title",
+        run_id="r1",
+        title="Ultrapure water control",
+        year=2020,
+        url="https://publisher.example/paper",
+        doi=None,
+        abstract=None,
+        type="academic",
+        source="openalex",
+        source_native_id=None,
+        patent_office=None,
+        patent_number=None,
+        iteration=1,
+        discovery_method="seed_search",
+        relevance_score=0.0,
+        accepted=False,
+        review_status="auto_reject",
+        ai_decision=None,
+        ai_confidence=None,
+        parent_source_id=None,
+        provenance_history=[],
+    )
+    monkeypatch.setattr(acquisition, "_lookup_openalex_oa_url", lambda _s: None)
+    monkeypatch.setattr(acquisition, "_lookup_unpaywall_oa_url", lambda _s: None)
+    chain = acquisition._resolve_candidate_chain(  # noqa: SLF001
+        source,
+        internal_repository_base_url="https://repo.example.org/service",
+    )
+    assert [entry["candidate_source"] for entry in chain] == ["publisher"]
 
 
 def test_pdf_artifact_checksum_and_size(monkeypatch, tmp_path):

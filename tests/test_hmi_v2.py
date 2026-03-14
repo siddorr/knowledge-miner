@@ -18,10 +18,12 @@ def test_hmi2_shell_route_and_navigation():
     body = response.text
     assert "Knowledge Miner" in body
     assert "New Session" in body
+    assert "Stop Running Task" in body
     assert "Library Export" in body
     assert "Review Sources - Pending: 0" in body
     assert "Download missing" in body
     assert "Run Next Citation Iteration" in body
+    assert "Resume Citation Expansion" in body
     assert "Selected queries: 0" in body
     assert "Run Query Status" in body
     assert "Pending</option>" in body

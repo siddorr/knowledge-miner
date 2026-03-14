@@ -57,7 +57,7 @@ function escapeHtml(value) {
 function readDom() {
   const ids = [
     "activityLine", "activityIndicator", "authStatus", "aiStatus", "dbStatus", "headerProgress", "headerProgressLabel",
-    "newSessionBtn", "saveSessionBtn", "loadSessionBtn", "deleteSessionBtn", "sessionSelect", "sessionState",
+    "newSessionBtn", "saveSessionBtn", "loadSessionBtn", "deleteSessionBtn", "stopRunningBtn", "sessionSelect", "sessionState",
     "discoverSessionName", "discoverQueryInput", "addQueryBtn", "runDiscoveryBtn", "runNextCitationBtn", "resumeCitationBtn", "discoverIterationLine",
     "discoverQueryList", "discoverSelectedCount", "discoverRunQueries", "discoverCitationHint",
     "discoverSummaryDiscovered", "discoverSummaryApproved", "discoverSummaryRejected", "discoverSummaryReviewed", "discoverSummaryPending", "discoverState",
@@ -209,6 +209,75 @@ async function api(path, options = {}) {
   return { ok: true, status: response.status, data: await response.blob(), response };
 }
 
+function errorDetail(error) {
+  if (!(error instanceof Error)) {
+    return String(error || "");
+  }
+  return error.message || "";
+}
+
+function isRunNotFoundError(error) {
+  const detail = errorDetail(error).toLowerCase();
+  return detail.includes("run_not_found") || detail.includes("\"run_not_found\"");
+}
+
+async function rebindSessionToLatestRun(reasonText) {
+  const session = activeSession();
+  if (!session) {
+    return false;
+  }
+  if (!state.latest.discovery) {
+    try {
+      await loadLatestIds();
+    } catch {
+      // best effort
+    }
+  }
+  const latestRunId = state.latest.discovery || "";
+  if (!latestRunId) {
+    els.sessionState.textContent = "No discovery runs found yet. Start discovery.";
+    if (els.discoverState) {
+      els.discoverState.textContent = "No discovery runs found yet. Start discovery.";
+    }
+    return false;
+  }
+  const previous = session.discoveryRunId || "";
+  session.discoveryRunId = latestRunId;
+  persistSessions();
+  renderSessions();
+  if (reasonText) {
+    els.sessionState.textContent = `${reasonText} Switched to latest run: ${latestRunId}.`;
+  }
+  if (!previous || previous !== latestRunId) {
+    if (els.discoverState) {
+      els.discoverState.textContent = `Recovered session binding to latest run: ${latestRunId}.`;
+    }
+  }
+  return true;
+}
+
+async function ensureBoundDiscoveryRun() {
+  const session = activeSession();
+  if (!session) {
+    return "";
+  }
+  const runId = (session.discoveryRunId || "").trim();
+  if (!runId) {
+    await rebindSessionToLatestRun("Session had no discovery run.");
+    return activeSession()?.discoveryRunId || "";
+  }
+  try {
+    await api(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
+    return runId;
+  } catch (error) {
+    if (!isRunNotFoundError(error)) {
+      throw error;
+    }
+    await rebindSessionToLatestRun("Saved discovery run was not found.");
+    return activeSession()?.discoveryRunId || "";
+  }
+}
+
 function setProgress(percent, label) {
   const value = Number.isFinite(percent) ? percent : 0;
   els.headerProgress.value = value;
@@ -246,7 +315,36 @@ function renderShell() {
   if (els.internalRepoUrlInput) {
     els.internalRepoUrlInput.value = state.internalRepositoryBaseUrl;
   }
+  renderStopButton();
   renderActivity();
+}
+
+function currentStoppableTask() {
+  const session = activeSession();
+  if (session.acquisitionRunId && ["queued", "running"].includes(state.currentAcquisitionStatus?.stage_status || "")) {
+    return {
+      kind: "acquisition",
+      runId: session.acquisitionRunId,
+      label: state.currentAcquisitionStatus?.stage_status === "queued" ? "Stop Queued Acquisition" : "Stop Acquisition",
+    };
+  }
+  if (session.discoveryRunId && ["queued", "running"].includes(state.currentDiscoveryStatus?.stage_status || "")) {
+    return {
+      kind: "discovery",
+      runId: session.discoveryRunId,
+      label: state.currentDiscoveryStatus?.stage_status === "queued" ? "Stop Queued Discovery" : "Stop Discovery",
+    };
+  }
+  return null;
+}
+
+function renderStopButton() {
+  if (!els.stopRunningBtn) {
+    return;
+  }
+  const task = currentStoppableTask();
+  els.stopRunningBtn.disabled = !task;
+  els.stopRunningBtn.textContent = task ? task.label : "Stop Running Task";
 }
 
 function renderSessionQueries() {
@@ -298,9 +396,6 @@ function bindLatestIdsToSession() {
   const session = activeSession();
   if (!session.discoveryRunId && state.latest.discovery) {
     session.discoveryRunId = state.latest.discovery;
-  }
-  if (!session.acquisitionRunId && state.latest.acquisition) {
-    session.acquisitionRunId = state.latest.acquisition;
   }
 }
 
@@ -405,7 +500,7 @@ function updateCitationAvailability(acceptedCount) {
     : "Citation iteration is available for the current session.";
 }
 
-async function loadDiscover() {
+async function loadDiscover(recoverOnNotFound = true) {
   const session = activeSession();
   renderSessions();
   state.currentDiscoveryStatus = null;
@@ -420,13 +515,28 @@ async function loadDiscover() {
     els.resumeCitationBtn.disabled = true;
     return;
   }
-  const [runResult, allResult, pendingResult, rejectedResult, queryResult] = await Promise.all([
-    api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}`),
-    api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=all&limit=1000`),
-    api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=needs_review&limit=1000`),
-    api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=rejected&limit=1000`),
-    api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/queries`),
-  ]);
+  let runResult;
+  let allResult;
+  let pendingResult;
+  let rejectedResult;
+  let queryResult;
+  try {
+    [runResult, allResult, pendingResult, rejectedResult, queryResult] = await Promise.all([
+      api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}`),
+      api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=all&limit=1000`),
+      api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=needs_review&limit=1000`),
+      api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=rejected&limit=1000`),
+      api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/queries`),
+    ]);
+  } catch (error) {
+    if (recoverOnNotFound && isRunNotFoundError(error)) {
+      const rebound = await rebindSessionToLatestRun("Saved discovery run was not found.");
+      if (rebound) {
+        return loadDiscover(false);
+      }
+    }
+    throw error;
+  }
   const run = runResult.data;
   state.currentDiscoveryStatus = run;
   state.discoverRunQueries = queryResult.data.queries || [];
@@ -500,7 +610,7 @@ function renderReviewRows() {
   renderReviewDetail();
 }
 
-async function loadReview() {
+async function loadReview(recoverOnNotFound = true) {
   const session = activeSession();
   const queue = (els.reviewStatusFilter?.value || "pending").trim();
   const status = REVIEW_STATUS_TO_API[queue] || "needs_review";
@@ -511,7 +621,18 @@ async function loadReview() {
     els.reviewState.textContent = "No discovery run attached to the active session.";
     return;
   }
-  const result = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=${encodeURIComponent(status)}&limit=200`);
+  let result;
+  try {
+    result = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=${encodeURIComponent(status)}&limit=200`);
+  } catch (error) {
+    if (recoverOnNotFound && isRunNotFoundError(error)) {
+      const rebound = await rebindSessionToLatestRun("Saved discovery run was not found.");
+      if (rebound) {
+        return loadReview(false);
+      }
+    }
+    throw error;
+  }
   state.reviewItems = result.data.items || [];
   state.reviewIndex = state.reviewItems.length ? 0 : -1;
   state.selectedReviewSourceId = state.reviewItems[0]?.id || "";
@@ -604,23 +725,47 @@ function renderDocuments() {
   renderDocumentsDetail();
 }
 
-async function loadDocuments() {
+async function loadDocuments(recoverOnNotFound = true) {
   const session = activeSession();
   state.currentAcquisitionStatus = null;
   if (!session.discoveryRunId) {
     state.documentRows = [];
     state.selectedDocumentSourceId = "";
+    els.documentsDownloaded.textContent = "0";
+    els.documentsFailed.textContent = "0";
+    els.documentsManual.textContent = "0";
+    els.documentsPending.textContent = "0";
+    els.documentsBadge.textContent = "0";
+    els.documentsState.textContent = "No discovery run attached to the active session.";
     renderDocuments();
     return;
   }
-  const acceptedResult = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=accepted&limit=1000`);
+  let acceptedResult;
+  try {
+    acceptedResult = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=accepted&limit=1000`);
+  } catch (error) {
+    if (recoverOnNotFound && isRunNotFoundError(error)) {
+      const rebound = await rebindSessionToLatestRun("Saved discovery run was not found.");
+      if (rebound) {
+        return loadDocuments(false);
+      }
+    }
+    throw error;
+  }
   const accepted = acceptedResult.data.items || [];
   let statusData = null;
   let items = [];
   if (session.acquisitionRunId) {
     try {
       statusData = (await api(`/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}`)).data;
-      items = (await api(`/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}/items?limit=1000`)).data.items || [];
+      if (statusData?.discovery_run_id === session.discoveryRunId) {
+        items = (await api(`/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}/items?limit=1000`)).data.items || [];
+      } else {
+        session.acquisitionRunId = "";
+        statusData = null;
+        items = [];
+        persistSessions();
+      }
     } catch {
       session.acquisitionRunId = "";
       persistSessions();
@@ -690,14 +835,25 @@ function renderLibraryRows() {
   renderLibraryDetail(detail);
 }
 
-async function loadLibrary() {
+async function loadLibrary(recoverOnNotFound = true) {
   const session = activeSession();
   if (!session.discoveryRunId) {
     state.libraryRows = [];
     renderLibraryRows();
     return;
   }
-  const result = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=accepted&limit=1000`);
+  let result;
+  try {
+    result = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=accepted&limit=1000`);
+  } catch (error) {
+    if (recoverOnNotFound && isRunNotFoundError(error)) {
+      const rebound = await rebindSessionToLatestRun("Saved discovery run was not found.");
+      if (rebound) {
+        return loadLibrary(false);
+      }
+    }
+    throw error;
+  }
   state.libraryRows = result.data.items || [];
   renderLibraryRows();
   els.libraryState.textContent = state.libraryRows.length ? "Library export data loaded." : "No accepted sources available.";
@@ -800,6 +956,36 @@ async function startAcquisition(retryFailedOnly, selectedSourceIds = null) {
     persistSessions();
     await loadLatestIds();
     await loadDocuments();
+  } finally {
+    endBusy();
+  }
+}
+
+async function stopRunningTask() {
+  const task = currentStoppableTask();
+  if (!task) {
+    els.activityLine.textContent = "No running task to stop.";
+    return;
+  }
+  beginBusy(`Stopping ${task.kind}`);
+  try {
+    const path = task.kind === "acquisition"
+      ? `/v1/acquisition/runs/${encodeURIComponent(task.runId)}/stop`
+      : `/v1/discovery/runs/${encodeURIComponent(task.runId)}/stop`;
+    await api(path, { method: "POST" });
+    if (task.kind === "acquisition") {
+      els.documentsState.textContent = "Stop requested.";
+    } else {
+      els.discoverState.textContent = "Stop requested.";
+    }
+    await refreshAll();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (task.kind === "acquisition") {
+      els.documentsState.textContent = message;
+    } else {
+      els.discoverState.textContent = message;
+    }
   } finally {
     endBusy();
   }
@@ -1012,7 +1198,6 @@ function connectLiveUpdates() {
   state.eventSource.addEventListener("queue_updated", async (event) => {
     const payload = JSON.parse(event.data || "{}");
     els.reviewBadge.textContent = String(payload.pending_review || 0);
-    els.documentsBadge.textContent = String(payload.doc_issues || 0);
     await loadReview();
     await loadDocuments();
   });
@@ -1041,12 +1226,33 @@ async function refreshAll() {
   beginBusy("Refreshing session state");
   try {
     await loadLatestIds();
+    try {
+      await ensureBoundDiscoveryRun();
+    } catch {
+      // Keep refresh best-effort; pane loaders will surface actionable state.
+    }
     await loadSystemStatus();
     await loadProviderSettings();
-    await loadDiscover();
-    await loadReview();
-    await loadDocuments();
-    await loadLibrary();
+    try {
+      await loadDiscover();
+    } catch (error) {
+      els.discoverState.textContent = `Unable to load discover data: ${errorDetail(error)}`;
+    }
+    try {
+      await loadReview();
+    } catch (error) {
+      els.reviewState.textContent = `Unable to load review queue: ${errorDetail(error)}`;
+    }
+    try {
+      await loadDocuments();
+    } catch (error) {
+      els.documentsState.textContent = `Unable to load documents: ${errorDetail(error)}`;
+    }
+    try {
+      await loadLibrary();
+    } catch (error) {
+      els.libraryState.textContent = `Unable to load library: ${errorDetail(error)}`;
+    }
   } finally {
     endBusy();
   }
@@ -1132,6 +1338,7 @@ function wireEvents() {
     await refreshAll();
     els.sessionState.textContent = `Deleted session. Active: ${activeSession().name}`;
   });
+  els.stopRunningBtn.addEventListener("click", stopRunningTask);
   els.sessionSelect.addEventListener("change", () => {
     state.pendingSessionId = els.sessionSelect.value;
     const pending = state.sessions.find((session) => session.id === state.pendingSessionId);

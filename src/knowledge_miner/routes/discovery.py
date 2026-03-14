@@ -8,10 +8,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..auth import require_api_key
+from ..config import settings
 from ..db import get_db
 from ..discovery import create_run, enqueue_citation_iteration_run, enqueue_run, export_sources_raw, review_source
 from ..models import DiscoveryRunQuery, Run, Source
 from ..rate_limit import require_rate_limit
+from ..runtime_state import request_run_stop
 from ..schemas import (
     CitationIterationRequest,
     DiscoveryRunQueriesResponse,
@@ -123,6 +125,36 @@ def resume_citation_iteration_run(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_already_running")
     _enqueue_citation_task(background_tasks, run.id, run.id)
     return RunCreateResponse(run_id=run.id, status=run.status)
+
+
+@router.post("/v1/discovery/runs/{run_id}/stop")
+def stop_discovery_run(
+    run_id: str,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> dict:
+    run = db.get(Run, run_id)
+    if run is None:
+        logger.warning("run_not_found %s", _not_found_diagnostics(db, run_id=run_id))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    if run.status not in {"queued", "running"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_not_running")
+    if run.status == "queued":
+        run.status = "failed"
+        run.error_message = "stopped_by_user"
+        db.commit()
+        return {"run_id": run.id, "status": run.status, "message": "Discovery run stopped."}
+
+    query = db.scalars(
+        select(DiscoveryRunQuery)
+        .where(DiscoveryRunQuery.run_id == run_id)
+        .order_by(DiscoveryRunQuery.position.desc())
+        .limit(1)
+    ).first()
+    phase = "discovery_citation" if query and query.query_text == "citation expansion" else "discovery"
+    request_run_stop(base_dir=settings.runtime_state_dir, phase=phase, run_id=run_id)
+    return {"run_id": run.id, "status": run.status, "message": "Stop requested."}
 
 
 @router.get("/v1/discovery/runs/{run_id}/queries", response_model=DiscoveryRunQueriesResponse)

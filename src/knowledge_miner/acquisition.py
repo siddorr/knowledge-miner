@@ -3,11 +3,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 import json
+import logging
 from pathlib import Path
+import re
 import threading
 import time
 from typing import NamedTuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urljoin, urlparse
 import uuid
 
 import httpx
@@ -18,7 +20,13 @@ from .config import settings
 from .db import SessionLocal
 from .models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
 from .observability import AcquisitionObservability
-from .runtime_state import acquire_run_lock, is_primary_instance, release_run_lock
+from .runtime_state import acquire_run_lock, clear_run_stop_request, is_primary_instance, is_run_stop_requested, release_run_lock
+
+logger = logging.getLogger("knowledge_miner")
+
+
+class RunStopRequested(RuntimeError):
+    pass
 
 
 def create_acquisition_run(
@@ -72,6 +80,7 @@ def create_acquisition_run(
         failed_total=0,
         skipped_total=0,
     )
+    clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="acquisition", run_id=acq_run.id)
     db.add(acq_run)
     db.flush()
 
@@ -134,6 +143,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         failed_total = 0
         skipped_total = 0
         for item in items:
+            _assert_acquisition_not_stopped(run.id)
             if run.retry_failed_only and item.status in {"downloaded", "partial", "skipped"}:
                 skipped_total += 1
                 observability.inc("skipped")
@@ -151,6 +161,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
             started = time.perf_counter()
             outcome = _acquire_source_content(source, internal_repository_base_url=run.internal_repository_base_url)
             latency_ms = (time.perf_counter() - started) * 1000.0
+            _emit_acquisition_http_trace(acq_run_id=run.id, source_id=source.id, resolution_attempts=outcome.resolution_attempts)
             item.attempt_count += outcome.attempts
             item.selected_url = outcome.url
             item.selected_url_source = outcome.selected_url_source
@@ -248,12 +259,22 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         _write_manifest_file(db, run.id)
         _write_coverage_report_file(run.id, observability.snapshot())
         observability.emit_summary(acq_run_id=run.id, status=run.status)
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="acquisition", run_id=run.id)
+    except RunStopRequested:
+        db.rollback()
+        run.status = "failed"
+        run.error_message = "stopped_by_user"
+        run.updated_at = datetime.now(UTC)
+        db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="acquisition", run_id=run.id)
+        observability.emit_summary(acq_run_id=run.id, status=run.status)
     except Exception as exc:  # pragma: no cover
         db.rollback()
         run.status = "failed"
         run.error_message = str(exc)
         run.updated_at = datetime.now(UTC)
         db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="acquisition", run_id=run.id)
         observability.inc("api_errors")
         observability.emit_summary(acq_run_id=run.id, status=run.status)
         raise
@@ -304,34 +325,57 @@ def _acquire_source_content(source: Source, *, internal_repository_base_url: str
         source_name = str(candidate.get("candidate_source") or "publisher")
         if not url:
             continue
-        result, call_attempts = _download_with_retries(url, timeout_seconds=timeout_seconds, max_bytes=max_bytes)
+        result, call_attempts, call_trace = _download_with_retries(url, timeout_seconds=timeout_seconds, max_bytes=max_bytes)
+        effective_result = result
+        # When the first response is HTML (typical for landing/challenge pages),
+        # attempt one more fetch using a PDF URL embedded in that HTML.
+        if result.kind == "html":
+            embedded_pdf_url = _extract_embedded_pdf_url(content=result.content, base_url=result.url)
+            if embedded_pdf_url and embedded_pdf_url != result.url:
+                embedded_result, embedded_attempts, embedded_trace = _download_with_retries(
+                    embedded_pdf_url,
+                    timeout_seconds=timeout_seconds,
+                    max_bytes=max_bytes,
+                )
+                offset = len(call_trace)
+                for index, call in enumerate(embedded_trace, start=1):
+                    call["attempt_no"] = offset + index
+                call_trace.extend(embedded_trace)
+                call_attempts += embedded_attempts
+                if embedded_result.kind == "pdf":
+                    effective_result = embedded_result
+        candidate["download_attempts"] = call_trace
+        candidate["download_attempts_count"] = call_attempts
+        candidate["download_last_status_code"] = effective_result.status_code
+        candidate["download_result"] = effective_result.kind or "failed"
+        candidate["download_error"] = effective_result.error
         attempts += call_attempts
-        if result.kind == "pdf":
+        if effective_result.kind == "pdf":
             return AcquisitionOutcome(
                 kind="pdf",
-                mime_type=result.mime_type,
-                content=result.content,
-                url=result.url,
+                mime_type=effective_result.mime_type,
+                content=effective_result.content,
+                url=effective_result.url,
                 selected_url_source=source_name,
                 resolution_attempts=resolution_attempts,
                 attempts=attempts,
                 error=None,
                 reason_code=None,
             )
-        if result.kind == "html" and html_fallback is None:
+        if effective_result.kind == "html" and html_fallback is None:
             html_fallback = AcquisitionOutcome(
                 kind="html",
-                mime_type=result.mime_type,
-                content=result.content,
-                url=result.url,
+                mime_type=effective_result.mime_type,
+                content=effective_result.content,
+                url=effective_result.url,
                 selected_url_source=source_name,
                 resolution_attempts=resolution_attempts,
                 attempts=attempts,
                 error=None,
                 reason_code=None,
             )
-        if result.error:
-            last_error = result.error
+        if effective_result.error:
+            last_error = effective_result.error
 
     if html_fallback is not None:
         return AcquisitionOutcome(
@@ -365,20 +409,40 @@ def _download_with_retries(
     max_bytes: int,
     delays: tuple[float, ...] = (1.0, 2.0, 4.0),
     sleep=time.sleep,
-) -> tuple[DownloadResult, int]:
+) -> tuple[DownloadResult, int, list[dict]]:
     attempts = 0
+    trace: list[dict] = []
     last = DownloadResult(kind=None, mime_type=None, content=None, url=url, error="download_failed", retryable=False)
     for index in range(max(1, len(delays))):
         attempts += 1
         result = _download_url(url, timeout_seconds=timeout_seconds, max_bytes=max_bytes)
+        trace.append(
+            {
+                "attempt_no": attempts,
+                "method": result.method,
+                "request_url": _truncate_url(result.request_url or url),
+                "final_url": _truncate_url(result.url),
+                "status_code": result.status_code,
+                "result_kind": result.kind,
+                "mime_type": result.mime_type,
+                "error": result.error,
+                "retryable": result.retryable,
+                "history": list(result.history or []),
+            }
+        )
         last = result
         if result.kind is not None:
-            return result, attempts
+            return result, attempts, trace
         if not result.retryable:
-            return result, attempts
+            return result, attempts, trace
         if index < len(delays) - 1:
             sleep(delays[index])
-    return last, attempts
+    return last, attempts, trace
+
+
+def _assert_acquisition_not_stopped(acq_run_id: str) -> None:
+    if is_run_stop_requested(base_dir=settings.runtime_state_dir, phase="acquisition", run_id=acq_run_id):
+        raise RunStopRequested("stopped_by_user")
 
 
 def _resolve_candidate_chain(source: Source, *, internal_repository_base_url: str | None = None) -> list[dict]:
@@ -387,9 +451,9 @@ def _resolve_candidate_chain(source: Source, *, internal_repository_base_url: st
         doi = source.doi.strip()
         if doi:
             candidates.append((f"https://doi.org/{doi}", "doi"))
-            internal_repo_url = _build_internal_repository_candidate_url(internal_repository_base_url, doi)
-            if internal_repo_url:
-                candidates.append((internal_repo_url, "internal_repository"))
+    internal_repo_url = _build_internal_repository_candidate_url(internal_repository_base_url, source.doi)
+    if internal_repo_url:
+        candidates.append((internal_repo_url, "internal_repository"))
     openalex_url = _lookup_openalex_oa_url(source)
     if openalex_url:
         candidates.append((openalex_url, "openalex"))
@@ -439,8 +503,8 @@ def _build_internal_repository_candidate_url(base_url: str | None, doi: str | No
     normalized_doi = (doi or "").strip()
     if not normalized_base or not normalized_doi:
         return None
-    encoded_doi = httpx.QueryParams({"doi": normalized_doi}).__str__()
-    return f"{normalized_base}?{encoded_doi}"
+    encoded_doi = quote(normalized_doi, safe="/:@")
+    return f"{normalized_base}/{encoded_doi}"
 
 
 def _lookup_openalex_oa_url(source: Source) -> str | None:
@@ -489,6 +553,24 @@ def _looks_pdf_url(url: str) -> bool:
     return normalized.endswith(".pdf") or "/pdf" in normalized
 
 
+def _extract_embedded_pdf_url(*, content: bytes | None, base_url: str) -> str | None:
+    if not content:
+        return None
+    html = content.decode("utf-8", errors="ignore")
+    patterns = (
+        r'(?i)<meta[^>]+name=["\']citation_pdf_url["\'][^>]+content=["\']([^"\']+)["\']',
+        r'(?i)(?:href|src)=["\']([^"\']+\.pdf(?:[?#][^"\']*)?)["\']',
+        r'(?i)(?:href|src)=["\']([^"\']+/pdf(?:[?#][^"\']*)?)["\']',
+    )
+    for pattern in patterns:
+        for raw in re.findall(pattern, html):
+            candidate = urljoin(base_url, str(raw).strip())
+            parsed = urlparse(candidate)
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                return candidate
+    return None
+
+
 def _domain_from_url(url: str | None) -> str:
     if not url:
         return "unknown"
@@ -532,6 +614,10 @@ class DownloadResult(NamedTuple):
     url: str
     error: str | None
     retryable: bool
+    method: str = "GET"
+    status_code: int | None = None
+    request_url: str | None = None
+    history: list[dict] | None = None
 
 
 def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> DownloadResult:
@@ -539,7 +625,27 @@ def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> Downlo
         with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
             response = client.get(url)
     except httpx.RequestError:
-        return DownloadResult(kind=None, mime_type=None, content=None, url=url, error="network_error", retryable=True)
+        return DownloadResult(
+            kind=None,
+            mime_type=None,
+            content=None,
+            url=url,
+            error="network_error",
+            retryable=True,
+            method="GET",
+            status_code=None,
+            request_url=url,
+            history=[],
+        )
+
+    history = [
+        {
+            "method": item.request.method,
+            "url": _truncate_url(str(item.request.url)),
+            "status_code": int(item.status_code),
+        }
+        for item in (response.history or [])
+    ]
 
     if 500 <= response.status_code <= 599:
         return DownloadResult(
@@ -549,6 +655,10 @@ def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> Downlo
             url=str(response.url),
             error=f"http_{response.status_code}",
             retryable=True,
+            method=response.request.method,
+            status_code=int(response.status_code),
+            request_url=str(response.request.url),
+            history=history,
         )
     if response.status_code == 429:
         return DownloadResult(
@@ -558,6 +668,10 @@ def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> Downlo
             url=str(response.url),
             error="http_429",
             retryable=False,
+            method=response.request.method,
+            status_code=int(response.status_code),
+            request_url=str(response.request.url),
+            history=history,
         )
     if response.status_code >= 400:
         return DownloadResult(
@@ -567,6 +681,10 @@ def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> Downlo
             url=str(response.url),
             error=f"http_{response.status_code}",
             retryable=False,
+            method=response.request.method,
+            status_code=int(response.status_code),
+            request_url=str(response.request.url),
+            history=history,
         )
 
     content = response.content
@@ -578,14 +696,40 @@ def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> Downlo
             url=str(response.url),
             error="file_too_large",
             retryable=False,
+            method=response.request.method,
+            status_code=int(response.status_code),
+            request_url=str(response.request.url),
+            history=history,
         )
 
     raw_mime = response.headers.get("Content-Type", "")
     mime = raw_mime.split(";")[0].strip().lower() if raw_mime else None
     if mime == "application/pdf":
-        return DownloadResult(kind="pdf", mime_type=mime, content=content, url=str(response.url), error=None, retryable=False)
+        return DownloadResult(
+            kind="pdf",
+            mime_type=mime,
+            content=content,
+            url=str(response.url),
+            error=None,
+            retryable=False,
+            method=response.request.method,
+            status_code=int(response.status_code),
+            request_url=str(response.request.url),
+            history=history,
+        )
     if mime in {"text/html", "application/xhtml+xml"}:
-        return DownloadResult(kind="html", mime_type=mime, content=content, url=str(response.url), error=None, retryable=False)
+        return DownloadResult(
+            kind="html",
+            mime_type=mime,
+            content=content,
+            url=str(response.url),
+            error=None,
+            retryable=False,
+            method=response.request.method,
+            status_code=int(response.status_code),
+            request_url=str(response.request.url),
+            history=history,
+        )
 
     # Fallback sniffing when providers omit proper content-type.
     if content.startswith(b"%PDF"):
@@ -596,9 +740,24 @@ def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> Downlo
             url=str(response.url),
             error=None,
             retryable=False,
+            method=response.request.method,
+            status_code=int(response.status_code),
+            request_url=str(response.request.url),
+            history=history,
         )
     if content[:1024].lower().find(b"<html") >= 0:
-        return DownloadResult(kind="html", mime_type="text/html", content=content, url=str(response.url), error=None, retryable=False)
+        return DownloadResult(
+            kind="html",
+            mime_type="text/html",
+            content=content,
+            url=str(response.url),
+            error=None,
+            retryable=False,
+            method=response.request.method,
+            status_code=int(response.status_code),
+            request_url=str(response.request.url),
+            history=history,
+        )
 
     return DownloadResult(
         kind=None,
@@ -607,6 +766,66 @@ def _download_url(url: str, *, timeout_seconds: float, max_bytes: int) -> Downlo
         url=str(response.url),
         error="unsupported_content_type",
         retryable=False,
+        method=response.request.method,
+        status_code=int(response.status_code),
+        request_url=str(response.request.url),
+        history=history,
+    )
+
+
+def _truncate_url(url: str, *, max_len: int = 220) -> str:
+    if len(url) <= max_len:
+        return url
+    return f"{url[:max_len]}..."
+
+
+def _emit_acquisition_http_trace(*, acq_run_id: str, source_id: str, resolution_attempts: list[dict]) -> None:
+    total_calls = 0
+    summarized: list[dict] = []
+    for candidate in resolution_attempts or []:
+        calls = list(candidate.get("download_attempts") or [])
+        total_calls += len(calls)
+        summarized.append(
+            {
+                "candidate_source": candidate.get("candidate_source"),
+                "candidate_url": _truncate_url(str(candidate.get("candidate_url") or "")),
+                "candidate_rank": candidate.get("candidate_rank"),
+                "attempts_count": len(calls),
+                "last_status_code": candidate.get("download_last_status_code"),
+                "result": candidate.get("download_result"),
+                "error": candidate.get("download_error"),
+            }
+        )
+        for call in calls:
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "acquisition_http_call",
+                        "acq_run_id": acq_run_id,
+                        "source_id": source_id,
+                        "candidate_source": candidate.get("candidate_source"),
+                        "attempt_no": call.get("attempt_no"),
+                        "command": f"{call.get('method', 'GET')} {call.get('request_url')}",
+                        "answer_status": call.get("status_code"),
+                        "answer_kind": call.get("result_kind"),
+                        "answer_error": call.get("error"),
+                        "final_url": call.get("final_url"),
+                        "redirects": call.get("history") or [],
+                    },
+                    sort_keys=True,
+                )
+            )
+    logger.info(
+        json.dumps(
+            {
+                "event": "acquisition_http_trace",
+                "acq_run_id": acq_run_id,
+                "source_id": source_id,
+                "http_calls_total": total_calls,
+                "candidates": summarized,
+            },
+            sort_keys=True,
+        )
     )
 
 

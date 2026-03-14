@@ -24,7 +24,17 @@ from .iteration import build_next_queries, extract_keywords
 from .models import CitationEdge, CitationExpansionParent, DiscoveryRunQuery, Keyword, Run, Source
 from .observability import RunObservability
 from .retry import retry_call
-from .runtime_state import acquire_run_lock, is_primary_instance, release_run_lock
+from .runtime_state import (
+    acquire_run_lock,
+    clear_run_stop_request,
+    is_primary_instance,
+    is_run_stop_requested,
+    release_run_lock,
+)
+
+
+class RunStopRequested(RuntimeError):
+    pass
 from .scoring import decision_from_score, score_text
 
 
@@ -55,6 +65,8 @@ def create_run(
         ai_filter_active=ai_filter_active,
         ai_filter_warning=ai_filter_warning,
     )
+    clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery", run_id=run.id)
+    clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run.id)
     db.add(run)
     for position, query in enumerate(normalized_queries, start=1):
         db.add(
@@ -228,10 +240,12 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
 
         active_connectors = connectors or build_connectors()
         for iteration in range(1, max_iterations + 1):
+            _assert_discovery_not_stopped(run_id, phase="discovery")
             _ensure_run_queries(db, run_id, queries)
             query_batches = _collect_candidates(db, run_id, queries, iteration, active_connectors, observability=observability)
             new_accepted_unique = 0
             for run_query, query_candidates in query_batches:
+                _assert_discovery_not_stopped(run_id, phase="discovery")
                 if run_query.status == "failed":
                     continue
                 run_query.status = "ranking_relevance"
@@ -281,7 +295,18 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
         run.status = "completed"
         run.updated_at = datetime.now(UTC)
         db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery", run_id=run_id)
         observability.emit_run_summary(run_id=run_id, status=run.status, current_iteration=current_iteration)
+    except RunStopRequested:
+        db.rollback()
+        db_run = db.get(Run, run_id)
+        if db_run is not None:
+            db_run.status = "failed"
+            db_run.error_message = "stopped_by_user"
+            db_run.updated_at = datetime.now(UTC)
+            db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery", run_id=run_id)
+        observability.emit_run_summary(run_id=run_id, status="failed", current_iteration=current_iteration)
     except Exception as exc:  # pragma: no cover - defensive failure path
         db.rollback()
         db_run = db.get(Run, run_id)
@@ -290,6 +315,7 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
             db_run.error_message = str(exc)
             db_run.updated_at = datetime.now(UTC)
             db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery", run_id=run_id)
         observability.inc("api_errors")
         observability.emit_run_summary(run_id=run_id, status="failed", current_iteration=current_iteration)
         raise
@@ -393,6 +419,7 @@ def execute_citation_iteration_run(db: Session, run: Run, *, source_run_id: str)
         db.commit()
 
         for index, parent_id in enumerate(parent_ids):
+            _assert_discovery_not_stopped(run_id, phase="discovery_citation")
             parent = db.get(Source, parent_id)
             if parent is None or not bool(parent.accepted):
                 processed_parents += 1
@@ -489,7 +516,27 @@ def execute_citation_iteration_run(db: Session, run: Run, *, source_run_id: str)
         run.status = "completed"
         run.updated_at = datetime.now(UTC)
         db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
         observability.emit_run_summary(run_id=run_id, status=run.status, current_iteration=run.current_iteration)
+    except RunStopRequested:
+        db.rollback()
+        if "query_row" in locals() and query_row is not None:
+            with suppress(Exception):
+                refreshed_query = db.get(DiscoveryRunQuery, query_row.id)
+                if refreshed_query is not None:
+                    refreshed_query.checkpoint_state = "resumable"
+                    refreshed_query.status = "failed"
+                    refreshed_query.error_message = "stopped_by_user"
+                    refreshed_query.updated_at = datetime.now(UTC)
+                    db.commit()
+        failed_run = db.get(Run, run_id)
+        if failed_run is not None:
+            failed_run.status = "failed"
+            failed_run.error_message = "stopped_by_user"
+            failed_run.updated_at = datetime.now(UTC)
+            db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
+        observability.emit_run_summary(run_id=run_id, status="failed", current_iteration=0)
     except Exception as exc:  # pragma: no cover - defensive failure path
         db.rollback()
         if "query_row" in locals() and query_row is not None:
@@ -507,9 +554,15 @@ def execute_citation_iteration_run(db: Session, run: Run, *, source_run_id: str)
             failed_run.error_message = str(exc)
             failed_run.updated_at = datetime.now(UTC)
             db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
         observability.inc("api_errors")
         observability.emit_run_summary(run_id=run_id, status="failed", current_iteration=0)
         raise
+
+
+def _assert_discovery_not_stopped(run_id: str, *, phase: str) -> None:
+    if is_run_stop_requested(base_dir=settings.runtime_state_dir, phase=phase, run_id=run_id):
+        raise RunStopRequested("stopped_by_user")
 
 
 def review_source(db: Session, source: Source, decision: str) -> Source:
