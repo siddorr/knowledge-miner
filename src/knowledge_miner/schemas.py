@@ -6,11 +6,13 @@ from pydantic import BaseModel, Field
 
 class RunCreateRequest(BaseModel):
     seed_queries: list[str] = Field(min_length=1)
+    selected_queries: list[str] | None = None
     max_iterations: int = Field(default=6, ge=1, le=6)
     ai_filter_enabled: bool | None = None
 
 
 class CitationIterationRequest(BaseModel):
+    selected_queries: list[str] | None = None
     ai_filter_enabled: bool | None = None
 
 
@@ -42,6 +44,26 @@ class RunStatusResponse(BaseModel):
     updated_at: str | None
 
 
+class DiscoveryRunQueryOut(BaseModel):
+    query: str
+    position: int
+    status: str
+    discovered_count: int
+    openalex_count: int = 0
+    brave_count: int = 0
+    semantic_scholar_count: int = 0
+    accepted_count: int = 0
+    rejected_count: int = 0
+    pending_count: int = 0
+    processing_count: int = 0
+    error_message: str | None
+
+
+class DiscoveryRunQueriesResponse(BaseModel):
+    run_id: str
+    queries: list[DiscoveryRunQueryOut]
+
+
 class SourceReviewRequest(BaseModel):
     decision: str
     run_id: str | None = Field(default=None, min_length=1)
@@ -60,7 +82,11 @@ class SourceOut(BaseModel):
     year: int | None
     url: str | None
     doi: str | None
+    doi_url: str | None
     abstract: str | None
+    journal: str | None
+    authors: list[str] = Field(default_factory=list)
+    citation_count: int | None
     type: str
     source: str
     iteration: int
@@ -381,6 +407,18 @@ class AISettingsResponse(BaseModel):
     api_key_masked: str | None
     ai_model: str
     ai_base_url: str
+
+
+class ProviderSettingsUpdateRequest(BaseModel):
+    openalex_search_limit: int | None = Field(default=None, ge=1, le=200)
+    brave_search_count: int | None = Field(default=None, ge=1, le=20)
+    brave_require_allowlist: bool | None = None
+
+
+class ProviderSettingsResponse(BaseModel):
+    openalex_search_limit: int
+    brave_search_count: int
+    brave_require_allowlist: bool
 
 
 class HMIEventIn(BaseModel):

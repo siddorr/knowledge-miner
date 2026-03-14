@@ -44,6 +44,9 @@ def _seed_run_with_sources() -> str:
                 url="https://example.org/a",
                 doi=None,
                 abstract="a",
+                journal="Journal of UPW",
+                authors=["A. Author", "B. Author"],
+                citation_count=12,
                 type="academic",
                 source="openalex",
                 source_native_id="A",
@@ -69,6 +72,9 @@ def _seed_run_with_sources() -> str:
                 url="https://example.org/r",
                 doi=None,
                 abstract="r",
+                journal="Water Quality Letters",
+                authors=["R. Reviewer"],
+                citation_count=2,
                 type="academic",
                 source="openalex",
                 source_native_id="R",
@@ -94,6 +100,9 @@ def _seed_run_with_sources() -> str:
                 url="https://example.org/n",
                 doi=None,
                 abstract="n",
+                journal="Semiconductor Process Review",
+                authors=["N. Analyst", "Q. Engineer", "T. Scientist"],
+                citation_count=8,
                 type="academic",
                 source="openalex",
                 source_native_id="N",
@@ -151,8 +160,31 @@ def test_create_discovery_run_forces_single_iteration_contract(monkeypatch):
         assert run.max_iterations == 1
 
 
+def test_create_discovery_run_uses_selected_queries_when_present(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/discovery/runs",
+        json={
+            "seed_queries": ["upw", "semiconductor", "toc"],
+            "selected_queries": ["semiconductor", "toc"],
+            "max_iterations": 1,
+        },
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+    with SessionLocal() as db:
+        run = db.get(Run, run_id)
+        assert run is not None
+        assert run.seed_queries == ["semiconductor", "toc"]
+
+
 def test_citation_iteration_runs_only_when_explicitly_requested(monkeypatch):
     monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
+    monkeypatch.setattr(main_module, "enqueue_citation_iteration_run", lambda run_id, source_run_id: None)
     run_id = _seed_run_with_sources()
     client = TestClient(app)
 
@@ -167,15 +199,68 @@ def test_citation_iteration_runs_only_when_explicitly_requested(monkeypatch):
     )
     assert create_next.status_code == 202
     next_run_id = create_next.json()["run_id"]
-    assert next_run_id != run_id
+    assert next_run_id == run_id
 
     with SessionLocal() as db:
         after = db.scalar(select(func.count()).select_from(Run)) or 0
-        next_run = db.get(Run, next_run_id)
-        assert next_run is not None
-        assert next_run.max_iterations == 1
-        assert next_run.seed_queries
-    assert after == 2
+    assert after == 1
+
+
+def test_citation_iteration_requires_accepted_sources(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
+    monkeypatch.setattr(main_module, "enqueue_citation_iteration_run", lambda run_id, source_run_id: None)
+    client = TestClient(app)
+    with SessionLocal() as db:
+        run = Run(
+            id="run_no_accept",
+            status="completed",
+            seed_queries=["upw"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=0,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        db.add(run)
+        db.commit()
+
+    response = client.post(
+        "/v1/discovery/runs/run_no_accept/next-citation-iteration",
+        json={"selected_queries": ["upw citation"]},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 422
+    assert "Need at least 1 accepted paper" in response.json()["detail"]
+
+
+def test_discovery_run_queries_endpoint_returns_persisted_query_state():
+    run_id = _seed_run_with_sources()
+    with SessionLocal() as db:
+        from knowledge_miner.models import DiscoveryRunQuery
+
+        db.add(
+            DiscoveryRunQuery(
+                id="rq_1",
+                run_id=run_id,
+                query_text="upw semiconductor",
+                position=1,
+                status="completed",
+                discovered_count=7,
+                error_message=None,
+            )
+        )
+        db.commit()
+
+    client = TestClient(app)
+    response = client.get(f"/v1/discovery/runs/{run_id}/queries", headers=_auth_headers())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == run_id
+    assert body["queries"][0]["query"] == "upw semiconductor"
+    assert body["queries"][0]["status"] == "completed"
+    assert body["queries"][0]["discovered_count"] == 7
 
 
 def test_discovery_sources_status_filter():
@@ -199,6 +284,9 @@ def test_discovery_sources_status_filter():
     assert review.status_code == 200
     assert review.json()["total"] == 1
     assert review.json()["items"][0]["id"] == "src_review"
+    assert review.json()["items"][0]["journal"] == "Semiconductor Process Review"
+    assert review.json()["items"][0]["authors"] == ["N. Analyst", "Q. Engineer", "T. Scientist"]
+    assert review.json()["items"][0]["citation_count"] == 8
 
     assert all_rows.status_code == 200
     assert all_rows.json()["total"] == 3
@@ -381,3 +469,37 @@ def test_ai_settings_update_applies_to_new_runs(monkeypatch):
         object.__setattr__(settings, "ai_api_key", original_key)
         object.__setattr__(settings, "ai_model", original_model)
         object.__setattr__(settings, "ai_base_url", original_base)
+
+
+def test_provider_settings_update_applies_runtime_values():
+    original_openalex = settings.openalex_search_limit
+    original_brave = settings.brave_search_count
+    original_allowlist = settings.brave_require_allowlist
+    client = TestClient(app)
+    try:
+        read_before = client.get("/v1/settings/providers", headers=_auth_headers())
+        assert read_before.status_code == 200
+        update = client.post(
+            "/v1/settings/providers",
+            json={
+                "openalex_search_limit": 40,
+                "brave_search_count": 7,
+                "brave_require_allowlist": False,
+            },
+            headers=_auth_headers(),
+        )
+        assert update.status_code == 200
+        body = update.json()
+        assert body["openalex_search_limit"] == 40
+        assert body["brave_search_count"] == 7
+        assert body["brave_require_allowlist"] is False
+
+        read_after = client.get("/v1/settings/providers", headers=_auth_headers())
+        assert read_after.status_code == 200
+        assert read_after.json()["openalex_search_limit"] == 40
+        assert read_after.json()["brave_search_count"] == 7
+        assert read_after.json()["brave_require_allowlist"] is False
+    finally:
+        object.__setattr__(settings, "openalex_search_limit", original_openalex)
+        object.__setattr__(settings, "brave_search_count", original_brave)
+        object.__setattr__(settings, "brave_require_allowlist", original_allowlist)

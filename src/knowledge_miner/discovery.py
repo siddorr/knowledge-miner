@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import time
@@ -19,7 +20,7 @@ from .connectors import Connector, RetryableProviderError, build_connectors
 from .db import SessionLocal
 from .dedup import canonical_id, canonicalize_url, is_fuzzy_duplicate
 from .iteration import build_next_queries, extract_keywords
-from .models import CitationEdge, Keyword, Run, Source
+from .models import CitationEdge, DiscoveryRunQuery, Keyword, Run, Source
 from .observability import RunObservability
 from .retry import retry_call
 from .runtime_state import acquire_run_lock, is_primary_instance, release_run_lock
@@ -33,6 +34,9 @@ def create_run(
     *,
     ai_filter_enabled: bool | None = None,
 ) -> Run:
+    normalized_queries = _normalize_queries(seed_queries)
+    if not normalized_queries:
+        raise ValueError("seed_queries_required")
     use_ai_filter = settings.use_ai_filter if ai_filter_enabled is None else ai_filter_enabled
     ai_filter_active, ai_filter_warning = describe_ai_filter_runtime(
         use_ai_filter=use_ai_filter,
@@ -41,7 +45,7 @@ def create_run(
     run = Run(
         id=f"run_{uuid.uuid4().hex[:12]}",
         status="queued",
-        seed_queries=seed_queries,
+        seed_queries=normalized_queries,
         max_iterations=max_iterations,
         current_iteration=0,
         accepted_total=0,
@@ -51,6 +55,24 @@ def create_run(
         ai_filter_warning=ai_filter_warning,
     )
     db.add(run)
+    for position, query in enumerate(normalized_queries, start=1):
+        db.add(
+            DiscoveryRunQuery(
+                id=f"run_query_{uuid.uuid4().hex[:12]}",
+                run_id=run.id,
+                query_text=query,
+                position=position,
+                status="waiting",
+                discovered_count=0,
+                openalex_count=0,
+                brave_count=0,
+                semantic_scholar_count=0,
+                accepted_count=0,
+                rejected_count=0,
+                pending_count=0,
+                processing_count=0,
+            )
+        )
     db.commit()
     db.refresh(run)
     return run
@@ -66,9 +88,30 @@ def enqueue_run(run_id: str) -> None:
     worker.start()
 
 
+def enqueue_citation_iteration_run(run_id: str, *, source_run_id: str) -> None:
+    if not is_primary_instance():
+        return
+    run_lock = acquire_run_lock(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
+    if run_lock is None:
+        return
+    worker = threading.Thread(
+        target=_execute_citation_run_with_lock,
+        args=(run_id, source_run_id, run_lock),
+        daemon=True,
+    )
+    worker.start()
+
+
 def _execute_run_with_lock(run_id: str, run_lock: Path) -> None:
     try:
         execute_run_by_id(run_id)
+    finally:
+        release_run_lock(run_lock)
+
+
+def _execute_citation_run_with_lock(run_id: str, source_run_id: str, run_lock: Path) -> None:
+    try:
+        execute_citation_iteration_run_by_id(run_id, source_run_id=source_run_id)
     finally:
         release_run_lock(run_lock)
 
@@ -81,11 +124,28 @@ def execute_run_by_id(run_id: str) -> None:
         execute_run(db, run)
 
 
+def execute_citation_iteration_run_by_id(run_id: str, *, source_run_id: str) -> None:
+    with SessionLocal() as db:
+        run = db.get(Run, run_id)
+        if run is None:
+            return
+        execute_citation_iteration_run(db, run, source_run_id=source_run_id)
+
+
+@dataclass(slots=True)
+class IngestStats:
+    new_accepted_unique: int = 0
+    accepted: int = 0
+    rejected: int = 0
+    pending: int = 0
+    processing: int = 0
+
+
 def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None) -> None:
     observability = RunObservability()
     run_id = run.id
     max_iterations = int(run.max_iterations)
-    queries = list(run.seed_queries)
+    queries = _load_run_queries(db, run.id) or list(run.seed_queries)
     ai_warning = run.ai_filter_warning
     current_iteration = 0
     try:
@@ -135,44 +195,39 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
         )
 
         active_connectors = connectors or build_connectors()
-        connectors_by_name = {c.name: c for c in active_connectors}
         for iteration in range(1, max_iterations + 1):
-            candidates = _collect_candidates(run_id, queries, iteration, active_connectors, observability=observability)
-            new_accepted_unique = _ingest_candidates(
-                db,
-                run_id,
-                iteration,
-                candidates,
-                ai_filter=ai_filter,
-                ai_policy_no_ai=not ai_effective_enabled,
-                observability=observability,
-            )
-            citation_candidates, citation_edges = _expand_citations_for_iteration(
-                db,
-                run_id,
-                iteration,
-                connectors_by_name,
-                per_direction_limit=settings.citation_expansion_limit_per_direction,
-                parent_cap=settings.citation_expansion_parent_cap_per_iteration,
-                observability=observability,
-            )
-            if citation_candidates:
-                new_accepted_unique += _ingest_candidates(
+            _ensure_run_queries(db, run_id, queries)
+            query_batches = _collect_candidates(db, run_id, queries, iteration, active_connectors, observability=observability)
+            new_accepted_unique = 0
+            for run_query, query_candidates in query_batches:
+                if run_query.status == "failed":
+                    continue
+                run_query.status = "ranking_relevance"
+                run_query.processing_count = len(query_candidates)
+                run_query.updated_at = datetime.now(UTC)
+                db.commit()
+                stats = _ingest_candidates(
                     db,
                     run_id,
                     iteration,
-                    citation_candidates,
+                    query_candidates,
                     ai_filter=ai_filter,
                     ai_policy_no_ai=not ai_effective_enabled,
                     observability=observability,
                 )
-                run.expanded_candidates_total = int(run.expanded_candidates_total) + len(citation_candidates)
-            if citation_edges:
-                persisted_edges = _persist_citation_edges(db, run_id, iteration, citation_edges)
-                run.citation_edges_total = int(run.citation_edges_total) + persisted_edges
+                new_accepted_unique += stats.new_accepted_unique
+                run_query.accepted_count = stats.accepted
+                run_query.rejected_count = stats.rejected
+                run_query.pending_count = stats.pending
+                run_query.processing_count = 0
+                run_query.status = "completed"
+                run_query.completed_at = datetime.now(UTC)
+                run_query.updated_at = datetime.now(UTC)
+                db.commit()
             accepted_total = _count_accepted(db, run_id)
 
             _store_keywords_for_iteration(db, run_id, iteration)
+            run = db.get(Run, run_id) or run
             run.current_iteration = iteration
             current_iteration = iteration
             run.accepted_total = accepted_total
@@ -204,6 +259,124 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
             db.commit()
         observability.inc("api_errors")
         observability.emit_run_summary(run_id=run_id, status="failed", current_iteration=current_iteration)
+        raise
+
+
+def execute_citation_iteration_run(db: Session, run: Run, *, source_run_id: str) -> None:
+    observability = RunObservability()
+    run_id = run.id
+    source_run = db.get(Run, source_run_id)
+    if source_run is None:
+        run.status = "failed"
+        run.error_message = f"source_run_not_found:{source_run_id}"
+        run.updated_at = datetime.now(UTC)
+        db.commit()
+        observability.emit_run_summary(run_id=run_id, status=run.status, current_iteration=0)
+        return
+
+    ai_requested = bool(run.ai_filter_active)
+    ai_effective_enabled = bool(ai_requested and settings.ai_api_key)
+    ai_filter = (
+        AIRelevanceFilter(
+            enabled=True,
+            api_key=settings.ai_api_key,
+            model=settings.ai_model,
+            base_url=settings.ai_base_url,
+            timeout_seconds=settings.ai_timeout_seconds,
+        )
+        if ai_effective_enabled
+        else None
+    )
+    connectors = build_connectors()
+    connectors_by_name = {c.name: c for c in connectors}
+    try:
+        run.status = "running"
+        run.error_message = None
+        db.commit()
+        next_position = (
+            db.scalar(
+                select(func.max(DiscoveryRunQuery.position)).where(DiscoveryRunQuery.run_id == run_id)
+            )
+            or 0
+        ) + 1
+        query_row = DiscoveryRunQuery(
+            id=f"run_query_{uuid.uuid4().hex[:12]}",
+            run_id=run_id,
+            query_text="citation expansion",
+            position=next_position,
+            status="searching",
+            discovered_count=0,
+            openalex_count=0,
+            brave_count=0,
+            semantic_scholar_count=0,
+            accepted_count=0,
+            rejected_count=0,
+            pending_count=0,
+            processing_count=0,
+        )
+        db.add(query_row)
+        query_row.started_at = datetime.now(UTC)
+        query_row.updated_at = datetime.now(UTC)
+        query_row.error_message = None
+        db.commit()
+
+        target_iteration = max(int(source_run.current_iteration or 1), 1)
+        citation_candidates, citation_edges = _expand_citations_for_iteration(
+            db,
+            source_run_id,
+            target_iteration,
+            connectors_by_name,
+            per_direction_limit=settings.citation_expansion_limit_per_direction,
+            parent_cap=settings.citation_expansion_parent_cap_per_iteration,
+            observability=observability,
+        )
+        provider_counts = Counter((c.get("source") or "").strip().lower() for c in citation_candidates)
+        query_row.discovered_count = len(citation_candidates)
+        query_row.openalex_count = int(provider_counts.get("openalex", 0))
+        query_row.brave_count = int(provider_counts.get("brave", 0))
+        query_row.semantic_scholar_count = int(provider_counts.get("semantic_scholar", 0))
+        query_row.status = "ranking_relevance"
+        query_row.processing_count = len(citation_candidates)
+        query_row.updated_at = datetime.now(UTC)
+        db.commit()
+
+        stats = _ingest_candidates(
+            db,
+            run_id,
+            1,
+            citation_candidates,
+            ai_filter=ai_filter,
+            ai_policy_no_ai=not ai_effective_enabled,
+            observability=observability,
+        )
+        query_row.accepted_count = stats.accepted
+        query_row.rejected_count = stats.rejected
+        query_row.pending_count = stats.pending
+        query_row.processing_count = 0
+        query_row.status = "completed"
+        query_row.completed_at = datetime.now(UTC)
+        query_row.updated_at = datetime.now(UTC)
+        if citation_edges:
+            persisted_edges = _persist_citation_edges(db, run_id, 1, citation_edges)
+            run.citation_edges_total = int(run.citation_edges_total) + persisted_edges
+        run.expanded_candidates_total = int(run.expanded_candidates_total) + len(citation_candidates)
+        run.current_iteration = max(int(run.current_iteration or 0), 1)
+        run.accepted_total = _count_accepted(db, run_id)
+        run.new_accept_rate = (stats.new_accepted_unique / run.accepted_total) if run.accepted_total else 0.0
+        run.status = "completed"
+        run.updated_at = datetime.now(UTC)
+        db.commit()
+        observability.emit_run_summary(run_id=run_id, status=run.status, current_iteration=run.current_iteration)
+    except Exception as exc:  # pragma: no cover - defensive failure path
+        db.rollback()
+        failed_run = db.get(Run, run_id)
+        if failed_run is not None:
+            failed_run.status = "failed"
+            failed_run.error_message = str(exc)
+            failed_run.updated_at = datetime.now(UTC)
+            db.commit()
+        observability.inc("api_errors")
+        observability.emit_run_summary(run_id=run_id, status="failed", current_iteration=0)
         raise
 
 
@@ -250,6 +423,9 @@ def export_sources_raw(db: Session, run_id: str) -> Path:
                 "url": s.url,
                 "doi": s.doi,
                 "abstract": s.abstract,
+                "journal": s.journal,
+                "authors": list(s.authors or []),
+                "citation_count": s.citation_count,
                 "type": s.type,
                 "source": s.source,
                 "iteration": s.iteration,
@@ -286,16 +462,112 @@ def _load_run_seed_queries(db: Session, run_id: str) -> list[str]:
     return list(run.seed_queries)
 
 
+def _normalize_queries(queries: Iterable[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in queries:
+        query = str(raw or "").strip()
+        if not query:
+            continue
+        lowered = query.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized.append(query)
+    return normalized
+
+
+def _load_run_queries(db: Session, run_id: str) -> list[str]:
+    rows = db.scalars(
+        select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run_id).order_by(DiscoveryRunQuery.position.asc())
+    ).all()
+    return [row.query_text for row in rows]
+
+
+def _ensure_run_queries(db: Session, run_id: str, queries: list[str]) -> None:
+    existing = db.scalars(
+        select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run_id).order_by(DiscoveryRunQuery.position.asc())
+    ).all()
+    if existing:
+        return
+    for position, query in enumerate(_normalize_queries(queries), start=1):
+        db.add(
+            DiscoveryRunQuery(
+                id=f"run_query_{uuid.uuid4().hex[:12]}",
+                run_id=run_id,
+                query_text=query,
+                position=position,
+                status="waiting",
+                discovered_count=0,
+                openalex_count=0,
+                brave_count=0,
+                semantic_scholar_count=0,
+                accepted_count=0,
+                rejected_count=0,
+                pending_count=0,
+                processing_count=0,
+            )
+        )
+    db.commit()
+
+
 def _collect_candidates(
+    db: Session,
     run_id: str,
     queries: list[str],
     iteration: int,
     connectors: list[Connector],
     *,
     observability: RunObservability,
-) -> list[dict]:
-    candidates: list[dict] = []
-    for query in queries[:10]:
+) -> list[tuple[DiscoveryRunQuery, list[dict]]]:
+    query_batches: list[tuple[DiscoveryRunQuery, list[dict]]] = []
+    run_queries = db.scalars(
+        select(DiscoveryRunQuery)
+        .where(DiscoveryRunQuery.run_id == run_id)
+        .order_by(DiscoveryRunQuery.position.asc())
+        .limit(10)
+    ).all()
+    if not run_queries:
+        run_queries = []
+        for position, query in enumerate(_normalize_queries(queries)[:10], start=1):
+            run_queries.append(
+                DiscoveryRunQuery(
+                    id=f"run_query_{uuid.uuid4().hex[:12]}",
+                    run_id=run_id,
+                    query_text=query,
+                    position=position,
+                    status="waiting",
+                    discovered_count=0,
+                    openalex_count=0,
+                    brave_count=0,
+                    semantic_scholar_count=0,
+                    accepted_count=0,
+                    rejected_count=0,
+                    pending_count=0,
+                    processing_count=0,
+                )
+            )
+            db.add(run_queries[-1])
+        db.commit()
+
+    for run_query in run_queries:
+        query = run_query.query_text
+        run_query.status = "searching"
+        run_query.error_message = None
+        run_query.openalex_count = 0
+        run_query.brave_count = 0
+        run_query.semantic_scholar_count = 0
+        run_query.accepted_count = 0
+        run_query.rejected_count = 0
+        run_query.pending_count = 0
+        run_query.processing_count = 0
+        run_query.started_at = datetime.now(UTC)
+        run_query.updated_at = datetime.now(UTC)
+        db.commit()
+        query_rows: list[dict] = []
+        query_errors: list[str] = []
+        successful_connector_calls = 0
+        provider_counts: Counter[str] = Counter()
         for connector in connectors:
             started = time.perf_counter()
             try:
@@ -324,10 +596,24 @@ def _collect_candidates(
                     ok=False,
                     error=str(exc),
                 )
+                query_errors.append(f"{connector.name}:{exc}")
                 continue
+            successful_connector_calls += 1
             observability.inc("fetched", len(rows))
-            candidates.extend(rows)
-    return candidates
+            provider_counts[connector.name] += len(rows)
+            query_rows.extend(rows)
+        run_query.status = "ranking_relevance" if successful_connector_calls > 0 else "failed"
+        run_query.discovered_count = len(query_rows)
+        run_query.openalex_count = int(provider_counts.get("openalex", 0))
+        run_query.brave_count = int(provider_counts.get("brave", 0))
+        run_query.semantic_scholar_count = int(provider_counts.get("semantic_scholar", 0))
+        run_query.processing_count = len(query_rows) if successful_connector_calls > 0 else 0
+        run_query.error_message = "; ".join(query_errors[:3]) if query_errors and successful_connector_calls == 0 else None
+        run_query.completed_at = datetime.now(UTC) if successful_connector_calls == 0 else None
+        run_query.updated_at = datetime.now(UTC)
+        db.commit()
+        query_batches.append((run_query, query_rows))
+    return query_batches
 
 
 def _expand_citations_for_iteration(
@@ -460,9 +746,23 @@ def _ingest_candidates(
     ai_filter: AIRelevanceFilter | None = None,
     ai_policy_no_ai: bool = False,
     observability: RunObservability | None = None,
-) -> int:
-    new_accepted_unique = 0
+) -> IngestStats:
+    stats = IngestStats()
     pending_source_ids: set[str] = set()
+
+    def _inc(bucket: str, value: int = 1) -> None:
+        setattr(stats, bucket, getattr(stats, bucket) + value)
+
+    def _track_review_status(review_status: str) -> None:
+        if review_status in {"auto_accept", "human_accept"}:
+            _inc("accepted")
+        elif review_status in {"auto_reject", "human_reject"}:
+            _inc("rejected")
+        elif review_status in {"processing"}:
+            _inc("processing")
+        else:
+            _inc("pending")
+
     for c in candidates:
         canonical_sid = canonical_id(
             doi=c.get("doi"),
@@ -481,6 +781,7 @@ def _ingest_candidates(
         if sid in pending_source_ids:
             if observability is not None:
                 observability.inc("dedup")
+            _inc("pending")
             continue
 
         existing = _find_existing_source(db, run_id, c, canonical_sid)
@@ -489,6 +790,7 @@ def _ingest_candidates(
             db.add(existing)
             if observability is not None:
                 observability.inc("dedup")
+            _track_review_status(existing.review_status)
             continue
 
         score = score_text(c["title"], c.get("abstract"))
@@ -556,11 +858,12 @@ def _ingest_candidates(
 
         accepted = review_status == "auto_accept"
         if accepted:
-            new_accepted_unique += 1
+            stats.new_accepted_unique += 1
             if observability is not None:
                 observability.inc("accepted")
         elif observability is not None:
             observability.inc("rejected")
+        _track_review_status(review_status)
 
         source_payload = {
             "id": sid,
@@ -570,6 +873,9 @@ def _ingest_candidates(
             "url": c.get("url"),
             "doi": c.get("doi"),
             "abstract": c.get("abstract"),
+            "journal": c.get("journal"),
+            "authors": list(c.get("authors") or []),
+            "citation_count": c.get("citation_count"),
             "type": c["type"],
             "source": c["source"],
             "source_native_id": c.get("source_native_id"),
@@ -601,7 +907,7 @@ def _ingest_candidates(
             continue
         pending_source_ids.add(inserted_sid)
     db.commit()
-    return new_accepted_unique
+    return stats
 
 
 def _run_scoped_source_id(db: Session, run_id: str, canonical_sid: str) -> str:
@@ -720,6 +1026,14 @@ def _merge_source(target: Source, incoming: dict, *, iteration: int) -> None:
         target.url = incoming["url"]
     if target.year is None and incoming.get("year") is not None:
         target.year = incoming["year"]
+    if not target.journal and incoming.get("journal"):
+        target.journal = incoming["journal"]
+    if (not target.authors) and incoming.get("authors"):
+        target.authors = list(incoming["authors"])
+    if target.citation_count is None and incoming.get("citation_count") is not None:
+        target.citation_count = incoming["citation_count"]
+    elif incoming.get("citation_count") is not None and target.citation_count is not None:
+        target.citation_count = max(int(target.citation_count), int(incoming["citation_count"]))
     if not target.source_native_id and incoming.get("source_native_id"):
         target.source_native_id = incoming["source_native_id"]
     if not target.patent_office and incoming.get("patent_office"):

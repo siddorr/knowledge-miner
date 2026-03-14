@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Knowledge Miner</title>
+  <link rel="stylesheet" href="/hmi2/static/gui.css?v=__HMI2_STATIC_VERSION__">
+</head>
+<body>
+  <header class="shell-header">
+    <div>
+      <h1>Knowledge Miner</h1>
+      <p class="activity-status"><span id="activityIndicator" class="activity-indicator" hidden></span><span id="activityLine">Idle</span></p>
+    </div>
+    <div class="header-status">
+      <span id="authStatus">Auth: unknown</span>
+      <span id="aiStatus">AI: unknown</span>
+      <span id="dbStatus">DB: unknown</span>
+    </div>
+    <div class="progress-wrap">
+      <progress id="headerProgress" max="100" value="0"></progress>
+      <span id="headerProgressLabel">0%</span>
+    </div>
+  </header>
+
+  <section class="controls-row" aria-label="Session controls">
+    <button id="newSessionBtn" type="button">New Session</button>
+    <button id="saveSessionBtn" type="button">Save</button>
+    <button id="loadSessionBtn" type="button">Load</button>
+    <button id="deleteSessionBtn" type="button">Delete</button>
+    <label>
+      History
+      <select id="sessionSelect"></select>
+    </label>
+    <span id="sessionState">No saved sessions.</span>
+  </section>
+
+  <nav class="nav-row" aria-label="Primary">
+    <button data-page="discover" class="nav-btn">Discover</button>
+    <button data-page="review" class="nav-btn">Review <span id="reviewBadge" class="badge">0</span></button>
+    <button data-page="documents" class="nav-btn">Documents <span id="documentsBadge" class="badge">0</span></button>
+    <button data-page="library" class="nav-btn">Library Export</button>
+    <button data-page="advanced" class="nav-btn">Advanced</button>
+  </nav>
+
+  <main class="workspace">
+    <section id="page-discover" class="page">
+      <h2>Discover</h2>
+      <div class="card">
+        <label>
+          Session
+          <input id="discoverSessionName" type="text" placeholder="UPW session">
+        </label>
+        <label>
+          Query
+          <input id="discoverQueryInput" type="text" placeholder="ultrapure water semiconductor">
+        </label>
+        <div class="row">
+          <button id="addQueryBtn" type="button">Add Query</button>
+          <button id="runDiscoveryBtn" type="button">Run Discovery</button>
+          <button id="runNextCitationBtn" type="button">Run Next Citation Iteration</button>
+        </div>
+        <p id="discoverSelectedCount" class="muted">Selected queries: 0</p>
+        <p id="discoverIterationLine">Iteration: -</p>
+        <p id="discoverCitationHint" class="muted">Need at least 1 accepted paper.</p>
+      </div>
+      <div class="card">
+        <strong>Session Queries</strong>
+        <ul id="discoverQueryList" class="query-list"></ul>
+      </div>
+      <div class="card">
+        <strong>Run Query Status</strong>
+        <table>
+          <thead><tr><th>#</th><th>Query</th><th>Status</th><th>Providers</th><th>Review</th><th>Results</th></tr></thead>
+          <tbody id="discoverRunQueries"></tbody>
+        </table>
+      </div>
+      <div class="summary-row">
+        <span>Discovered: <strong id="discoverSummaryDiscovered">0</strong></span>
+        <span>Approved: <strong id="discoverSummaryApproved">0</strong></span>
+        <span>Rejected: <strong id="discoverSummaryRejected">0</strong></span>
+        <span>Reviewed: <strong id="discoverSummaryReviewed">0</strong></span>
+        <span>Pending review: <strong id="discoverSummaryPending">0</strong></span>
+      </div>
+      <p id="discoverState" class="muted"></p>
+    </section>
+
+    <section id="page-review" class="page" hidden>
+      <h2 id="reviewHeading">Review Sources - Pending: 0</h2>
+      <p class="muted">Keyboard: A=Accept | R=Reject | L=Later | Arrow Up/Down=Next paper</p>
+      <div class="row">
+        <label>
+          Queue
+          <select id="reviewStatusFilter">
+            <option value="pending" selected>Pending</option>
+            <option value="processing">Processing</option>
+            <option value="accepted">Accepted</option>
+            <option value="rejected">Rejected</option>
+            <option value="later">Later</option>
+            <option value="all">All</option>
+          </select>
+        </label>
+        <span id="reviewQueueHelp" class="muted">Browse papers by review state: Pending, Accepted, Rejected, Later, or All.</span>
+      </div>
+      <div class="two-pane">
+        <section class="pane">
+          <table>
+            <thead><tr><th>Status</th><th>Year</th><th>Cit</th><th>Score</th><th>Title</th></tr></thead>
+            <tbody id="reviewRows"></tbody>
+          </table>
+        </section>
+        <section class="pane detail-pane">
+          <h3 id="reviewTitle">No source selected.</h3>
+          <h4>Abstract</h4>
+          <p id="reviewAbstract" class="detail-text">Select a paper to review.</p>
+          <h4>Metadata</h4>
+          <div id="reviewMetadata">Year: - | Journal: - | Citations: - | Authors: - | Link: -</div>
+          <h4>AI signals</h4>
+          <p id="reviewSignals">No AI signals available.</p>
+          <div class="row">
+            <button id="reviewAcceptBtn" type="button">Accept</button>
+            <button id="reviewRejectBtn" type="button">Reject</button>
+            <button id="reviewLaterBtn" type="button">Later</button>
+          </div>
+        </section>
+      </div>
+      <p id="reviewState" class="muted"></p>
+    </section>
+
+    <section id="page-documents" class="page" hidden>
+      <h2>Documents</h2>
+      <div class="summary-row">
+        <span>Downloaded: <strong id="documentsDownloaded">0</strong></span>
+        <span>Failed: <strong id="documentsFailed">0</strong></span>
+        <span>Manual uploads: <strong id="documentsManual">0</strong></span>
+        <span>Pending: <strong id="documentsPending">0</strong></span>
+      </div>
+      <div class="row">
+        <button id="documentsExportCsvBtn" type="button">Export CSV</button>
+      </div>
+      <table>
+        <thead><tr><th>Rank</th><th>Score</th><th>Year</th><th>Cit</th><th>Title</th><th>Status</th></tr></thead>
+        <tbody id="documentsRows"></tbody>
+      </table>
+      <section class="card detail-pane">
+        <h3 id="documentsDetailTitle">No document selected.</h3>
+        <p id="documentsDetailSummary" class="detail-text">Select a document row to inspect status, links, and available actions.</p>
+        <div id="documentsDetailMetadata">Year: - | Journal: - | Citations: - | Authors: - | Link: -</div>
+        <div class="row">
+          <button id="documentsRowActionBtn" type="button">Download Selected</button>
+        </div>
+      </section>
+      <div class="row">
+        <button id="downloadMissingBtn" type="button">Download missing</button>
+        <button id="retryFailedBtn" type="button">Retry failed</button>
+      </div>
+      <form id="batchUploadForm" class="row">
+        <label>
+          Batch upload
+          <input id="batchUploadFiles" type="file" multiple accept=".pdf,.html,.htm,application/pdf,text/html">
+        </label>
+        <button type="submit">Upload</button>
+      </form>
+      <pre id="batchUploadResults" class="detail-text">No batch upload yet.</pre>
+      <p id="documentsState" class="muted"></p>
+    </section>
+
+    <section id="page-library" class="page" hidden>
+      <h2>Library Export</h2>
+      <div class="summary-row">
+        <span>Matching papers: <strong id="libraryMatches">0</strong></span>
+        <span>Highest AI relevance: <strong id="libraryHighest">-</strong></span>
+        <span>Lowest AI relevance: <strong id="libraryLowest">-</strong></span>
+      </div>
+      <div class="card row">
+        <label>
+          Query
+          <input id="libraryQuery" type="text" placeholder="ultrapure water semiconductor">
+        </label>
+        <label>
+          Export size
+          <select id="libraryExportSize">
+            <option value="20" selected>20</option>
+            <option value="40">40</option>
+            <option value="60">60</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+      </div>
+      <div class="two-pane">
+        <section class="pane">
+          <table>
+            <thead><tr><th>Rank</th><th>AI Score</th><th>Year</th><th>Citations</th><th>Title</th></tr></thead>
+            <tbody id="libraryRows"></tbody>
+          </table>
+        </section>
+        <section class="pane detail-pane">
+          <h3 id="libraryTitle">No paper selected.</h3>
+          <p id="libraryAbstract" class="detail-text">Select a paper to inspect and export.</p>
+          <div id="libraryMetadata">Year: - | Journal: - | Citations: - | Authors: - | Link: -</div>
+          <div class="row">
+            <button id="libraryAddBtn" type="button">Add to export list</button>
+            <button id="libraryRemoveBtn" type="button">Remove from export list</button>
+          </div>
+        </section>
+      </div>
+      <div class="row">
+        <button id="libraryZipBtn" type="button">Export ZIP with PDFs</button>
+        <button id="libraryMetadataBtn" type="button">Export Metadata CSV</button>
+      </div>
+      <p id="libraryState" class="muted"></p>
+    </section>
+
+    <section id="page-advanced" class="page" hidden>
+      <h2>Advanced</h2>
+      <div class="card">
+        <label>
+          API Key
+          <input id="apiKeyInput" type="password" placeholder="Bearer token">
+        </label>
+        <div class="row">
+          <button id="saveApiKeyBtn" type="button">Save Key</button>
+        </div>
+        <p id="apiKeyState" class="muted">No key set.</p>
+      </div>
+      <div class="card">
+        <strong>Provider Limits</strong>
+        <label>
+          OpenAlex results per query
+          <input id="openalexLimitInput" type="number" min="1" max="200" step="1">
+        </label>
+        <label>
+          Brave results per query
+          <input id="braveCountInput" type="number" min="1" max="20" step="1">
+        </label>
+        <label>
+          <input id="braveAllowlistCheckbox" type="checkbox">
+          Enforce Brave domain allowlist
+        </label>
+        <div class="row">
+          <button id="saveProviderSettingsBtn" type="button">Save Provider Settings</button>
+        </div>
+        <p id="providerSettingsState" class="muted">Provider settings not loaded.</p>
+      </div>
+      <div class="card">
+        <strong>Latest IDs</strong>
+        <p>Discovery: <code id="latestDiscoveryId">-</code></p>
+        <p>Acquisition: <code id="latestAcquisitionId">-</code></p>
+        <p>Parse: <code id="latestParseId">-</code></p>
+      </div>
+      <div class="card">
+        <label>
+          Global Search
+          <input id="globalSearchInput" type="text" placeholder="run id, DOI, source title">
+        </label>
+        <div class="row">
+          <button id="globalSearchBtn" type="button">Search</button>
+        </div>
+        <ul id="globalSearchResults" class="detail-list"></ul>
+      </div>
+      <div class="card">
+        <label>
+          Run ID
+          <input id="runLookupInput" type="text" placeholder="run_...">
+        </label>
+        <div class="row">
+          <button id="runLookupBtn" type="button">Lookup Discovery Run</button>
+        </div>
+        <pre id="runLookupResult" class="detail-text">No run loaded.</pre>
+      </div>
+    </section>
+  </main>
+
+  <footer class="shell-footer">
+    <span id="footerSystem">System: unknown</span>
+    <span id="footerAi">AI: unknown</span>
+    <span id="footerDb">DB: unknown</span>
+    <span id="footerUpdated">Last update: -</span>
+  </footer>
+
+  <script>
+    window.__KM_HMI2_DEFAULT_TOKEN__ = __HMI2_DEFAULT_TOKEN_JSON__;
+    window.__KM_HMI2_AUTH_ENABLED__ = __HMI2_AUTH_ENABLED__;
+    window.__KM_HMI2_LAUNCH_SECTION__ = __HMI2_LAUNCH_SECTION_JSON__;
+  </script>
+  <script type="module" src="/hmi2/static/gui.js?v=__HMI2_STATIC_VERSION__"></script>
+</body>
+</html>

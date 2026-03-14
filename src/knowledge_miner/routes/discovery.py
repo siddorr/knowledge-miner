@@ -9,12 +9,13 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_api_key
 from ..db import get_db
-from ..discovery import create_run, enqueue_run, export_sources_raw, review_source
-from ..iteration import build_next_queries, extract_keywords
-from ..models import Run, Source
+from ..discovery import create_run, enqueue_citation_iteration_run, enqueue_run, export_sources_raw, review_source
+from ..models import DiscoveryRunQuery, Run, Source
 from ..rate_limit import require_rate_limit
 from ..schemas import (
     CitationIterationRequest,
+    DiscoveryRunQueriesResponse,
+    DiscoveryRunQueryOut,
     RunCreateRequest,
     RunCreateResponse,
     SourceReviewRequest,
@@ -44,26 +45,6 @@ def _not_found_diagnostics(db: Session, *, run_id: str | None = None, source_id:
     }
 
 
-def _build_citation_iteration_queries(db: Session, run_id: str) -> list[str]:
-    rows = db.scalars(
-        select(Source).where(Source.run_id == run_id, Source.accepted.is_(True)).order_by(Source.relevance_score.desc(), Source.id.asc()).limit(200)
-    ).all()
-    texts: list[str] = []
-    for row in rows:
-        if row.title:
-            texts.append(row.title)
-        if row.abstract:
-            texts.append(row.abstract)
-    keywords = extract_keywords(texts, top_k=20)
-    queries = build_next_queries(keywords, max_queries=10)
-    if queries:
-        return queries
-    previous = db.get(Run, run_id)
-    if previous and previous.seed_queries:
-        return list(previous.seed_queries[:5])
-    return ["ultrapure water semiconductor process control"]
-
-
 def _enqueue_discovery_task(background_tasks: BackgroundTasks, run_id: str) -> None:
     try:
         from .. import main as main_module
@@ -71,6 +52,15 @@ def _enqueue_discovery_task(background_tasks: BackgroundTasks, run_id: str) -> N
     except Exception:
         enqueue_fn = enqueue_run
     background_tasks.add_task(enqueue_fn, run_id)
+
+
+def _enqueue_citation_task(background_tasks: BackgroundTasks, run_id: str, source_run_id: str) -> None:
+    try:
+        from .. import main as main_module
+        enqueue_fn = getattr(main_module, "enqueue_citation_iteration_run", enqueue_citation_iteration_run)
+    except Exception:
+        enqueue_fn = enqueue_citation_iteration_run
+    background_tasks.add_task(enqueue_fn, run_id, source_run_id=source_run_id)
 
 
 @router.post("/v1/discovery/runs", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -81,7 +71,11 @@ def create_discovery_run(
     __: None = Depends(require_rate_limit),
     db: Session = Depends(get_db),
 ) -> RunCreateResponse:
-    run = create_run(db, payload.seed_queries, 1, ai_filter_enabled=payload.ai_filter_enabled)
+    selected_queries = payload.selected_queries or payload.seed_queries
+    try:
+        run = create_run(db, selected_queries, 1, ai_filter_enabled=payload.ai_filter_enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="selected_queries_required") from exc
     _enqueue_discovery_task(background_tasks, run.id)
     return RunCreateResponse(run_id=run.id, status=run.status)
 
@@ -99,11 +93,54 @@ def create_citation_iteration_run(
     if previous is None:
         logger.warning("run_not_found %s", _not_found_diagnostics(db, run_id=run_id))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
-    queries = _build_citation_iteration_queries(db, run_id)
-    ai_filter_enabled = previous.ai_filter_active if payload.ai_filter_enabled is None else payload.ai_filter_enabled
-    run = create_run(db, queries, 1, ai_filter_enabled=ai_filter_enabled)
-    _enqueue_discovery_task(background_tasks, run.id)
-    return RunCreateResponse(run_id=run.id, status=run.status)
+    if previous.status == "running":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_already_running")
+    accepted_count = db.scalar(
+        select(func.count()).select_from(Source).where(Source.run_id == run_id, Source.accepted.is_(True))
+    ) or 0
+    if accepted_count <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Need at least 1 accepted paper before running citation iteration.",
+        )
+    _enqueue_citation_task(background_tasks, previous.id, previous.id)
+    return RunCreateResponse(run_id=previous.id, status=previous.status)
+
+
+@router.get("/v1/discovery/runs/{run_id}/queries", response_model=DiscoveryRunQueriesResponse)
+def list_discovery_run_queries(
+    run_id: str,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> DiscoveryRunQueriesResponse:
+    run = db.get(Run, run_id)
+    if run is None:
+        logger.warning("run_not_found %s", _not_found_diagnostics(db, run_id=run_id))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    rows = db.scalars(
+        select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run_id).order_by(DiscoveryRunQuery.position.asc())
+    ).all()
+    return DiscoveryRunQueriesResponse(
+        run_id=run_id,
+        queries=[
+            DiscoveryRunQueryOut(
+                query=row.query_text,
+                position=row.position,
+                status=row.status,
+                discovered_count=row.discovered_count,
+                openalex_count=row.openalex_count,
+                brave_count=row.brave_count,
+                semantic_scholar_count=row.semantic_scholar_count,
+                accepted_count=row.accepted_count,
+                rejected_count=row.rejected_count,
+                pending_count=row.pending_count,
+                processing_count=row.processing_count,
+                error_message=row.error_message,
+            )
+            for row in rows
+        ],
+    )
 
 
 @router.post("/v1/sources/{source_id:path}/review", response_model=SourceReviewResponse)

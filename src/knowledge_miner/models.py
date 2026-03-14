@@ -46,6 +46,45 @@ class Run(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
 
+class DiscoveryRunQuery(Base):
+    __tablename__ = "discovery_run_queries"
+    __table_args__ = (
+        CheckConstraint("position >= 1", name="ck_discovery_run_queries_position_gte_1"),
+        CheckConstraint("discovered_count >= 0", name="ck_discovery_run_queries_discovered_count_gte_0"),
+        CheckConstraint("openalex_count >= 0", name="ck_discovery_run_queries_openalex_count_gte_0"),
+        CheckConstraint("brave_count >= 0", name="ck_discovery_run_queries_brave_count_gte_0"),
+        CheckConstraint("semantic_scholar_count >= 0", name="ck_discovery_run_queries_semantic_scholar_count_gte_0"),
+        CheckConstraint("accepted_count >= 0", name="ck_discovery_run_queries_accepted_count_gte_0"),
+        CheckConstraint("rejected_count >= 0", name="ck_discovery_run_queries_rejected_count_gte_0"),
+        CheckConstraint("pending_count >= 0", name="ck_discovery_run_queries_pending_count_gte_0"),
+        CheckConstraint("processing_count >= 0", name="ck_discovery_run_queries_processing_count_gte_0"),
+        CheckConstraint(
+            "status IN ('waiting','searching','ranking_relevance','completed','failed')",
+            name="ck_discovery_run_queries_status_values",
+        ),
+        Index("ix_discovery_run_queries_run_id_position", "run_id", "position"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), nullable=False)
+    query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="waiting")
+    discovered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    openalex_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    brave_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    semantic_scholar_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    accepted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pending_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processing_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class Source(Base):
     __tablename__ = "sources"
     __table_args__ = (
@@ -83,6 +122,9 @@ class Source(Base):
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     doi: Mapped[str | None] = mapped_column(Text, nullable=True)
     abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
+    journal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    authors: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    citation_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     type: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False)
     source_native_id: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -269,10 +269,10 @@ def export_manual_downloads_csv(
         writer.writerow(
             [
                 (source.title if source else item["title"]) or "",
-                "",
+                ", ".join(source.authors or []) if source else "",
                 source.year if source else "",
-                "",
-                "",
+                (source.journal or "") if source else "",
+                source.citation_count if source and source.citation_count is not None else "",
                 str(source.relevance_score) if source and source.relevance_score is not None else "",
                 item["status"],
                 item["selected_url"] or item["source_url"] or "",

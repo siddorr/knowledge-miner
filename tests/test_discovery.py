@@ -12,11 +12,12 @@ from knowledge_miner.discovery import (
     _ingest_candidates,
     _rank_citation_candidates,
     create_run,
+    execute_citation_iteration_run,
     execute_run,
     export_sources_raw,
     review_source,
 )
-from knowledge_miner.models import CitationEdge, Run, Source
+from knowledge_miner.models import CitationEdge, DiscoveryRunQuery, Run, Source
 from knowledge_miner.observability import RunObservability
 
 
@@ -132,7 +133,7 @@ def test_ai_filter_decision_is_authoritative_in_ai_first_mode():
         assert source.ai_decision == "auto_reject"
 
 
-def test_run_execution_persists_citation_edges(monkeypatch):
+def test_manual_citation_iteration_persists_citation_edges(monkeypatch):
     original_use_ai = settings.use_ai_filter
     original_key = settings.ai_api_key
     try:
@@ -147,13 +148,15 @@ def test_run_execution_persists_citation_edges(monkeypatch):
             ),
         )
         with SessionLocal() as db:
-            run = create_run(db, ["ultrapure water semiconductor"], max_iterations=1)
-            execute_run(db, run)
-            db.refresh(run)
-            edge_count = db.query(CitationEdge).filter(CitationEdge.run_id == run.id).count()
+            source_run = create_run(db, ["ultrapure water semiconductor"], max_iterations=1)
+            execute_run(db, source_run)
+            db.refresh(source_run)
+            execute_citation_iteration_run(db, source_run, source_run_id=source_run.id)
+            db.refresh(source_run)
+            edge_count = db.query(CitationEdge).filter(CitationEdge.run_id == source_run.id).count()
             assert edge_count > 0
-            assert run.citation_edges_total > 0
-            assert run.expanded_candidates_total > 0
+            assert source_run.citation_edges_total > 0
+            assert source_run.expanded_candidates_total > 0
     finally:
         object.__setattr__(settings, "use_ai_filter", original_use_ai)
         object.__setattr__(settings, "ai_api_key", original_key)
@@ -166,6 +169,16 @@ def test_run_metrics_fields_default_on_create():
         assert isinstance(run, Run)
         assert run.expanded_candidates_total == 0
         assert run.citation_edges_total == 0
+
+
+def test_create_run_persists_discovery_run_queries():
+    with SessionLocal() as db:
+        run = create_run(db, ["upw", "semiconductor"], max_iterations=1)
+        rows = db.scalars(
+            select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run.id).order_by(DiscoveryRunQuery.position.asc())
+        ).all()
+        assert [row.query_text for row in rows] == ["upw", "semiconductor"]
+        assert all(row.status == "waiting" for row in rows)
 
 
 def test_dedup_merge_preserves_provenance_history():

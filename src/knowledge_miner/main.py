@@ -34,14 +34,15 @@ from .ai_filter import describe_ai_filter_runtime
 from .auth import require_api_key
 from .config import is_sqlite_url, settings
 from .db import Base, SessionLocal, database_readiness, engine, get_db
-from .discovery import enqueue_run  # compatibility export for tests/patching
-from .models import AcquisitionItem, AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Run, Source
+from .discovery import enqueue_citation_iteration_run, enqueue_run  # compatibility export for tests/patching
+from .models import AcquisitionItem, AcquisitionRun, Artifact, DiscoveryRunQuery, DocumentChunk, ParseRun, ParsedDocument, Run, Source
 from .parse import create_parse_run, enqueue_parse_run
 from .rate_limit import require_rate_limit
 from .logging_setup import configure_logging
 from .runtime_state import acquire_instance_lock, cleanup_runtime_state, log_cleanup_result
 from .routes.discovery import router as discovery_router
 from .routes.hmi import router as hmi_router
+from .routes.library_export import router as library_export_router
 from .routes.search import router as search_router
 from .routes.settings import router as settings_router
 from .routes.system import router as system_router
@@ -78,7 +79,7 @@ from .schemas import (
 
 app = FastAPI(title="UPW Literature Discovery Engine", version="0.1.0")
 logger = logging.getLogger("knowledge_miner")
-HMI_DIR = Path(__file__).resolve().parent / "hmi"
+HMI_V2_DIR = Path(__file__).resolve().parent / "hmi_v2"
 HOT_READ_LIMIT_WINDOW_SECONDS = 10.0
 HOT_READ_LIMIT_COUNT = 120
 HOT_READ_WARN_COUNT = 60
@@ -86,9 +87,10 @@ _hot_read_buckets: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _hot_read_metrics: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "limited": 0})
 
 # Create tables on module load for v1 local/dev simplicity.
-app.mount("/hmi/static", StaticFiles(directory=HMI_DIR / "static"), name="hmi_static")
+app.mount("/hmi2/static", StaticFiles(directory=HMI_V2_DIR / "static"), name="hmi2_static")
 app.include_router(discovery_router)
 app.include_router(hmi_router)
+app.include_router(library_export_router)
 app.include_router(search_router)
 app.include_router(settings_router)
 app.include_router(system_router)
@@ -447,6 +449,11 @@ def get_run_status(
     pending_review = db.scalar(
         select(func.count()).select_from(Source).where(Source.run_id == run_id, Source.review_status == "needs_review")
     ) or 0
+    query_rows = db.scalars(
+        select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run_id).order_by(DiscoveryRunQuery.position.asc())
+    ).all()
+    has_ranking_phase = any(row.status == "ranking_relevance" for row in query_rows)
+    has_search_phase = any(row.status == "searching" for row in query_rows)
     stage_status = _stage_status(run.status)
     if stage_status == "completed" and pending_review > 0:
         stage_status = "waiting_user"
@@ -455,6 +462,10 @@ def get_run_status(
     percent = round((completed_steps / total_steps) * 100.0, 1) if total_steps > 0 else None
     if stage_status == "queued":
         message = "Queued to start source discovery."
+    elif stage_status == "running" and has_ranking_phase:
+        message = "Ranking relevance."
+    elif stage_status == "running" and has_search_phase:
+        message = "Searching sources."
     elif stage_status == "running":
         message = "Searching sources and evaluating relevance."
     elif stage_status == "waiting_user":
@@ -515,6 +526,8 @@ def list_sources(
         stmt = stmt.where(Source.review_status.in_(("auto_reject", "human_reject")))
     elif effective_status == "needs_review":
         stmt = stmt.where(Source.review_status == "needs_review")
+    elif effective_status == "processing":
+        stmt = stmt.where(Source.review_status == "processing")
     elif effective_status == "later":
         stmt = stmt.where(Source.review_status == "human_later")
     elif effective_status == "all":
@@ -536,7 +549,11 @@ def list_sources(
                 year=s.year,
                 url=s.url,
                 doi=s.doi,
+                doi_url=(f"https://doi.org/{s.doi}" if s.doi else None),
                 abstract=s.abstract,
+                journal=s.journal,
+                authors=list(s.authors or []),
+                citation_count=s.citation_count,
                 type=s.type,
                 source=s.source,
                 iteration=s.iteration,
@@ -556,4 +573,3 @@ def list_sources(
         limit=limit,
         offset=offset,
     )
-

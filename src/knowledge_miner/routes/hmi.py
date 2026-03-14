@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -18,11 +18,24 @@ from ..schemas import HMIEventsIngestRequest, HMIEventsIngestResponse
 
 router = APIRouter(tags=["hmi"])
 logger_name = "knowledge_miner"
-HMI_DIR = Path(__file__).resolve().parents[1] / "hmi"
+HMI_V2_DIR = Path(__file__).resolve().parents[1] / "hmi_v2"
 
 
-def _load_hmi_partial(name: str) -> str:
-    return (HMI_DIR / "partials" / name).read_text(encoding="utf-8")
+def _hmi_launch_section(db: Session) -> str:
+    run_count = db.scalar(select(func.count()).select_from(Run)) or 0
+    if run_count == 0:
+        return "discover"
+    review_count = db.scalar(
+        select(func.count()).select_from(Source).where(Source.review_status == "needs_review")
+    ) or 0
+    if review_count > 0:
+        return "review"
+    failed_docs_count = db.scalar(
+        select(func.count())
+        .select_from(AcquisitionItem)
+        .where(AcquisitionItem.status.in_(("failed", "partial")))
+    ) or 0
+    return "documents" if failed_docs_count > 0 else "discover"
 
 
 def _hash_user_agent(user_agent: str | None) -> str:
@@ -47,46 +60,30 @@ def _sanitize_hmi_value_preview(value: str | None) -> str | None:
 
 
 @router.get("/hmi")
-def hmi_shell(db: Session = Depends(get_db)) -> HTMLResponse:
-    run_count = db.scalar(select(func.count()).select_from(Run)) or 0
-    if run_count == 0:
-        launch_section = "build"
-    else:
-        review_count = db.scalar(
-            select(func.count()).select_from(Source).where(Source.review_status == "needs_review")
-        ) or 0
-        if review_count > 0:
-            launch_section = "review"
-        else:
-            failed_docs_count = db.scalar(
-                select(func.count())
-                .select_from(AcquisitionItem)
-                .where(AcquisitionItem.status.in_(("failed", "partial")))
-            ) or 0
-            launch_section = "documents" if failed_docs_count > 0 else "build"
-    template = (HMI_DIR / "index.html").read_text(encoding="utf-8")
+def hmi_shell(db: Session = Depends(get_db)) -> RedirectResponse:
+    del db
+    return RedirectResponse(url="/hmi2", status_code=307)
+
+
+@router.get("/hmi2")
+def hmi2_shell(db: Session = Depends(get_db)) -> HTMLResponse:
+    launch_section = _hmi_launch_section(db)
+    template = (HMI_V2_DIR / "index.html").read_text(encoding="utf-8")
     token_json = json.dumps(settings.hmi_api_token) if settings.auth_enabled and settings.hmi_api_token else "null"
     auth_enabled_json = "true" if settings.auth_enabled else "false"
     launch_section_json = json.dumps(launch_section)
     static_version = str(
         max(
-            int((HMI_DIR / "static" / "hmi.js").stat().st_mtime),
-            int((HMI_DIR / "static" / "hmi.css").stat().st_mtime),
+            int((HMI_V2_DIR / "static" / "gui.js").stat().st_mtime),
+            int((HMI_V2_DIR / "static" / "gui.css").stat().st_mtime),
         )
     )
     html = (
         template
-        .replace("__HMI_DEFAULT_TOKEN_JSON__", token_json)
-        .replace("__HMI_AUTH_ENABLED__", auth_enabled_json)
-        .replace("__HMI_LAUNCH_SECTION_JSON__", launch_section_json)
-        .replace("__HMI_STATIC_VERSION__", static_version)
-        .replace("__PARTIAL_CONTROLS__", _load_hmi_partial("controls.html"))
-        .replace("__PARTIAL_NAV__", _load_hmi_partial("nav.html"))
-        .replace("__PARTIAL_STATUS_STRIP__", _load_hmi_partial("status_strip.html"))
-        .replace("__PARTIAL_REVIEW__", _load_hmi_partial("review.html"))
-        .replace("__PARTIAL_DOCUMENTS__", _load_hmi_partial("documents.html"))
-        .replace("__PARTIAL_LIBRARY__", _load_hmi_partial("library.html"))
-        .replace("__PARTIAL_ADVANCED__", _load_hmi_partial("advanced.html"))
+        .replace("__HMI2_DEFAULT_TOKEN_JSON__", token_json)
+        .replace("__HMI2_AUTH_ENABLED__", auth_enabled_json)
+        .replace("__HMI2_LAUNCH_SECTION_JSON__", launch_section_json)
+        .replace("__HMI2_STATIC_VERSION__", static_version)
     )
     return HTMLResponse(content=html)
 

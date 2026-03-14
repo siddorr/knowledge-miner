@@ -53,6 +53,9 @@ class MockConnector:
                     "url": url,
                     "doi": doi,
                     "abstract": abstract,
+                    "journal": "Mock Semiconductor Water Journal",
+                    "authors": ["A. Researcher", "B. Engineer", "C. Analyst"],
+                    "citation_count": 10 + idx,
                     "source": self.name,
                     "source_native_id": f"{self.name}_{abs(hash(url + run_id)) % 100000}",
                     "patent_office": None,
@@ -116,7 +119,7 @@ class OpenAlexConnector:
     def search(self, query: str, *, run_id: str, iteration: int) -> list[dict]:
         del run_id
         url = f"{settings.openalex_base_url.rstrip('/')}/works"
-        params = {"search": query, "per-page": 25}
+        params = {"search": query, "per-page": max(1, min(int(settings.openalex_search_limit), 200))}
         response = _request_json("GET", url, params=params)
         rows = response.get("results", [])
         out: list[dict] = []
@@ -136,6 +139,9 @@ class OpenAlexConnector:
                     "url": source_url,
                     "doi": doi,
                     "abstract": abstract,
+                    "journal": _openalex_journal(row),
+                    "authors": _openalex_authors(row),
+                    "citation_count": _openalex_citation_count(row),
                     "source": self.name,
                     "source_native_id": openalex_id,
                     "openalex_id": openalex_id,
@@ -206,6 +212,9 @@ class SemanticScholarConnector:
                     "url": row.get("url"),
                     "doi": doi,
                     "abstract": row.get("abstract"),
+                    "journal": _semantic_scholar_journal(row),
+                    "authors": _semantic_scholar_authors(row),
+                    "citation_count": _semantic_scholar_citation_count(row),
                     "source": self.name,
                     "source_native_id": paper_id,
                     "openalex_id": None,
@@ -258,18 +267,18 @@ class BraveConnector:
         if not settings.brave_api_key:
             return []
         url = f"{settings.brave_base_url.rstrip('/')}/res/v1/web/search"
-        params = {"q": query, "count": 20}
+        params = {"q": query, "count": max(1, min(int(settings.brave_search_count), 20))}
         headers = {"Accept": "application/json", "X-Subscription-Token": settings.brave_api_key}
         response = _request_json("GET", url, params=params, headers=headers)
         rows = response.get("web", {}).get("results", [])
-        allowlist = load_domain_allowlist(settings.domains_allowlist_path)
+        allowlist = load_domain_allowlist(settings.domains_allowlist_path) if settings.brave_require_allowlist else []
         out: list[dict] = []
         for row in rows:
             title = row.get("title")
             row_url = row.get("url")
             if not title:
                 continue
-            if not is_allowed_url(row_url, allowlist):
+            if settings.brave_require_allowlist and not is_allowed_url(row_url, allowlist):
                 continue
             out.append(
                 {
@@ -278,6 +287,9 @@ class BraveConnector:
                     "url": row_url,
                     "doi": None,
                     "abstract": row.get("description"),
+                    "journal": None,
+                    "authors": [],
+                    "citation_count": None,
                     "source": self.name,
                     "source_native_id": row.get("url"),
                     "openalex_id": None,
@@ -355,6 +367,26 @@ def _openalex_abstract(inverted_index: dict[str, list[int]] | None) -> str | Non
     return text or None
 
 
+def _openalex_journal(row: dict[str, Any]) -> str | None:
+    source = ((row.get("primary_location") or {}).get("source") or {})
+    display_name = source.get("display_name")
+    return display_name or None
+
+
+def _openalex_authors(row: dict[str, Any]) -> list[str]:
+    authors: list[str] = []
+    for authorship in row.get("authorships") or []:
+        author = (authorship.get("author") or {}).get("display_name")
+        if author:
+            authors.append(author)
+    return authors
+
+
+def _openalex_citation_count(row: dict[str, Any]) -> int | None:
+    value = row.get("cited_by_count")
+    return value if isinstance(value, int) else None
+
+
 def _extract_year(age_text: str | None) -> int | None:
     if not age_text:
         return None
@@ -392,6 +424,9 @@ def _openalex_work_to_candidate(row: dict[str, Any], *, discovery_method: str, p
         "url": source_url,
         "doi": doi,
         "abstract": abstract,
+        "journal": _openalex_journal(row),
+        "authors": _openalex_authors(row),
+        "citation_count": _openalex_citation_count(row),
         "source": "openalex",
         "source_native_id": openalex_id,
         "openalex_id": openalex_id,
@@ -420,18 +455,27 @@ def _semantic_scholar_fetch_paper(source: "Source") -> dict[str, Any]:
             "url",
             "abstract",
             "externalIds",
+            "venue",
+            "authors.name",
+            "citationCount",
             "references.paperId",
             "references.title",
             "references.year",
             "references.url",
             "references.abstract",
             "references.externalIds",
+            "references.venue",
+            "references.authors.name",
+            "references.citationCount",
             "citations.paperId",
             "citations.title",
             "citations.year",
             "citations.url",
             "citations.abstract",
             "citations.externalIds",
+            "citations.venue",
+            "citations.authors.name",
+            "citations.citationCount",
         ]
     )
     headers: dict[str, str] = {}
@@ -458,6 +502,9 @@ def _semantic_scholar_paper_to_candidate(
         "url": row.get("url"),
         "doi": doi,
         "abstract": row.get("abstract"),
+        "journal": _semantic_scholar_journal(row),
+        "authors": _semantic_scholar_authors(row),
+        "citation_count": _semantic_scholar_citation_count(row),
         "source": "semantic_scholar",
         "source_native_id": paper_id,
         "openalex_id": None,
@@ -468,3 +515,22 @@ def _semantic_scholar_paper_to_candidate(
         "discovery_method": discovery_method,
         "parent_source_id": parent_source_id,
     }
+
+
+def _semantic_scholar_journal(row: dict[str, Any]) -> str | None:
+    venue = row.get("venue")
+    return venue if isinstance(venue, str) and venue.strip() else None
+
+
+def _semantic_scholar_authors(row: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for author in row.get("authors") or []:
+        name = author.get("name")
+        if isinstance(name, str) and name.strip():
+            out.append(name)
+    return out
+
+
+def _semantic_scholar_citation_count(row: dict[str, Any]) -> int | None:
+    value = row.get("citationCount")
+    return value if isinstance(value, int) else None
