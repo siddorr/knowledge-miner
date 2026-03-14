@@ -17,6 +17,7 @@ const state = {
   token: window.__KM_HMI2_DEFAULT_TOKEN__ || localStorage.getItem(AUTH_STORAGE_KEY) || "",
   sessions: [],
   activeSessionId: localStorage.getItem(ACTIVE_SESSION_KEY) || "",
+  pendingSessionId: "",
   activePage: window.__KM_HMI2_LAUNCH_SECTION__ || "discover",
   latest: { discovery: "", acquisition: "", parse: "" },
   reviewItems: [],
@@ -33,6 +34,7 @@ const state = {
   busyLabel: "",
   currentDiscoveryStatus: null,
   currentAcquisitionStatus: null,
+  liveRefreshTimer: null,
 };
 
 const els = {};
@@ -54,7 +56,7 @@ function readDom() {
   const ids = [
     "activityLine", "activityIndicator", "authStatus", "aiStatus", "dbStatus", "headerProgress", "headerProgressLabel",
     "newSessionBtn", "saveSessionBtn", "loadSessionBtn", "deleteSessionBtn", "sessionSelect", "sessionState",
-    "discoverSessionName", "discoverQueryInput", "addQueryBtn", "runDiscoveryBtn", "runNextCitationBtn", "discoverIterationLine",
+    "discoverSessionName", "discoverQueryInput", "addQueryBtn", "runDiscoveryBtn", "runNextCitationBtn", "resumeCitationBtn", "discoverIterationLine",
     "discoverQueryList", "discoverSelectedCount", "discoverRunQueries", "discoverCitationHint",
     "discoverSummaryDiscovered", "discoverSummaryApproved", "discoverSummaryRejected", "discoverSummaryReviewed", "discoverSummaryPending", "discoverState",
     "reviewHeading", "reviewRows", "reviewTitle", "reviewAbstract", "reviewMetadata", "reviewSignals",
@@ -130,6 +132,7 @@ function loadSessions() {
   if (!state.sessions.some((session) => session.id === state.activeSessionId)) {
     state.activeSessionId = state.sessions[0].id;
   }
+  state.pendingSessionId = state.activeSessionId;
   persistSessions();
 }
 
@@ -249,15 +252,16 @@ function renderSessionQueries() {
 
 function renderSessions() {
   const current = activeSession();
+  const selectedId = state.pendingSessionId || current.id;
   els.sessionSelect.innerHTML = "";
   state.sessions.forEach((session) => {
     const option = document.createElement("option");
     option.value = session.id;
     option.textContent = session.name;
-    option.selected = session.id === current.id;
+    option.selected = session.id === selectedId;
     els.sessionSelect.appendChild(option);
   });
-  els.sessionState.textContent = `${state.sessions.length} saved session(s).`;
+  els.sessionState.textContent = `Active: ${current.name} | ${state.sessions.length} saved session(s).`;
   els.discoverSessionName.value = current.name;
   els.discoverQueryInput.value = "";
   renderSessionQueries();
@@ -354,6 +358,9 @@ function renderDiscoverRunQueries() {
       `Pending: ${item.pending_count ?? 0}`,
       `Processing: ${item.processing_count ?? 0}`,
     ].join(" | ");
+    const scopeProgress = item.query === "citation expansion"
+      ? `Parents: ${item.scope_processed_parents ?? 0}/${item.scope_total_parents ?? 0} (${item.checkpoint_state || "none"})`
+      : "";
     const countText = item.status === "completed" || item.status === "ranking_relevance"
       ? String(item.discovered_count)
       : "-";
@@ -362,7 +369,7 @@ function renderDiscoverRunQueries() {
       <td>${escapeHtml(item.query)}</td>
       <td><span class="status-chip ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></td>
       <td>${escapeHtml(providers)}</td>
-      <td>${escapeHtml(reviewCounts)}</td>
+      <td>${escapeHtml(reviewCounts)}${scopeProgress ? `<div class="muted">${escapeHtml(scopeProgress)}</div>` : ""}</td>
       <td>${countText}</td>
     `;
     els.discoverRunQueries.appendChild(tr);
@@ -389,6 +396,7 @@ async function loadDiscover() {
     });
     renderDiscoverRunQueries();
     updateCitationAvailability(0);
+    els.resumeCitationBtn.disabled = true;
     return;
   }
   const [runResult, allResult, pendingResult, rejectedResult, queryResult] = await Promise.all([
@@ -402,6 +410,10 @@ async function loadDiscover() {
   state.currentDiscoveryStatus = run;
   state.discoverRunQueries = queryResult.data.queries || [];
   renderDiscoverRunQueries();
+  const hasResumableCitation = state.discoverRunQueries.some(
+    (item) => item.query === "citation expansion" && item.checkpoint_state === "resumable",
+  );
+  els.resumeCitationBtn.disabled = !hasResumableCitation;
   const allItems = allResult.data.items || [];
   const pendingItems = pendingResult.data.items || [];
   const rejectedItems = rejectedResult.data.items || [];
@@ -724,6 +736,26 @@ async function createNextCitationIteration() {
   }
 }
 
+async function resumeCitationIteration() {
+  const session = activeSession();
+  if (!session.discoveryRunId) {
+    els.discoverState.textContent = "Run discovery first.";
+    return;
+  }
+  beginBusy("Resuming citation expansion");
+  setProgress(15, "Resuming");
+  try {
+    await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/citation-expansion/resume`, {
+      method: "POST",
+    });
+    await refreshAll();
+  } catch (error) {
+    els.discoverState.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    endBusy();
+  }
+}
+
 async function startAcquisition(retryFailedOnly, selectedSourceIds = null) {
   const session = activeSession();
   if (!session.discoveryRunId) {
@@ -930,14 +962,22 @@ function connectLiveUpdates() {
   }
   const tokenParam = state.authEnabled && state.token ? `?api_key=${encodeURIComponent(state.token)}` : "";
   state.eventSource = new EventSource(`/v1/events/stream${tokenParam}`);
-  state.eventSource.addEventListener("run_started", () => {
-    state.busyLabel = "Searching providers";
-    renderActivity();
+  state.eventSource.addEventListener("run_started", async (event) => {
+    const payload = JSON.parse(event.data || "{}");
+    if (payload.phase === "discovery") {
+      state.busyLabel = "Searching providers";
+      renderActivity();
+      scheduleLiveDiscoverRefresh(payload);
+    }
   });
-  state.eventSource.addEventListener("run_progress", () => {
-    state.busyLabel = "Searching providers";
-    setProgress(50, "Running");
-    renderActivity();
+  state.eventSource.addEventListener("run_progress", async (event) => {
+    const payload = JSON.parse(event.data || "{}");
+    if (payload.phase === "discovery") {
+      state.busyLabel = "Searching providers";
+      setProgress(50, "Running");
+      renderActivity();
+      scheduleLiveDiscoverRefresh(payload);
+    }
   });
   state.eventSource.addEventListener("run_completed", async () => {
     setProgress(100, "Done");
@@ -950,6 +990,25 @@ function connectLiveUpdates() {
     await loadReview();
     await loadDocuments();
   });
+}
+
+function scheduleLiveDiscoverRefresh(payload) {
+  const session = activeSession();
+  const liveRunId = payload.latest_discovery || "";
+  if (!session?.discoveryRunId || !liveRunId || session.discoveryRunId !== liveRunId) {
+    return;
+  }
+  if (state.liveRefreshTimer) {
+    return;
+  }
+  state.liveRefreshTimer = window.setTimeout(async () => {
+    state.liveRefreshTimer = null;
+    try {
+      await loadDiscover();
+    } catch {
+      // Keep live refresh best-effort; the next event or manual refresh will recover.
+    }
+  }, 700);
 }
 
 async function refreshAll() {
@@ -1010,21 +1069,30 @@ function wireEvents() {
     const session = createBlankSession();
     state.sessions.push(session);
     state.activeSessionId = session.id;
+    state.pendingSessionId = session.id;
     persistSessions();
     renderSessions();
     renderShell();
+    els.sessionState.textContent = `Created new session: ${session.name}`;
   });
   els.saveSessionBtn.addEventListener("click", () => {
     const session = activeSession();
     session.name = els.discoverSessionName.value.trim() || session.name;
     persistSessions();
     renderSessions();
+    els.sessionState.textContent = `Saved session: ${session.name}`;
   });
   els.loadSessionBtn.addEventListener("click", async () => {
-    state.activeSessionId = els.sessionSelect.value;
+    const nextId = els.sessionSelect.value;
+    if (!nextId) {
+      return;
+    }
+    state.pendingSessionId = nextId;
+    state.activeSessionId = nextId;
     persistSessions();
     renderSessions();
     await refreshAll();
+    els.sessionState.textContent = `Loaded session: ${activeSession().name}`;
   });
   els.deleteSessionBtn.addEventListener("click", async () => {
     if (state.sessions.length === 1) {
@@ -1032,14 +1100,18 @@ function wireEvents() {
     }
     state.sessions = state.sessions.filter((session) => session.id !== state.activeSessionId);
     state.activeSessionId = state.sessions[0].id;
+    state.pendingSessionId = state.activeSessionId;
     persistSessions();
     renderSessions();
     await refreshAll();
+    els.sessionState.textContent = `Deleted session. Active: ${activeSession().name}`;
   });
-  els.sessionSelect.addEventListener("change", async () => {
-    state.activeSessionId = els.sessionSelect.value;
-    persistSessions();
-    await refreshAll();
+  els.sessionSelect.addEventListener("change", () => {
+    state.pendingSessionId = els.sessionSelect.value;
+    const pending = state.sessions.find((session) => session.id === state.pendingSessionId);
+    if (pending) {
+      els.sessionState.textContent = `Selected session: ${pending.name}. Press Load to open it.`;
+    }
   });
   els.discoverSessionName.addEventListener("change", () => {
     const session = activeSession();
@@ -1062,6 +1134,7 @@ function wireEvents() {
   });
   els.runDiscoveryBtn.addEventListener("click", createDiscoveryRun);
   els.runNextCitationBtn.addEventListener("click", createNextCitationIteration);
+  els.resumeCitationBtn.addEventListener("click", resumeCitationIteration);
   els.reviewAcceptBtn.addEventListener("click", () => submitReviewDecision("accept"));
   els.reviewRejectBtn.addEventListener("click", () => submitReviewDecision("reject"));
   els.reviewLaterBtn.addEventListener("click", () => submitReviewDecision("later"));

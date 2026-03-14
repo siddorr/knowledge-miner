@@ -59,6 +59,10 @@ class DiscoveryRunQuery(Base):
         CheckConstraint("pending_count >= 0", name="ck_discovery_run_queries_pending_count_gte_0"),
         CheckConstraint("processing_count >= 0", name="ck_discovery_run_queries_processing_count_gte_0"),
         CheckConstraint(
+            "checkpoint_state IN ('none','running','resumable','completed','failed')",
+            name="ck_discovery_run_queries_checkpoint_state_values",
+        ),
+        CheckConstraint(
             "status IN ('waiting','searching','ranking_relevance','completed','failed')",
             name="ck_discovery_run_queries_status_values",
         ),
@@ -78,6 +82,9 @@ class DiscoveryRunQuery(Base):
     rejected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     pending_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     processing_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scope_total_parents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scope_processed_parents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    checkpoint_state: Mapped[str] = mapped_column(String, nullable=False, default="none")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -159,6 +166,19 @@ class CitationEdge(Base):
     relationship_type: Mapped[str] = mapped_column(String, nullable=False)
     run_id: Mapped[str] = mapped_column(String, nullable=False)
     iteration: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class CitationExpansionParent(Base):
+    __tablename__ = "citation_expansion_parents"
+    __table_args__ = (
+        PrimaryKeyConstraint("run_id", "parent_source_id"),
+        Index("ix_citation_expansion_parents_run_id_expanded_at", "run_id", "expanded_at"),
+    )
+
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), nullable=False)
+    parent_source_id: Mapped[str] = mapped_column(String, ForeignKey("sources.id"), nullable=False)
+    query_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    expanded_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 
 class Keyword(Base):

@@ -56,6 +56,9 @@ class DiscoveryRunQueryOut(BaseModel):
     rejected_count: int = 0
     pending_count: int = 0
     processing_count: int = 0
+    scope_total_parents: int = 0
+    scope_processed_parents: int = 0
+    checkpoint_state: str = "none"
     error_message: str | None
 
 

@@ -235,6 +235,19 @@ def test_citation_iteration_requires_accepted_sources(monkeypatch):
     assert "Need at least 1 accepted paper" in response.json()["detail"]
 
 
+def test_citation_iteration_resume_endpoint(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_citation_iteration_run", lambda run_id, source_run_id: None)
+    run_id = _seed_run_with_sources()
+    client = TestClient(app)
+    response = client.post(
+        f"/v1/discovery/runs/{run_id}/citation-expansion/resume",
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["run_id"] == run_id
+
+
 def test_discovery_run_queries_endpoint_returns_persisted_query_state():
     run_id = _seed_run_with_sources()
     with SessionLocal() as db:

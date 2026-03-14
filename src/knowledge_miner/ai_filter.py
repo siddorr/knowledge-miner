@@ -61,14 +61,28 @@ class AIRelevanceFilter:
         self._last_error_category: str | None = None
         self._runtime_warning_ready = False
 
-    def evaluate(self, *, title: str, abstract: str | None, base_score: float, base_decision: str) -> AIRelevanceResult | None:
+    def evaluate(
+        self,
+        *,
+        title: str,
+        abstract: str | None,
+        base_score: float,
+        base_decision: str,
+        session_queries: list[str] | None = None,
+    ) -> AIRelevanceResult | None:
         self._last_error_category = None
         if self._runtime_disabled_reason is not None:
             return None
         if not self.enabled or not self.api_key:
             return None
 
-        payload = self._build_payload(title=title, abstract=abstract, base_score=base_score, base_decision=base_decision)
+        payload = self._build_payload(
+            title=title,
+            abstract=abstract,
+            base_score=base_score,
+            base_decision=base_decision,
+            session_queries=session_queries or [],
+        )
         try:
             content = self._chat(payload)
             return self._parse_result(content)
@@ -117,7 +131,15 @@ class AIRelevanceFilter:
             raise AITimeoutError("ai_filter_timeout") from exc
         return body["choices"][0]["message"]["content"]
 
-    def _build_payload(self, *, title: str, abstract: str | None, base_score: float, base_decision: str) -> dict:
+    def _build_payload(
+        self,
+        *,
+        title: str,
+        abstract: str | None,
+        base_score: float,
+        base_decision: str,
+        session_queries: list[str],
+    ) -> dict:
         system = (
             "You classify paper relevance for UPW in semiconductor manufacturing. "
             "Respond with strict JSON only."
@@ -125,7 +147,7 @@ class AIRelevanceFilter:
         user = {
             "task": "Classify relevance.",
             "rules": {
-                "domain": "ultrapure water systems in semiconductor manufacturing",
+                "domain": "session relevance to the user-selected run topic and queries",
                 "decisions": ["auto_accept", "needs_review", "auto_reject"],
             },
             "input": {
@@ -133,6 +155,7 @@ class AIRelevanceFilter:
                 "abstract": abstract or "",
                 "heuristic_score": base_score,
                 "heuristic_decision": base_decision,
+                "session_queries": session_queries,
             },
             "required_output": {
                 "decision": "auto_accept|needs_review|auto_reject",

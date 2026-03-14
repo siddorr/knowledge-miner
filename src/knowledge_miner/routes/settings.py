@@ -9,7 +9,7 @@ from ..ai_filter import describe_ai_filter_runtime
 from ..auth import require_api_key
 from ..config import settings
 from ..rate_limit import require_rate_limit
-from ..schemas import AISettingsResponse, AISettingsUpdateRequest
+from ..schemas import AISettingsResponse, AISettingsUpdateRequest, ProviderSettingsResponse, ProviderSettingsUpdateRequest
 
 router = APIRouter(tags=["settings"])
 
@@ -47,6 +47,14 @@ def _validate_ai_base_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def _build_provider_settings_response() -> ProviderSettingsResponse:
+    return ProviderSettingsResponse(
+        openalex_search_limit=int(settings.openalex_search_limit),
+        brave_search_count=int(settings.brave_search_count),
+        brave_require_allowlist=bool(settings.brave_require_allowlist),
+    )
+
+
 @router.get("/v1/settings/ai-filter", response_model=AISettingsResponse)
 def get_ai_filter_settings(
     _: str = Depends(require_api_key),
@@ -81,3 +89,26 @@ def update_ai_filter_settings(
             object.__setattr__(settings, "ai_base_url", base_url)
     return _build_ai_settings_response()
 
+
+@router.get("/v1/settings/providers", response_model=ProviderSettingsResponse)
+def get_provider_settings(
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+) -> ProviderSettingsResponse:
+    return _build_provider_settings_response()
+
+
+@router.post("/v1/settings/providers", response_model=ProviderSettingsResponse)
+def update_provider_settings(
+    payload: ProviderSettingsUpdateRequest,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+) -> ProviderSettingsResponse:
+    provided = payload.model_fields_set
+    if "openalex_search_limit" in provided and payload.openalex_search_limit is not None:
+        object.__setattr__(settings, "openalex_search_limit", int(payload.openalex_search_limit))
+    if "brave_search_count" in provided and payload.brave_search_count is not None:
+        object.__setattr__(settings, "brave_search_count", int(payload.brave_search_count))
+    if "brave_require_allowlist" in provided and payload.brave_require_allowlist is not None:
+        object.__setattr__(settings, "brave_require_allowlist", bool(payload.brave_require_allowlist))
+    return _build_provider_settings_response()

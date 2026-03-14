@@ -71,7 +71,7 @@ class MockConnector:
         rnd = random.Random(f"cite:{self.name}:{source.id}:{iteration}")
         backward: list[dict] = []
         forward: list[dict] = []
-        n = min(3, max(0, per_direction_limit))
+        n = 3 if per_direction_limit <= 0 else min(3, max(0, per_direction_limit))
         for idx in range(n):
             year = (source.year or 2020) - 1 - idx
             backward.append(
@@ -161,7 +161,8 @@ class OpenAlexConnector:
         if not work:
             return [], []
 
-        backward_ids = list(work.get("referenced_works", []))[: max(0, per_direction_limit)]
+        all_backward_ids = list(work.get("referenced_works", []))
+        backward_ids = all_backward_ids if per_direction_limit <= 0 else all_backward_ids[: max(0, per_direction_limit)]
         backward: list[dict] = []
         for wid in backward_ids:
             row = _request_json("GET", f"{settings.openalex_base_url.rstrip('/')}/works/{wid}")
@@ -171,14 +172,32 @@ class OpenAlexConnector:
 
         forward: list[dict] = []
         cited_by_api_url = work.get("cited_by_api_url")
-        if cited_by_api_url and per_direction_limit > 0:
-            sep = "&" if "?" in cited_by_api_url else "?"
-            resp = _request_json("GET", f"{cited_by_api_url}{sep}per-page={per_direction_limit}")
-            for row in resp.get("results", []):
-                c = _openalex_work_to_candidate(row, discovery_method="forward_citation", parent_source_id=source.id)
-                if c is not None:
-                    forward.append(c)
-        return backward, forward[: max(0, per_direction_limit)]
+        if cited_by_api_url:
+            if per_direction_limit > 0:
+                sep = "&" if "?" in cited_by_api_url else "?"
+                resp = _request_json("GET", f"{cited_by_api_url}{sep}per-page={min(per_direction_limit, 200)}")
+                for row in resp.get("results", []):
+                    c = _openalex_work_to_candidate(row, discovery_method="forward_citation", parent_source_id=source.id)
+                    if c is not None:
+                        forward.append(c)
+                return backward, forward[: max(0, per_direction_limit)]
+
+            # Unbounded mode: iterate all pages with OpenAlex cursor pagination.
+            cursor = "*"
+            while True:
+                sep = "&" if "?" in cited_by_api_url else "?"
+                resp = _request_json("GET", f"{cited_by_api_url}{sep}per-page=200&cursor={cursor}")
+                rows = resp.get("results", [])
+                for row in rows:
+                    c = _openalex_work_to_candidate(row, discovery_method="forward_citation", parent_source_id=source.id)
+                    if c is not None:
+                        forward.append(c)
+                meta = resp.get("meta") or {}
+                next_cursor = meta.get("next_cursor")
+                if not rows or not next_cursor:
+                    break
+                cursor = str(next_cursor)
+        return backward, forward
 
 
 class SemanticScholarConnector:
@@ -234,8 +253,11 @@ class SemanticScholarConnector:
         if not paper:
             return [], []
 
-        backward_rows = list(paper.get("references") or [])[: max(0, per_direction_limit)]
-        forward_rows = list(paper.get("citations") or [])[: max(0, per_direction_limit)]
+        backward_rows = list(paper.get("references") or [])
+        forward_rows = list(paper.get("citations") or [])
+        if per_direction_limit > 0:
+            backward_rows = backward_rows[: max(0, per_direction_limit)]
+            forward_rows = forward_rows[: max(0, per_direction_limit)]
 
         backward: list[dict] = []
         for row in backward_rows:

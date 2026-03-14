@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
@@ -20,7 +21,7 @@ from .connectors import Connector, RetryableProviderError, build_connectors
 from .db import SessionLocal
 from .dedup import canonical_id, canonicalize_url, is_fuzzy_duplicate
 from .iteration import build_next_queries, extract_keywords
-from .models import CitationEdge, DiscoveryRunQuery, Keyword, Run, Source
+from .models import CitationEdge, CitationExpansionParent, DiscoveryRunQuery, Keyword, Run, Source
 from .observability import RunObservability
 from .retry import retry_call
 from .runtime_state import acquire_run_lock, is_primary_instance, release_run_lock
@@ -141,6 +142,37 @@ class IngestStats:
     processing: int = 0
 
 
+def _checkpoint_dir() -> Path:
+    path = Path(settings.runtime_state_dir) / "citation_checkpoints"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _checkpoint_path(run_id: str, query_id: str) -> Path:
+    return _checkpoint_dir() / f"{run_id}_{query_id}.json"
+
+
+def _load_checkpoint(run_id: str, query_id: str) -> dict | None:
+    path = _checkpoint_path(run_id, query_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _save_checkpoint(run_id: str, query_id: str, payload: dict) -> None:
+    path = _checkpoint_path(run_id, query_id)
+    path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+
+
+def _clear_checkpoint(run_id: str, query_id: str) -> None:
+    path = _checkpoint_path(run_id, query_id)
+    if path.exists():
+        path.unlink(missing_ok=True)
+
+
 def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None) -> None:
     observability = RunObservability()
     run_id = run.id
@@ -213,6 +245,7 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
                     query_candidates,
                     ai_filter=ai_filter,
                     ai_policy_no_ai=not ai_effective_enabled,
+                    session_queries=list(run.seed_queries),
                     observability=observability,
                 )
                 new_accepted_unique += stats.new_accepted_unique
@@ -293,82 +326,181 @@ def execute_citation_iteration_run(db: Session, run: Run, *, source_run_id: str)
         run.status = "running"
         run.error_message = None
         db.commit()
-        next_position = (
-            db.scalar(
-                select(func.max(DiscoveryRunQuery.position)).where(DiscoveryRunQuery.run_id == run_id)
+        # Resume an unfinished citation-expansion step when checkpoint exists.
+        query_row = db.scalars(
+            select(DiscoveryRunQuery)
+            .where(
+                DiscoveryRunQuery.run_id == run_id,
+                DiscoveryRunQuery.query_text == "citation expansion",
+                DiscoveryRunQuery.checkpoint_state.in_(("running", "resumable")),
             )
-            or 0
-        ) + 1
-        query_row = DiscoveryRunQuery(
-            id=f"run_query_{uuid.uuid4().hex[:12]}",
-            run_id=run_id,
-            query_text="citation expansion",
-            position=next_position,
-            status="searching",
-            discovered_count=0,
-            openalex_count=0,
-            brave_count=0,
-            semantic_scholar_count=0,
-            accepted_count=0,
-            rejected_count=0,
-            pending_count=0,
-            processing_count=0,
-        )
-        db.add(query_row)
-        query_row.started_at = datetime.now(UTC)
-        query_row.updated_at = datetime.now(UTC)
-        query_row.error_message = None
-        db.commit()
-
-        target_iteration = max(int(source_run.current_iteration or 1), 1)
-        citation_candidates, citation_edges = _expand_citations_for_iteration(
-            db,
-            source_run_id,
-            target_iteration,
-            connectors_by_name,
-            per_direction_limit=settings.citation_expansion_limit_per_direction,
-            parent_cap=settings.citation_expansion_parent_cap_per_iteration,
-            observability=observability,
-        )
-        provider_counts = Counter((c.get("source") or "").strip().lower() for c in citation_candidates)
-        query_row.discovered_count = len(citation_candidates)
-        query_row.openalex_count = int(provider_counts.get("openalex", 0))
-        query_row.brave_count = int(provider_counts.get("brave", 0))
-        query_row.semantic_scholar_count = int(provider_counts.get("semantic_scholar", 0))
-        query_row.status = "ranking_relevance"
-        query_row.processing_count = len(citation_candidates)
+            .order_by(DiscoveryRunQuery.position.desc())
+            .limit(1)
+        ).first()
+        if query_row is None:
+            next_position = (
+                db.scalar(
+                    select(func.max(DiscoveryRunQuery.position)).where(DiscoveryRunQuery.run_id == run_id)
+                )
+                or 0
+            ) + 1
+            query_row = DiscoveryRunQuery(
+                id=f"run_query_{uuid.uuid4().hex[:12]}",
+                run_id=run_id,
+                query_text="citation expansion",
+                position=next_position,
+                status="searching",
+                discovered_count=0,
+                openalex_count=0,
+                brave_count=0,
+                semantic_scholar_count=0,
+                accepted_count=0,
+                rejected_count=0,
+                pending_count=0,
+                processing_count=0,
+                scope_total_parents=0,
+                scope_processed_parents=0,
+                checkpoint_state="running",
+            )
+            db.add(query_row)
+            query_row.started_at = datetime.now(UTC)
+        else:
+            query_row.status = "searching"
+            query_row.checkpoint_state = "running"
+            query_row.error_message = None
         query_row.updated_at = datetime.now(UTC)
         db.commit()
 
-        stats = _ingest_candidates(
-            db,
-            run_id,
-            1,
-            citation_candidates,
-            ai_filter=ai_filter,
-            ai_policy_no_ai=not ai_effective_enabled,
-            observability=observability,
-        )
-        query_row.accepted_count = stats.accepted
-        query_row.rejected_count = stats.rejected
-        query_row.pending_count = stats.pending
-        query_row.processing_count = 0
+        checkpoint = _load_checkpoint(run_id, query_row.id) or {}
+        parent_ids: list[str]
+        processed_parents = int(checkpoint.get("processed_parents", 0))
+        if isinstance(checkpoint.get("remaining_parent_ids"), list):
+            parent_ids = [str(value) for value in checkpoint["remaining_parent_ids"]]
+        else:
+            parent_ids = [
+                source.id
+                for source in db.scalars(
+                    select(Source)
+                    .where(Source.run_id == source_run_id, Source.accepted.is_(True))
+                    .order_by(Source.relevance_score.desc(), Source.id.asc())
+                ).all()
+                if db.get(CitationExpansionParent, (run_id, source.id)) is None
+            ]
+            processed_parents = 0
+        query_row.scope_total_parents = len(parent_ids) + processed_parents
+        query_row.scope_processed_parents = processed_parents
+        query_row.updated_at = datetime.now(UTC)
+        db.commit()
+
+        for index, parent_id in enumerate(parent_ids):
+            parent = db.get(Source, parent_id)
+            if parent is None or not bool(parent.accepted):
+                processed_parents += 1
+                query_row.scope_processed_parents = processed_parents
+                _save_checkpoint(
+                    run_id,
+                    query_row.id,
+                    {
+                        "processed_parents": processed_parents,
+                        "remaining_parent_ids": parent_ids[index + 1 :],
+                        "updated_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+                db.commit()
+                continue
+            query_row.status = "searching"
+            query_row.checkpoint_state = "running"
+            query_row.updated_at = datetime.now(UTC)
+            db.commit()
+
+            citation_candidates, citation_edges = _expand_citations_for_parent_unbounded(
+                run_id=run_id,
+                parent=parent,
+                connector=connectors_by_name.get(parent.source),
+                observability=observability,
+                iteration=max(int(run.current_iteration or 1), 1),
+            )
+            provider_counts = Counter((c.get("source") or "").strip().lower() for c in citation_candidates)
+            query_row.discovered_count = int(query_row.discovered_count) + len(citation_candidates)
+            query_row.openalex_count = int(query_row.openalex_count) + int(provider_counts.get("openalex", 0))
+            query_row.brave_count = int(query_row.brave_count) + int(provider_counts.get("brave", 0))
+            query_row.semantic_scholar_count = int(query_row.semantic_scholar_count) + int(
+                provider_counts.get("semantic_scholar", 0)
+            )
+            query_row.status = "ranking_relevance"
+            query_row.processing_count = len(citation_candidates)
+            query_row.updated_at = datetime.now(UTC)
+            db.commit()
+
+            stats = _ingest_candidates(
+                db,
+                run_id,
+                max(int(run.current_iteration or 1), 1),
+                citation_candidates,
+                ai_filter=ai_filter,
+                ai_policy_no_ai=not ai_effective_enabled,
+                session_queries=list(run.seed_queries),
+                observability=observability,
+            )
+            query_row.accepted_count = int(query_row.accepted_count) + stats.accepted
+            query_row.rejected_count = int(query_row.rejected_count) + stats.rejected
+            query_row.pending_count = int(query_row.pending_count) + stats.pending
+            query_row.processing_count = 0
+            if citation_edges:
+                persisted_edges = _persist_citation_edges(
+                    db,
+                    run_id,
+                    max(int(run.current_iteration or 1), 1),
+                    citation_edges,
+                )
+                run.citation_edges_total = int(run.citation_edges_total) + persisted_edges
+            run.expanded_candidates_total = int(run.expanded_candidates_total) + len(citation_candidates)
+            run.accepted_total = _count_accepted(db, run_id)
+            run.new_accept_rate = (stats.new_accepted_unique / run.accepted_total) if run.accepted_total else 0.0
+            db.merge(
+                CitationExpansionParent(
+                    run_id=run_id,
+                    parent_source_id=parent_id,
+                    query_id=query_row.id,
+                )
+            )
+            processed_parents += 1
+            query_row.scope_processed_parents = processed_parents
+            query_row.updated_at = datetime.now(UTC)
+            _save_checkpoint(
+                run_id,
+                query_row.id,
+                {
+                    "processed_parents": processed_parents,
+                    "remaining_parent_ids": parent_ids[index + 1 :],
+                    "updated_at": datetime.now(UTC).isoformat(),
+                },
+            )
+            db.commit()
+
+        _clear_checkpoint(run_id, query_row.id)
         query_row.status = "completed"
+        query_row.checkpoint_state = "completed"
         query_row.completed_at = datetime.now(UTC)
+        query_row.processing_count = 0
         query_row.updated_at = datetime.now(UTC)
-        if citation_edges:
-            persisted_edges = _persist_citation_edges(db, run_id, 1, citation_edges)
-            run.citation_edges_total = int(run.citation_edges_total) + persisted_edges
-        run.expanded_candidates_total = int(run.expanded_candidates_total) + len(citation_candidates)
         run.current_iteration = max(int(run.current_iteration or 0), 1)
         run.accepted_total = _count_accepted(db, run_id)
-        run.new_accept_rate = (stats.new_accepted_unique / run.accepted_total) if run.accepted_total else 0.0
         run.status = "completed"
         run.updated_at = datetime.now(UTC)
         db.commit()
         observability.emit_run_summary(run_id=run_id, status=run.status, current_iteration=run.current_iteration)
     except Exception as exc:  # pragma: no cover - defensive failure path
         db.rollback()
+        if "query_row" in locals() and query_row is not None:
+            with suppress(Exception):
+                refreshed_query = db.get(DiscoveryRunQuery, query_row.id)
+                if refreshed_query is not None:
+                    refreshed_query.checkpoint_state = "resumable"
+                    refreshed_query.status = "failed"
+                    refreshed_query.error_message = str(exc)
+                    refreshed_query.updated_at = datetime.now(UTC)
+                    db.commit()
         failed_run = db.get(Run, run_id)
         if failed_run is not None:
             failed_run.status = "failed"
@@ -616,6 +748,54 @@ def _collect_candidates(
     return query_batches
 
 
+def _expand_citations_for_parent_unbounded(
+    *,
+    run_id: str,
+    parent: Source,
+    connector: Connector | None,
+    observability: RunObservability,
+    iteration: int,
+) -> tuple[list[dict], list[tuple[str, str, str]]]:
+    if connector is None:
+        return [], []
+    started = time.perf_counter()
+    try:
+        backward, forward = retry_call(
+            lambda: connector.expand_citations(parent, per_direction_limit=0, iteration=iteration),
+            attempts=3,
+            delays=(1.0, 2.0, 4.0),
+            should_retry=lambda exc: isinstance(exc, RetryableProviderError),
+        )
+        observability.record_provider_call(
+            run_id=run_id,
+            iteration=iteration,
+            provider=connector.name,
+            operation="expand_citations",
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            ok=True,
+        )
+    except Exception as exc:
+        observability.inc("api_errors")
+        observability.record_provider_call(
+            run_id=run_id,
+            iteration=iteration,
+            provider=connector.name,
+            operation="expand_citations",
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            ok=False,
+            error=str(exc),
+        )
+        return [], []
+    combined = list(backward) + list(forward)
+    observability.inc("fetched", len(combined))
+    edges: list[tuple[str, str, str]] = []
+    for c in backward:
+        edges.append((parent.id, _candidate_target_id(c), "cites"))
+    for c in forward:
+        edges.append((parent.id, _candidate_target_id(c), "cited_by"))
+    return combined, edges
+
+
 def _expand_citations_for_iteration(
     db: Session,
     run_id: str,
@@ -745,6 +925,7 @@ def _ingest_candidates(
     *,
     ai_filter: AIRelevanceFilter | None = None,
     ai_policy_no_ai: bool = False,
+    session_queries: list[str] | None = None,
     observability: RunObservability | None = None,
 ) -> IngestStats:
     stats = IngestStats()
@@ -800,12 +981,22 @@ def _ingest_candidates(
         ai_decision = None
         ai_confidence = None
         if not ai_policy_no_ai and ai_filter is not None:
-            ai_result = ai_filter.evaluate(
-                title=c["title"],
-                abstract=c.get("abstract"),
-                base_score=score,
-                base_decision=heuristic_recommendation,
-            )
+            try:
+                ai_result = ai_filter.evaluate(
+                    title=c["title"],
+                    abstract=c.get("abstract"),
+                    base_score=score,
+                    base_decision=heuristic_recommendation,
+                    session_queries=session_queries or [],
+                )
+            except TypeError:
+                # Backward-compat for tests/stubs that still use the old evaluate signature.
+                ai_result = ai_filter.evaluate(
+                    title=c["title"],
+                    abstract=c.get("abstract"),
+                    base_score=score,
+                    base_decision=heuristic_recommendation,
+                )
             if ai_result is not None:
                 review_status = ai_result.decision
                 decision_source = "ai"

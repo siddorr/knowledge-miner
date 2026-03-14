@@ -107,6 +107,24 @@ def create_citation_iteration_run(
     return RunCreateResponse(run_id=previous.id, status=previous.status)
 
 
+@router.post("/v1/discovery/runs/{run_id}/citation-expansion/resume", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
+def resume_citation_iteration_run(
+    run_id: str,
+    background_tasks: BackgroundTasks,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> RunCreateResponse:
+    run = db.get(Run, run_id)
+    if run is None:
+        logger.warning("run_not_found %s", _not_found_diagnostics(db, run_id=run_id))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
+    if run.status == "running":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_already_running")
+    _enqueue_citation_task(background_tasks, run.id, run.id)
+    return RunCreateResponse(run_id=run.id, status=run.status)
+
+
 @router.get("/v1/discovery/runs/{run_id}/queries", response_model=DiscoveryRunQueriesResponse)
 def list_discovery_run_queries(
     run_id: str,
@@ -136,6 +154,9 @@ def list_discovery_run_queries(
                 rejected_count=row.rejected_count,
                 pending_count=row.pending_count,
                 processing_count=row.processing_count,
+                scope_total_parents=row.scope_total_parents,
+                scope_processed_parents=row.scope_processed_parents,
+                checkpoint_state=row.checkpoint_state,
                 error_message=row.error_message,
             )
             for row in rows
