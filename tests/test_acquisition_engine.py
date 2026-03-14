@@ -299,7 +299,8 @@ def test_execute_acquisition_run_mixed_success_and_failure(monkeypatch, tmp_path
         with SessionLocal() as db:
             acq_run = acquisition.create_acquisition_run(db, run_id, retry_failed_only=False)
 
-        def fake_acquire(source: Source):  # noqa: ANN001
+        def fake_acquire(source: Source, *, internal_repository_base_url: str | None = None):  # noqa: ANN001
+            del internal_repository_base_url
             if source.id == source_ids[0]:
                 return acquisition.AcquisitionOutcome(
                     kind="pdf",
@@ -384,6 +385,180 @@ def test_resolve_candidate_chain_ordering_with_legal_sources(monkeypatch):
     monkeypatch.setattr(acquisition, "_lookup_unpaywall_oa_url", lambda _s: "https://unpaywall.org/oa.pdf")
     chain = acquisition._resolve_candidate_chain(source)  # noqa: SLF001
     assert [entry["candidate_source"] for entry in chain] == ["doi", "openalex", "unpaywall", "publisher"]
+
+
+def test_resolve_candidate_chain_includes_internal_repository_after_doi(monkeypatch):
+    source = Source(
+        id="s_internal",
+        run_id="r1",
+        title="t",
+        year=2020,
+        url="https://publisher.example/paper",
+        doi="10.1000/xyz",
+        abstract=None,
+        type="academic",
+        source="openalex",
+        source_native_id=None,
+        patent_office=None,
+        patent_number=None,
+        iteration=1,
+        discovery_method="seed_search",
+        relevance_score=0.0,
+        accepted=False,
+        review_status="auto_reject",
+        ai_decision=None,
+        ai_confidence=None,
+        parent_source_id=None,
+        provenance_history=[],
+    )
+    monkeypatch.setattr(acquisition, "_lookup_openalex_oa_url", lambda _s: "https://openalex.org/oa.pdf")
+    monkeypatch.setattr(acquisition, "_lookup_unpaywall_oa_url", lambda _s: "https://unpaywall.org/oa.pdf")
+    chain = acquisition._resolve_candidate_chain(  # noqa: SLF001
+        source,
+        internal_repository_base_url="https://repo.example.org/service",
+    )
+    assert [entry["candidate_source"] for entry in chain] == [
+        "doi",
+        "internal_repository",
+        "openalex",
+        "unpaywall",
+        "publisher",
+    ]
+    assert chain[1]["candidate_url"] == "https://repo.example.org/service?doi=10.1000%2Fxyz"
+
+
+def test_create_acquisition_run_stores_internal_repository_url():
+    run_id, _ = _seed_completed_run("https://publisher.example/paper.pdf")
+    with SessionLocal() as db:
+        run = acquisition.create_acquisition_run(
+            db,
+            run_id,
+            retry_failed_only=False,
+            internal_repository_base_url="https://repo.example.org/service/",
+        )
+        assert run.internal_repository_base_url == "https://repo.example.org/service"
+
+
+def test_acquire_source_content_prefers_internal_repository_pdf(monkeypatch):
+    source = Source(
+        id="s_internal_pdf",
+        run_id="r1",
+        title="t",
+        year=2020,
+        url="https://publisher.example/paper",
+        doi="10.1000/xyz",
+        abstract=None,
+        type="academic",
+        source="openalex",
+        source_native_id=None,
+        patent_office=None,
+        patent_number=None,
+        iteration=1,
+        discovery_method="seed_search",
+        relevance_score=0.0,
+        accepted=False,
+        review_status="auto_reject",
+        ai_decision=None,
+        ai_confidence=None,
+        parent_source_id=None,
+        provenance_history=[],
+    )
+
+    def fake_download(url: str, *, timeout_seconds: float, max_bytes: int):  # noqa: ANN001
+        del timeout_seconds, max_bytes
+        if "repo.example.org" in url:
+            return acquisition.DownloadResult(
+                kind="pdf",
+                mime_type="application/pdf",
+                content=b"%PDF-1.4 internal",
+                url=url,
+                error=None,
+                retryable=False,
+            )
+        return acquisition.DownloadResult(
+            kind=None,
+            mime_type=None,
+            content=None,
+            url=url,
+            error="http_404",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(acquisition, "_download_url", fake_download)
+    result = acquisition._acquire_source_content(  # noqa: SLF001
+        source,
+        internal_repository_base_url="https://repo.example.org/service",
+    )
+    assert result.kind == "pdf"
+    assert result.selected_url_source == "internal_repository"
+    assert any(
+        attempt["candidate_source"] == "internal_repository"
+        for attempt in result.resolution_attempts
+    )
+
+
+def test_acquire_source_content_falls_through_internal_repository_html_to_later_pdf(monkeypatch):
+    source = Source(
+        id="s_internal_html",
+        run_id="r1",
+        title="t",
+        year=2020,
+        url="https://publisher.example/paper.pdf",
+        doi="10.1000/xyz",
+        abstract=None,
+        type="academic",
+        source="crossref",
+        source_native_id=None,
+        patent_office=None,
+        patent_number=None,
+        iteration=1,
+        discovery_method="seed_search",
+        relevance_score=0.0,
+        accepted=False,
+        review_status="auto_reject",
+        ai_decision=None,
+        ai_confidence=None,
+        parent_source_id=None,
+        provenance_history=[],
+    )
+
+    def fake_download(url: str, *, timeout_seconds: float, max_bytes: int):  # noqa: ANN001
+        del timeout_seconds, max_bytes
+        if "repo.example.org" in url:
+            return acquisition.DownloadResult(
+                kind="html",
+                mime_type="text/html",
+                content=b"<html>internal</html>",
+                url=url,
+                error=None,
+                retryable=False,
+            )
+        if url.endswith(".pdf"):
+            return acquisition.DownloadResult(
+                kind="pdf",
+                mime_type="application/pdf",
+                content=b"%PDF-1.4 publisher",
+                url=url,
+                error=None,
+                retryable=False,
+            )
+        return acquisition.DownloadResult(
+            kind=None,
+            mime_type=None,
+            content=None,
+            url=url,
+            error="http_404",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(acquisition, "_download_url", fake_download)
+    monkeypatch.setattr(acquisition, "_lookup_openalex_oa_url", lambda _s: None)
+    result = acquisition._acquire_source_content(  # noqa: SLF001
+        source,
+        internal_repository_base_url="https://repo.example.org/service",
+    )
+    assert result.kind == "pdf"
+    assert result.selected_url_source == "publisher"
 
 
 def test_pdf_artifact_checksum_and_size(monkeypatch, tmp_path):

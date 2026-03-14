@@ -27,6 +27,7 @@ def create_acquisition_run(
     *,
     retry_failed_only: bool,
     selected_source_ids: list[str] | None = None,
+    internal_repository_base_url: str | None = None,
 ) -> AcquisitionRun:
     run = db.get(Run, discovery_run_id)
     if run is None:
@@ -63,6 +64,7 @@ def create_acquisition_run(
         id=f"acq_{uuid.uuid4().hex[:12]}",
         discovery_run_id=discovery_run_id,
         retry_failed_only=retry_failed_only,
+        internal_repository_base_url=_normalize_internal_repository_base_url(internal_repository_base_url),
         status="queued",
         total_sources=len(selected_sources),
         downloaded_total=0,
@@ -147,7 +149,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
                 continue
 
             started = time.perf_counter()
-            outcome = _acquire_source_content(source)
+            outcome = _acquire_source_content(source, internal_repository_base_url=run.internal_repository_base_url)
             latency_ms = (time.perf_counter() - started) * 1000.0
             item.attempt_count += outcome.attempts
             item.selected_url = outcome.url
@@ -161,6 +163,8 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
             domain = _domain_from_url(outcome.url or source.url)
             if outcome.selected_url_source == "openalex":
                 observability.inc("resolved_via_openalex")
+            elif outcome.selected_url_source == "internal_repository":
+                observability.inc("resolved_via_internal_repository")
             elif outcome.selected_url_source == "unpaywall":
                 observability.inc("resolved_via_unpaywall")
             elif outcome.selected_url_source in {"pmc", "arxiv"}:
@@ -267,8 +271,8 @@ class AcquisitionOutcome(NamedTuple):
     reason_code: str | None
 
 
-def _acquire_source_content(source: Source) -> AcquisitionOutcome:
-    resolution_attempts = _resolve_candidate_chain(source)
+def _acquire_source_content(source: Source, *, internal_repository_base_url: str | None = None) -> AcquisitionOutcome:
+    resolution_attempts = _resolve_candidate_chain(source, internal_repository_base_url=internal_repository_base_url)
     if not resolution_attempts:
         return AcquisitionOutcome(
             kind=None,
@@ -377,12 +381,15 @@ def _download_with_retries(
     return last, attempts
 
 
-def _resolve_candidate_chain(source: Source) -> list[dict]:
+def _resolve_candidate_chain(source: Source, *, internal_repository_base_url: str | None = None) -> list[dict]:
     candidates: list[tuple[str, str]] = []
     if source.doi:
         doi = source.doi.strip()
         if doi:
             candidates.append((f"https://doi.org/{doi}", "doi"))
+            internal_repo_url = _build_internal_repository_candidate_url(internal_repository_base_url, doi)
+            if internal_repo_url:
+                candidates.append((internal_repo_url, "internal_repository"))
     openalex_url = _lookup_openalex_oa_url(source)
     if openalex_url:
         candidates.append((openalex_url, "openalex"))
@@ -415,6 +422,25 @@ def _resolve_candidate_chain(source: Source) -> list[dict]:
 
 def _resolve_candidate_urls(source: Source) -> list[str]:
     return [entry["candidate_url"] for entry in _resolve_candidate_chain(source)]
+
+
+def _normalize_internal_repository_base_url(value: str | None) -> str | None:
+    normalized = (value or "").strip()
+    if not normalized:
+        return None
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("invalid_internal_repository_base_url")
+    return normalized.rstrip("/")
+
+
+def _build_internal_repository_candidate_url(base_url: str | None, doi: str | None) -> str | None:
+    normalized_base = _normalize_internal_repository_base_url(base_url)
+    normalized_doi = (doi or "").strip()
+    if not normalized_base or not normalized_doi:
+        return None
+    encoded_doi = httpx.QueryParams({"doi": normalized_doi}).__str__()
+    return f"{normalized_base}?{encoded_doi}"
 
 
 def _lookup_openalex_oa_url(source: Source) -> str | None:

@@ -208,6 +208,7 @@ class AcquisitionRun(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     discovery_run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), nullable=False, index=True)
     retry_failed_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    internal_repository_base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
     total_sources: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     downloaded_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

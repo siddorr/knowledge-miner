@@ -1,6 +1,7 @@
 const AUTH_STORAGE_KEY = "km_hmi2_api_key";
 const SESSION_STORAGE_KEY = "km_hmi2_sessions";
 const ACTIVE_SESSION_KEY = "km_hmi2_active_session";
+const INTERNAL_REPO_URL_KEY = "km_hmi2_internal_repo_url";
 
 const DEFAULT_QUERY = "ultrapure water semiconductor";
 const REVIEW_STATUS_TO_API = {
@@ -35,6 +36,7 @@ const state = {
   currentDiscoveryStatus: null,
   currentAcquisitionStatus: null,
   liveRefreshTimer: null,
+  internalRepositoryBaseUrl: localStorage.getItem(INTERNAL_REPO_URL_KEY) || "",
 };
 
 const els = {};
@@ -64,7 +66,7 @@ function readDom() {
     "documentsDownloaded", "documentsFailed", "documentsManual", "documentsPending", "documentsRows",
     "downloadMissingBtn", "retryFailedBtn", "documentsExportCsvBtn", "batchUploadForm", "batchUploadFiles",
     "batchUploadResults", "documentsState", "documentsBadge", "documentsDetailTitle", "documentsDetailSummary",
-    "documentsDetailMetadata", "documentsRowActionBtn",
+    "documentsDetailMetadata", "documentsRowActionBtn", "internalRepoUrlInput", "saveInternalRepoUrlBtn", "internalRepoUrlState",
     "libraryMatches", "libraryHighest", "libraryLowest", "libraryQuery", "libraryExportSize", "libraryRows",
     "libraryTitle", "libraryAbstract", "libraryMetadata", "libraryAddBtn", "libraryRemoveBtn", "libraryZipBtn",
     "libraryMetadataBtn", "libraryState",
@@ -157,6 +159,22 @@ function saveToken() {
   }
 }
 
+function normalizeHttpUrl(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  try {
+    const url = new URL(normalized);
+    if (!["http:", "https:"].includes(url.protocol)) {
+      return "";
+    }
+    return url.href.replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
 function beginBusy(label) {
   state.inFlight += 1;
   state.busyLabel = label || state.busyLabel;
@@ -225,6 +243,9 @@ function renderShell() {
     node.hidden = page !== state.activePage;
   });
   els.apiKeyInput.value = state.token;
+  if (els.internalRepoUrlInput) {
+    els.internalRepoUrlInput.value = state.internalRepositoryBaseUrl;
+  }
   renderActivity();
 }
 
@@ -768,7 +789,12 @@ async function startAcquisition(retryFailedOnly, selectedSourceIds = null) {
     const result = await api("/v1/acquisition/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ run_id: session.discoveryRunId, retry_failed_only: retryFailedOnly, selected_source_ids: selectedSourceIds }),
+      body: JSON.stringify({
+        run_id: session.discoveryRunId,
+        retry_failed_only: retryFailedOnly,
+        selected_source_ids: selectedSourceIds,
+        internal_repository_base_url: state.internalRepositoryBaseUrl || null,
+      }),
     });
     session.acquisitionRunId = result.data.acq_run_id;
     persistSessions();
@@ -1144,6 +1170,22 @@ function wireEvents() {
   els.downloadMissingBtn.addEventListener("click", () => startAcquisition(false));
   els.retryFailedBtn.addEventListener("click", () => startAcquisition(true));
   els.documentsRowActionBtn.addEventListener("click", handleSelectedDocumentAction);
+  els.saveInternalRepoUrlBtn.addEventListener("click", () => {
+    const raw = els.internalRepoUrlInput.value;
+    if (raw.trim() && !normalizeHttpUrl(raw)) {
+      els.internalRepoUrlState.textContent = "Repository URL must be a valid http/https URL.";
+      return;
+    }
+    state.internalRepositoryBaseUrl = normalizeHttpUrl(raw);
+    if (state.internalRepositoryBaseUrl) {
+      localStorage.setItem(INTERNAL_REPO_URL_KEY, state.internalRepositoryBaseUrl);
+      els.internalRepoUrlState.textContent = "Repository URL saved for this browser.";
+    } else {
+      localStorage.removeItem(INTERNAL_REPO_URL_KEY);
+      els.internalRepoUrlState.textContent = "Repository URL cleared. Downloads will use the normal source chain only.";
+    }
+    renderShell();
+  });
   els.batchUploadForm.addEventListener("submit", uploadBatchFiles);
   els.documentsExportCsvBtn.addEventListener("click", exportDocumentsCsv);
   els.libraryQuery.addEventListener("input", renderLibraryRows);

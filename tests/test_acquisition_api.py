@@ -159,6 +159,44 @@ def test_create_acquisition_run_supports_selected_source_ids(monkeypatch):
     assert source_a not in ids
 
 
+def test_create_acquisition_run_persists_internal_repository_url(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    run_id, _ = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/acquisition/runs",
+        json={
+            "run_id": run_id,
+            "retry_failed_only": False,
+            "internal_repository_base_url": "https://repo.example.org/service/",
+        },
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 202
+    acq_run_id = resp.json()["acq_run_id"]
+    with SessionLocal() as db:
+        run = db.get(AcquisitionRun, acq_run_id)
+        assert run is not None
+        assert run.internal_repository_base_url == "https://repo.example.org/service"
+
+
+def test_create_acquisition_run_rejects_invalid_internal_repository_url(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    run_id, _ = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/acquisition/runs",
+        json={
+            "run_id": run_id,
+            "retry_failed_only": False,
+            "internal_repository_base_url": "ftp://repo.example.org/service",
+        },
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "invalid_internal_repository_base_url"
+
+
 def test_create_acquisition_run_requires_completed_discovery_run(monkeypatch):
     monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
     run_id, _ = _seed_discovery_run(completed=False)

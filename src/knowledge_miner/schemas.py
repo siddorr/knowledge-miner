@@ -115,6 +115,7 @@ class AcquisitionRunCreateRequest(BaseModel):
     run_id: str = Field(min_length=1)
     retry_failed_only: bool = False
     selected_source_ids: list[str] | None = None
+    internal_repository_base_url: str | None = None
 
 
 class AcquisitionRunCreateResponse(BaseModel):

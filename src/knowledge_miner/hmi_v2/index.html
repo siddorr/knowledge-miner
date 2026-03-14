@@ -130,6 +130,16 @@
 
     <section id="page-documents" class="page" hidden>
       <h2>Documents</h2>
+      <div class="card">
+        <label>
+          Internal PDF Repository URL
+          <input id="internalRepoUrlInput" type="url" placeholder="https://internal-repo.example.org">
+        </label>
+        <div class="row">
+          <button id="saveInternalRepoUrlBtn" type="button">Save Repository URL</button>
+        </div>
+        <p id="internalRepoUrlState" class="muted">Used for DOI-based automatic PDF retrieval during document download.</p>
+      </div>
       <div class="summary-row">
         <span>Downloaded: <strong id="documentsDownloaded">0</strong></span>
         <span>Failed: <strong id="documentsFailed">0</strong></span>

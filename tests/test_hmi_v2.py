@@ -30,6 +30,8 @@ def test_hmi2_shell_route_and_navigation():
     assert "Later</option>" in body
     assert "Browse papers by review state" in body
     assert "No document selected." in body
+    assert "Internal PDF Repository URL" in body
+    assert "Save Repository URL" in body
     assert "Download Selected" in body
     assert "Export ZIP with PDFs" in body
     assert "Advanced" in body

@@ -131,9 +131,15 @@ def create_acq_run(
             payload.run_id,
             retry_failed_only=payload.retry_failed_only,
             selected_source_ids=payload.selected_source_ids,
+            internal_repository_base_url=payload.internal_repository_base_url,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found") from exc
+        reason = str(exc)
+        if reason == "run_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found") from exc
+        if reason == "invalid_internal_repository_base_url":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_internal_repository_base_url") from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_not_complete") from exc
 
