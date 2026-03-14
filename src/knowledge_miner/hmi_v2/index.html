@@ -91,23 +91,30 @@
       <h2 id="reviewHeading">Review Sources - Pending: 0</h2>
       <p class="muted">Keyboard: A=Accept | R=Reject | L=Later | Arrow Up/Down=Next paper</p>
       <div class="row">
-        <label>
-          Queue
-          <select id="reviewStatusFilter">
-            <option value="pending" selected>Pending</option>
-            <option value="processing">Processing</option>
-            <option value="accepted">Accepted</option>
-            <option value="rejected">Rejected</option>
-            <option value="later">Later</option>
-            <option value="all">All</option>
-          </select>
-        </label>
-        <span id="reviewQueueHelp" class="muted">Browse papers by review state: Pending, Accepted, Rejected, Later, or All.</span>
+        <div id="reviewFilterChips" class="row" aria-label="Review filters">
+          <button type="button" class="filter-chip" data-review-filter="pending">Pending</button>
+          <button type="button" class="filter-chip" data-review-filter="accepted">Accepted</button>
+          <button type="button" class="filter-chip" data-review-filter="rejected">Rejected</button>
+          <button type="button" class="filter-chip" data-review-filter="later">Later</button>
+          <button type="button" class="filter-chip" data-review-filter="all">All</button>
+          <button type="button" class="filter-chip" data-review-filter="latest_auto_approved">Latest Auto-Approved</button>
+          <button type="button" class="filter-chip" data-review-filter="latest_auto_rejected">Latest Auto-Rejected</button>
+        </div>
       </div>
+      <p id="reviewQueueHelp" class="muted">Browse pending, reviewed, and latest auto-decided papers in the active session.</p>
       <div class="two-pane">
         <section class="pane">
           <table>
-            <thead><tr><th>Status</th><th>Year</th><th>Cit</th><th>Score</th><th>Title</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th><button type="button" class="sort-btn" data-review-sort="iteration">Iter</button></th>
+                <th><button type="button" class="sort-btn" data-review-sort="year">Year</button></th>
+                <th><button type="button" class="sort-btn" data-review-sort="citation_count">Cit</button></th>
+                <th><button type="button" class="sort-btn" data-review-sort="relevance_score">Score</button></th>
+                <th>Title</th>
+              </tr>
+            </thead>
             <tbody id="reviewRows"></tbody>
           </table>
         </section>

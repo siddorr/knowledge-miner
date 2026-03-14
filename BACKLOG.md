@@ -660,7 +660,7 @@ Status:
   - helper copy is visible in `hmi2` Review
   - users can understand queue switching without external guidance or docs
 
-42. [ ] P1 - Recheck `hmi2` activity indicator and stage message behavior against current implementation
+42. [x] P1 - Recheck `hmi2` activity indicator and stage message behavior against current implementation
 - Goal:
   - verify whether current `hmi2` activity messaging already satisfies the intended contract before scheduling more implementation.
 - Scope:
@@ -671,8 +671,10 @@ Status:
 - Acceptance criteria:
   - task is either closed as already complete or rewritten to the exact missing delta
   - no vague duplicate activity-message work remains open
+- Result:
+  - closed as complete; `hmi2` header already shows animated activity indicator and stage-specific runtime messages.
 
-43. [ ] P0 - Recheck `hmi2` Documents row selection behavior against current implementation
+43. [x] P0 - Recheck `hmi2` Documents row selection behavior against current implementation
 - Goal:
   - verify current row selection/details behavior before keeping additional Documents interaction work open.
 - Scope:
@@ -684,8 +686,10 @@ Status:
 - Acceptance criteria:
   - task is either closed as already complete or narrowed to a precise missing behavior
   - no duplicate open task remains for already-implemented row selection
+- Result:
+  - closed as complete; row selection, highlight, selected-row details, and context-sensitive actions are already implemented in `hmi2` Documents.
 
-44. [ ] P1 - Recheck clickable source and DOI links in primary workflow pages
+44. [x] P1 - Recheck clickable source and DOI links in primary workflow pages
 - Goal:
   - verify whether clickable link behavior is already complete before keeping link work open.
 - Scope:
@@ -696,8 +700,10 @@ Status:
 - Acceptance criteria:
   - task is either closed as already complete or rewritten to the precise missing link behavior
   - no duplicate open work remains for already-implemented links
+- Result:
+  - closed as complete; Review, Documents, and Library Export render clickable source links with safe external-link attributes.
 
-45. [ ] P0 - Recheck real `Journal`, `Authors`, and `Citations` metadata in `hmi2`
+45. [x] P0 - Recheck real `Journal`, `Authors`, and `Citations` metadata in `hmi2`
 - Goal:
   - verify whether metadata plumbing/display is already complete before scheduling more implementation.
 - Scope:
@@ -708,6 +714,8 @@ Status:
 - Acceptance criteria:
   - task is either closed as already complete or rewritten to the exact missing metadata behavior
   - no vague metadata work remains open
+- Result:
+  - closed as complete; API payloads and `hmi2` metadata rendering already use real `journal`, `authors`, and `citation_count` values with fallback only when absent.
 
 46. [ ] P1 - Place session naming control next to `Save` in `hmi2` controls row
 - Goal:

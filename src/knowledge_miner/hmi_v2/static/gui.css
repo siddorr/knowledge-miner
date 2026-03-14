@@ -154,6 +154,20 @@ td {
   vertical-align: top;
 }
 
+th .sort-btn {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font-weight: 700;
+}
+
+th .sort-btn.active {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 tbody tr {
   cursor: pointer;
 }

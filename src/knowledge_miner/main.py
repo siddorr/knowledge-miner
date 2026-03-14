@@ -526,10 +526,12 @@ def list_sources(
         stmt = stmt.where(Source.review_status.in_(("auto_reject", "human_reject")))
     elif effective_status == "needs_review":
         stmt = stmt.where(Source.review_status == "needs_review")
-    elif effective_status == "processing":
-        stmt = stmt.where(Source.review_status == "processing")
     elif effective_status == "later":
         stmt = stmt.where(Source.review_status == "human_later")
+    elif effective_status == "latest_auto_approved":
+        stmt = stmt.where(Source.review_status == "auto_accept")
+    elif effective_status == "latest_auto_rejected":
+        stmt = stmt.where(Source.review_status == "auto_reject")
     elif effective_status == "all":
         pass
     else:
@@ -539,7 +541,12 @@ def list_sources(
     if min_score is not None:
         stmt = stmt.where(Source.relevance_score >= min_score)
 
-    all_rows = db.scalars(stmt.order_by(Source.relevance_score.desc(), Source.id.asc())).all()
+    if effective_status in {"latest_auto_approved", "latest_auto_rejected"}:
+        order_stmt = stmt.order_by(Source.updated_at.desc(), Source.created_at.desc(), Source.id.desc())
+    else:
+        order_stmt = stmt.order_by(Source.relevance_score.desc(), Source.id.asc())
+
+    all_rows = db.scalars(order_stmt).all()
     page = all_rows[offset : offset + limit]
     return SourcesListResponse(
         items=[

@@ -305,6 +305,8 @@ def test_discovery_sources_status_filter():
     accepted = client.get(f"/v1/discovery/runs/{run_id}/sources?status=accepted", headers=_auth_headers())
     rejected = client.get(f"/v1/discovery/runs/{run_id}/sources?status=rejected", headers=_auth_headers())
     review = client.get(f"/v1/discovery/runs/{run_id}/sources?status=needs_review", headers=_auth_headers())
+    auto_approved = client.get(f"/v1/discovery/runs/{run_id}/sources?status=latest_auto_approved", headers=_auth_headers())
+    auto_rejected = client.get(f"/v1/discovery/runs/{run_id}/sources?status=latest_auto_rejected", headers=_auth_headers())
     all_rows = client.get(f"/v1/discovery/runs/{run_id}/sources?status=all", headers=_auth_headers())
     invalid = client.get(f"/v1/discovery/runs/{run_id}/sources?status=bad", headers=_auth_headers())
 
@@ -322,6 +324,14 @@ def test_discovery_sources_status_filter():
     assert review.json()["items"][0]["journal"] == "Semiconductor Process Review"
     assert review.json()["items"][0]["authors"] == ["N. Analyst", "Q. Engineer", "T. Scientist"]
     assert review.json()["items"][0]["citation_count"] == 8
+
+    assert auto_approved.status_code == 200
+    assert auto_approved.json()["total"] == 1
+    assert auto_approved.json()["items"][0]["id"] == "src_acc"
+
+    assert auto_rejected.status_code == 200
+    assert auto_rejected.json()["total"] == 1
+    assert auto_rejected.json()["items"][0]["id"] == "src_rej"
 
     assert all_rows.status_code == 200
     assert all_rows.json()["total"] == 3

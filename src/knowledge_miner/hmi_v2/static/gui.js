@@ -6,11 +6,12 @@ const INTERNAL_REPO_URL_KEY = "km_hmi2_internal_repo_url";
 const DEFAULT_QUERY = "ultrapure water semiconductor";
 const REVIEW_STATUS_TO_API = {
   pending: "needs_review",
-  processing: "processing",
   accepted: "accepted",
   rejected: "rejected",
   later: "later",
   all: "all",
+  latest_auto_approved: "latest_auto_approved",
+  latest_auto_rejected: "latest_auto_rejected",
 };
 
 const state = {
@@ -20,6 +21,8 @@ const state = {
   activeSessionId: localStorage.getItem(ACTIVE_SESSION_KEY) || "",
   pendingSessionId: "",
   activePage: window.__KM_HMI2_LAUNCH_SECTION__ || "discover",
+  reviewQueue: "pending",
+  reviewSort: { key: "iteration", dir: "desc" },
   latest: { discovery: "", acquisition: "", parse: "" },
   reviewItems: [],
   reviewIndex: -1,
@@ -62,7 +65,7 @@ function readDom() {
     "discoverQueryList", "discoverSelectedCount", "discoverRunQueries", "discoverCitationHint",
     "discoverSummaryDiscovered", "discoverSummaryApproved", "discoverSummaryRejected", "discoverSummaryReviewed", "discoverSummaryPending", "discoverState",
     "reviewHeading", "reviewRows", "reviewTitle", "reviewAbstract", "reviewMetadata", "reviewSignals",
-    "reviewAcceptBtn", "reviewRejectBtn", "reviewLaterBtn", "reviewState", "reviewBadge", "reviewStatusFilter", "reviewQueueHelp",
+    "reviewAcceptBtn", "reviewRejectBtn", "reviewLaterBtn", "reviewState", "reviewBadge", "reviewQueueHelp", "reviewFilterChips",
     "documentsDownloaded", "documentsFailed", "documentsManual", "documentsPending", "documentsRows",
     "downloadMissingBtn", "retryFailedBtn", "documentsExportCsvBtn", "batchUploadForm", "batchUploadFiles",
     "batchUploadResults", "documentsState", "documentsBadge", "documentsDetailTitle", "documentsDetailSummary",
@@ -86,6 +89,8 @@ function readDom() {
     advanced: $("page-advanced"),
   };
   els.navButtons = Array.from(document.querySelectorAll(".nav-btn"));
+  els.reviewFilterButtons = Array.from(document.querySelectorAll("[data-review-filter]"));
+  els.reviewSortButtons = Array.from(document.querySelectorAll("[data-review-sort]"));
 }
 
 function normalizeSession(raw) {
@@ -315,8 +320,53 @@ function renderShell() {
   if (els.internalRepoUrlInput) {
     els.internalRepoUrlInput.value = state.internalRepositoryBaseUrl;
   }
+  renderReviewFilterChips();
+  renderReviewSortButtons();
   renderStopButton();
   renderActivity();
+}
+
+function renderReviewFilterChips() {
+  if (!els.reviewFilterButtons) {
+    return;
+  }
+  els.reviewFilterButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.reviewFilter === state.reviewQueue);
+  });
+}
+
+function resetReviewSort() {
+  state.reviewSort = { key: "iteration", dir: "desc" };
+}
+
+function compareReviewItems(a, b) {
+  const { key, dir } = state.reviewSort;
+  const factor = dir === "asc" ? 1 : -1;
+  const valueA = Number(a[key] ?? 0);
+  const valueB = Number(b[key] ?? 0);
+  if (valueA !== valueB) {
+    return (valueA - valueB) * factor;
+  }
+  return String(a.title || "").localeCompare(String(b.title || ""));
+}
+
+function renderReviewSortButtons() {
+  if (!els.reviewSortButtons) {
+    return;
+  }
+  els.reviewSortButtons.forEach((button) => {
+    const active = button.dataset.reviewSort === state.reviewSort.key;
+    button.classList.toggle("active", active);
+    const suffix = active ? (state.reviewSort.dir === "asc" ? " ▲" : " ▼") : "";
+    const base = button.dataset.reviewSort === "iteration"
+      ? "Iter"
+      : button.dataset.reviewSort === "year"
+        ? "Year"
+        : button.dataset.reviewSort === "citation_count"
+          ? "Cit"
+          : "Score";
+    button.textContent = `${base}${suffix}`;
+  });
 }
 
 function currentStoppableTask() {
@@ -586,16 +636,27 @@ function renderReviewDetail() {
 }
 
 function reviewHeadingForQueue(queue, count) {
-  const label = queue.charAt(0).toUpperCase() + queue.slice(1);
+  const labels = {
+    pending: "Pending",
+    accepted: "Accepted",
+    rejected: "Rejected",
+    later: "Later",
+    all: "All",
+    latest_auto_approved: "Latest Auto-Approved",
+    latest_auto_rejected: "Latest Auto-Rejected",
+  };
+  const label = labels[queue] || queue;
   return `Review Sources - ${label}: ${count}`;
 }
 
 function renderReviewRows() {
   els.reviewRows.innerHTML = "";
+  const sortedItems = [...state.reviewItems].sort(compareReviewItems);
+  state.reviewItems = sortedItems;
   state.reviewItems.forEach((item, index) => {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", index === state.reviewIndex);
-    tr.innerHTML = `<td>${escapeHtml(item.review_status || "-")}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${escapeHtml(item.title)}</td>`;
+    tr.innerHTML = `<td>${escapeHtml(item.review_status || "-")}</td><td>${item.iteration || "-"}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${escapeHtml(item.title)}</td>`;
     tr.addEventListener("click", () => {
       state.reviewIndex = index;
       state.selectedReviewSourceId = item.id;
@@ -604,15 +665,38 @@ function renderReviewRows() {
     });
     els.reviewRows.appendChild(tr);
   });
-  const queue = (els.reviewStatusFilter?.value || "pending").trim();
-  els.reviewHeading.textContent = reviewHeadingForQueue(queue, state.reviewItems.length);
+  if (state.selectedReviewSourceId) {
+    const selectedIndex = state.reviewItems.findIndex((item) => item.id === state.selectedReviewSourceId);
+    state.reviewIndex = selectedIndex >= 0 ? selectedIndex : (state.reviewItems.length ? 0 : -1);
+  } else {
+    state.reviewIndex = state.reviewItems.length ? 0 : -1;
+  }
+  els.reviewHeading.textContent = reviewHeadingForQueue(state.reviewQueue, state.reviewItems.length);
   els.reviewBadge.textContent = String(state.reviewItems.length);
+  renderReviewSortButtons();
   renderReviewDetail();
 }
 
-async function loadReview(recoverOnNotFound = true) {
+function nextReviewSelectionHint() {
+  if (!state.reviewItems.length || state.reviewIndex < 0) {
+    return { preferredSourceId: "", fallbackIndex: 0 };
+  }
+  const nextItem = state.reviewItems[state.reviewIndex + 1] || null;
+  if (nextItem) {
+    return {
+      preferredSourceId: nextItem.id,
+      fallbackIndex: state.reviewIndex,
+    };
+  }
+  return {
+    preferredSourceId: "",
+    fallbackIndex: Math.max(0, state.reviewIndex - 1),
+  };
+}
+
+async function loadReview(recoverOnNotFound = true, selectionHint = null) {
   const session = activeSession();
-  const queue = (els.reviewStatusFilter?.value || "pending").trim();
+  const queue = state.reviewQueue || "pending";
   const status = REVIEW_STATUS_TO_API[queue] || "needs_review";
   if (!session.discoveryRunId) {
     state.reviewItems = [];
@@ -628,14 +712,22 @@ async function loadReview(recoverOnNotFound = true) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
       const rebound = await rebindSessionToLatestRun("Saved discovery run was not found.");
       if (rebound) {
-        return loadReview(false);
+        return loadReview(false, selectionHint);
       }
     }
     throw error;
   }
   state.reviewItems = result.data.items || [];
-  state.reviewIndex = state.reviewItems.length ? 0 : -1;
-  state.selectedReviewSourceId = state.reviewItems[0]?.id || "";
+  if (selectionHint?.preferredSourceId && state.reviewItems.some((item) => item.id === selectionHint.preferredSourceId)) {
+    state.selectedReviewSourceId = selectionHint.preferredSourceId;
+  } else if (!state.reviewItems.some((item) => item.id === state.selectedReviewSourceId)) {
+    const fallbackIndex = Math.min(
+      Math.max(Number(selectionHint?.fallbackIndex ?? 0), 0),
+      Math.max(state.reviewItems.length - 1, 0),
+    );
+    state.selectedReviewSourceId = state.reviewItems[fallbackIndex]?.id || "";
+  }
+  renderReviewFilterChips();
   renderReviewRows();
   els.reviewState.textContent = state.reviewItems.length ? `Review queue loaded (${queue}).` : `No ${queue} review items.`;
 }
@@ -646,6 +738,7 @@ async function submitReviewDecision(decision) {
   if (!session.discoveryRunId || !item) {
     return;
   }
+  const selectionHint = decision === "reject" ? nextReviewSelectionHint() : null;
   beginBusy("Waiting for review");
   try {
     await api(`/v1/sources/${encodeURIComponent(item.id)}/review`, {
@@ -653,7 +746,7 @@ async function submitReviewDecision(decision) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ decision, run_id: session.discoveryRunId }),
     });
-    await loadReview();
+    await loadReview(true, selectionHint);
     await loadDiscover();
     await loadDocuments();
     await loadLibrary();
@@ -1302,6 +1395,7 @@ function wireEvents() {
     state.sessions.push(session);
     state.activeSessionId = session.id;
     state.pendingSessionId = session.id;
+    resetReviewSort();
     persistSessions();
     renderSessions();
     renderShell();
@@ -1321,6 +1415,7 @@ function wireEvents() {
     }
     state.pendingSessionId = nextId;
     state.activeSessionId = nextId;
+    resetReviewSort();
     persistSessions();
     renderSessions();
     await refreshAll();
@@ -1333,6 +1428,7 @@ function wireEvents() {
     state.sessions = state.sessions.filter((session) => session.id !== state.activeSessionId);
     state.activeSessionId = state.sessions[0].id;
     state.pendingSessionId = state.activeSessionId;
+    resetReviewSort();
     persistSessions();
     renderSessions();
     await refreshAll();
@@ -1371,8 +1467,27 @@ function wireEvents() {
   els.reviewAcceptBtn.addEventListener("click", () => submitReviewDecision("accept"));
   els.reviewRejectBtn.addEventListener("click", () => submitReviewDecision("reject"));
   els.reviewLaterBtn.addEventListener("click", () => submitReviewDecision("later"));
-  els.reviewStatusFilter.addEventListener("change", () => {
-    loadReview();
+  els.reviewFilterButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const next = button.dataset.reviewFilter || "pending";
+      if (state.reviewQueue === next) {
+        return;
+      }
+      state.reviewQueue = next;
+      renderReviewFilterChips();
+      loadReview();
+    });
+  });
+  els.reviewSortButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.reviewSort || "iteration";
+      if (state.reviewSort.key === key) {
+        state.reviewSort.dir = state.reviewSort.dir === "desc" ? "asc" : "desc";
+      } else {
+        state.reviewSort = { key, dir: key === "iteration" ? "desc" : "desc" };
+      }
+      renderReviewRows();
+    });
   });
   els.downloadMissingBtn.addEventListener("click", () => startAcquisition(false));
   els.retryFailedBtn.addEventListener("click", () => startAcquisition(true));
