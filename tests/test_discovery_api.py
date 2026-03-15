@@ -7,7 +7,7 @@ import knowledge_miner.main as main_module
 from knowledge_miner.config import settings
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.main import app
-from knowledge_miner.models import Run, Source
+from knowledge_miner.models import DiscoveryRunQuery, Run, Source
 
 
 def setup_function():
@@ -149,7 +149,12 @@ def test_create_discovery_run_forces_single_iteration_contract(monkeypatch):
     client = TestClient(app)
     response = client.post(
         "/v1/discovery/runs",
-        json={"seed_queries": ["upw"], "max_iterations": 6},
+        json={
+            "seed_queries": ["upw"],
+            "session_id": "session_test_discovery_single_iter",
+            "session_context": "UPW process design relevance for semiconductor manufacturing.",
+            "max_iterations": 6,
+        },
         headers=_auth_headers(),
     )
     assert response.status_code == 202
@@ -169,6 +174,8 @@ def test_create_discovery_run_uses_selected_queries_when_present(monkeypatch):
         json={
             "seed_queries": ["upw", "semiconductor", "toc"],
             "selected_queries": ["semiconductor", "toc"],
+            "session_id": "session_test_selected_queries",
+            "session_context": "UPW semiconductor context for ranking.",
             "max_iterations": 1,
         },
         headers=_auth_headers(),
@@ -180,6 +187,90 @@ def test_create_discovery_run_uses_selected_queries_when_present(monkeypatch):
         run = db.get(Run, run_id)
         assert run is not None
         assert run.seed_queries == ["semiconductor", "toc"]
+        assert run.session_id == "session_test_selected_queries"
+        assert run.session_context == "UPW semiconductor context for ranking."
+
+
+def test_create_discovery_run_persists_provider_limits_in_query_metadata(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/discovery/runs",
+        json={
+            "seed_queries": ["upw", "semiconductor"],
+            "selected_queries": ["upw"],
+            "session_id": "session_provider_limits",
+            "session_context": "UPW semiconductor context for provider-specific discovery limits.",
+            "max_iterations": 1,
+            "provider_limits": {
+                "openalex": 11,
+                "semantic_scholar": 7,
+                "brave": 4,
+            },
+        },
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+    with SessionLocal() as db:
+        row = db.scalars(
+            select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run_id).order_by(DiscoveryRunQuery.position.asc())
+        ).first()
+        assert row is not None
+        assert row.query_metadata["provider_limits"] == {
+            "openalex": 11,
+            "semantic_scholar": 7,
+            "brave": 4,
+        }
+
+
+def test_create_discovery_run_requires_non_empty_session_context(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
+    client = TestClient(app)
+    response = client.post(
+        "/v1/discovery/runs",
+        json={
+            "seed_queries": ["upw"],
+            "session_id": "session_context_required",
+            "session_context": "   ",
+            "max_iterations": 1,
+        },
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "session_context_required"
+
+
+def test_query_suggestions_endpoint_returns_ai_suggestions(monkeypatch):
+    monkeypatch.setattr(
+        "knowledge_miner.routes.discovery.generate_query_suggestions",
+        lambda **kwargs: [
+            "ultrapure water plant design",
+            "semiconductor UPW case study",
+            "UPW pretreatment membrane design",
+        ],
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/v1/discovery/query-suggestions",
+        json={
+            "session_context": "Papers on design of UPW plants. Case-studies. Novel techniques. Limitations.",
+            "existing_queries": ["UPW plant design"],
+            "max_suggestions": 6,
+        },
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "ai"
+    assert body["warning"] is None
+    assert body["suggestions"] == [
+        "ultrapure water plant design",
+        "semiconductor UPW case study",
+        "UPW pretreatment membrane design",
+    ]
 
 
 def test_citation_iteration_runs_only_when_explicitly_requested(monkeypatch):
@@ -240,7 +331,12 @@ def test_stop_discovery_run_marks_queued_run_failed(monkeypatch):
     client = TestClient(app)
     response = client.post(
         "/v1/discovery/runs",
-        json={"seed_queries": ["upw"], "max_iterations": 1},
+        json={
+            "seed_queries": ["upw"],
+            "session_id": "session_test_stop",
+            "session_context": "UPW stop-run validation context.",
+            "max_iterations": 1,
+        },
         headers=_auth_headers(),
     )
     assert response.status_code == 202
@@ -280,6 +376,11 @@ def test_discovery_run_queries_endpoint_returns_persisted_query_state():
                 id="rq_1",
                 run_id=run_id,
                 query_text="upw semiconductor",
+                query_metadata={
+                    "session_id": "session_query_meta",
+                    "session_context": "UPW context metadata for query state endpoint.",
+                    "session_context_updated_at": "2026-03-14T00:00:00+00:00",
+                },
                 position=1,
                 status="completed",
                 discovered_count=7,
@@ -296,6 +397,8 @@ def test_discovery_run_queries_endpoint_returns_persisted_query_state():
     assert body["queries"][0]["query"] == "upw semiconductor"
     assert body["queries"][0]["status"] == "completed"
     assert body["queries"][0]["discovered_count"] == 7
+    assert body["queries"][0]["has_session_context"] is True
+    assert body["queries"][0]["session_context_preview"].startswith("UPW context metadata")
 
 
 def test_discovery_sources_status_filter():
@@ -492,7 +595,12 @@ def test_ai_settings_update_applies_to_new_runs(monkeypatch):
 
         created = client.post(
             "/v1/discovery/runs",
-            json={"seed_queries": ["upw"], "max_iterations": 1},
+            json={
+                "seed_queries": ["upw"],
+                "session_id": "session_test_ai_settings",
+                "session_context": "UPW AI settings regression context.",
+                "max_iterations": 1,
+            },
             headers=_auth_headers(),
         )
         assert created.status_code == 202

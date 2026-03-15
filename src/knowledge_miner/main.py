@@ -33,7 +33,7 @@ from .acquisition import (
 from .ai_filter import describe_ai_filter_runtime
 from .auth import require_api_key
 from .config import is_sqlite_url, settings
-from .db import Base, SessionLocal, database_readiness, engine, get_db
+from .db import Base, SessionLocal, database_readiness, engine, ensure_sqlite_schema_compatibility, get_db
 from .discovery import enqueue_citation_iteration_run, enqueue_run  # compatibility export for tests/patching
 from .models import AcquisitionItem, AcquisitionRun, Artifact, DiscoveryRunQuery, DocumentChunk, ParseRun, ParsedDocument, Run, Source
 from .parse import create_parse_run, enqueue_parse_run
@@ -85,6 +85,18 @@ HOT_READ_LIMIT_COUNT = 120
 HOT_READ_WARN_COUNT = 60
 _hot_read_buckets: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _hot_read_metrics: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "limited": 0})
+_OPERATIONAL_EVENT_TYPES = {
+    "provider_call",
+    "run_summary",
+    "acquisition_download",
+    "acquisition_summary",
+    "parse_document",
+    "parse_index",
+    "parse_summary",
+    "acquisition_http_call",
+    "acquisition_http_trace",
+}
+_LOG_LINE_RE = re.compile(r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?P<level>\S+) \[(?P<logger>[^\]]+)\] (?P<message>.*)$")
 
 # Create tables on module load for v1 local/dev simplicity.
 app.mount("/hmi2/static", StaticFiles(directory=HMI_V2_DIR / "static"), name="hmi2_static")
@@ -119,6 +131,7 @@ def validate_runtime_config() -> None:
     if (not db_meta["ready"]) and settings.db_auto_migrate_on_start:
         with suppress(Exception):
             Base.metadata.create_all(bind=engine)
+            ensure_sqlite_schema_compatibility()
         db_meta = database_readiness()
         logger.info(
             "DB auto-migrate check: enabled=%s ready=%s missing_tables=%s",
@@ -132,6 +145,9 @@ def validate_runtime_config() -> None:
             ",".join(db_meta["missing_tables"]) if db_meta["missing_tables"] else "-",
             db_meta["error"] or "-",
         )
+    elif settings.db_auto_migrate_on_start:
+        with suppress(Exception):
+            ensure_sqlite_schema_compatibility()
     cleanup_result = cleanup_runtime_state(base_dir=settings.runtime_state_dir, enabled=settings.clean_on_startup)
     log_cleanup_result(cleanup_result)
     primary = acquire_instance_lock(base_dir=settings.runtime_state_dir)
@@ -344,6 +360,88 @@ def _format_sse(event_name: str, payload: dict) -> str:
     return f"event: {event_name}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
 
+def _operational_log_path() -> Path:
+    return Path(settings.log_dir) / settings.log_file
+
+
+def _parse_operational_log_line(line: str) -> dict | None:
+    match = _LOG_LINE_RE.match(line.strip())
+    if not match:
+        return None
+    message = match.group("message").strip()
+    payload_text = ""
+    if message.startswith("{") and message.endswith("}"):
+        payload_text = message
+    else:
+        json_start = message.find("{")
+        if json_start >= 0 and message.endswith("}"):
+            payload_text = message[json_start:]
+    if not payload_text:
+        return None
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return None
+    event_name = str(payload.get("event") or "").strip()
+    if event_name not in _OPERATIONAL_EVENT_TYPES:
+        return None
+    return {
+        "timestamp": match.group("timestamp"),
+        "level": match.group("level"),
+        "logger": match.group("logger"),
+        "event": event_name,
+        "payload": payload,
+    }
+
+
+def _recent_operational_events(limit: int) -> list[dict]:
+    log_path = _operational_log_path()
+    if not log_path.exists():
+        return []
+    rows: deque[dict] = deque(maxlen=max(1, min(limit, 200)))
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                parsed = _parse_operational_log_line(line)
+                if parsed is not None:
+                    rows.append(parsed)
+    except OSError:
+        return []
+    return list(rows)
+
+
+def _operation_group(event_row: dict) -> str:
+    payload = event_row.get("payload") or {}
+    event_name = event_row.get("event") or "unknown"
+    if event_name == "provider_call":
+        return f"provider:{payload.get('provider', '-')}/{payload.get('operation', '-')}"
+    if event_name == "acquisition_download":
+        return f"download:{payload.get('domain', '-')}"
+    if event_name == "acquisition_http_call":
+        return f"http:{payload.get('method', 'GET')} {payload.get('domain', '-')}"
+    if event_name == "acquisition_http_trace":
+        return "http:trace"
+    if event_name.startswith("parse_"):
+        return f"parse:{event_name.removeprefix('parse_')}"
+    if event_name.endswith("_summary"):
+        return f"summary:{event_name.removesuffix('_summary')}"
+    return event_name
+
+
+def _operational_event_summary(events: list[dict]) -> dict:
+    grouped: dict[str, int] = defaultdict(int)
+    by_event: dict[str, int] = defaultdict(int)
+    for row in events:
+        grouped[_operation_group(row)] += 1
+        by_event[str(row.get("event") or "unknown")] += 1
+    grouped_items = [{"group": key, "count": grouped[key]} for key in sorted(grouped.keys())]
+    event_items = [{"event": key, "count": by_event[key]} for key in sorted(by_event.keys())]
+    return {
+        "grouped_counts": grouped_items,
+        "event_type_counts": event_items,
+    }
+
+
 @app.get("/v1/system/status", response_model=SystemStatusResponse)
 def get_system_status(
     request: Request,
@@ -431,6 +529,23 @@ async def stream_hmi_events(
             await asyncio.sleep(1.0)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/v1/advanced/operational-events")
+def get_operational_events(
+    limit: int = Query(default=50, ge=1, le=200),
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+) -> dict:
+    events = _recent_operational_events(limit)
+    summary = _operational_event_summary(events)
+    return {
+        "items": events,
+        "total": len(events),
+        "limit": limit,
+        "log_path": str(_operational_log_path()),
+        **summary,
+    }
 
 
 @app.get("/v1/discovery/runs/{run_id}", response_model=RunStatusResponse)

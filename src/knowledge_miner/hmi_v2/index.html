@@ -25,6 +25,10 @@
 
   <section class="controls-row" aria-label="Session controls">
     <button id="newSessionBtn" type="button">New Session</button>
+    <label>
+      Session Name
+      <input id="discoverSessionName" type="text" placeholder="UPW session">
+    </label>
     <button id="saveSessionBtn" type="button">Save</button>
     <button id="loadSessionBtn" type="button">Load</button>
     <button id="deleteSessionBtn" type="button">Delete</button>
@@ -46,36 +50,75 @@
 
   <main class="workspace">
     <section id="page-discover" class="page">
-      <h2>Discover</h2>
       <div class="card">
-        <label>
-          Session
-          <input id="discoverSessionName" type="text" placeholder="UPW session">
-        </label>
-        <label>
-          Query
-          <input id="discoverQueryInput" type="text" placeholder="ultrapure water semiconductor">
-        </label>
-        <div class="row">
-          <button id="addQueryBtn" type="button">Add Query</button>
-          <button id="runDiscoveryBtn" type="button">Run Discovery</button>
-          <button id="runNextCitationBtn" type="button">Run Next Citation Iteration</button>
-          <button id="resumeCitationBtn" type="button">Resume Citation Expansion</button>
+        <div class="discover-top-grid">
+          <div>
+            <label>
+              Query
+              <input id="discoverQueryInput" type="text" placeholder="Add a search query">
+            </label>
+            <div class="row">
+              <button id="addQueryBtn" type="button">Add Query</button>
+              <button id="generateQuerySuggestionsBtn" type="button">Generate Suggestions</button>
+              <button id="runDiscoveryBtn" type="button">Run Discovery</button>
+              <button id="runNextCitationBtn" type="button">Run Next Citation Iteration</button>
+              <button id="resumeCitationBtn" type="button">Resume Citation Expansion</button>
+            </div>
+            <p id="discoverSelectedCount" class="muted">Selected queries: 0</p>
+            <p id="discoverIterationLine">Iteration: -</p>
+            <p id="discoverCitationHint" class="muted">Need at least 1 accepted paper.</p>
+          </div>
+          <section class="context-card" aria-label="Session context">
+            <h3>Session context</h3>
+            <p class="muted">Required. AI uses this research context to rank paper relevance.</p>
+            <textarea id="sessionContextInput" rows="8" placeholder="Describe research context, boundaries, and relevance criteria."></textarea>
+            <div class="row">
+              <button id="saveSessionContextBtn" type="button">Save Context</button>
+              <span id="sessionContextCounter" class="muted">0 / 4096</span>
+            </div>
+            <p id="sessionContextState" class="muted">No context saved.</p>
+            <p id="sessionContextUpdated" class="muted">Updated: -</p>
+          </section>
         </div>
-        <p id="discoverSelectedCount" class="muted">Selected queries: 0</p>
-        <p id="discoverIterationLine">Iteration: -</p>
-        <p id="discoverCitationHint" class="muted">Need at least 1 accepted paper.</p>
       </div>
       <div class="card">
-        <strong>Session Queries</strong>
+        <strong>Suggested Queries</strong>
+        <p class="muted">AI suggestions appear here. Click one to move it into the selected query list.</p>
+        <ul id="discoverSuggestedQueryList" class="query-list"></ul>
+        <p id="discoverSuggestionsState" class="muted"></p>
+      </div>
+      <div class="card">
+        <strong>Selected Queries</strong>
+        <p class="muted">These queries will be executed for the next discovery run.</p>
         <ul id="discoverQueryList" class="query-list"></ul>
       </div>
       <div class="card">
-        <strong>Run Query Status</strong>
+        <strong>Provider Limits</strong>
+        <p class="muted">Session-level per-provider search limits used for new discovery runs in this session.</p>
+        <div class="row">
+          <label>
+            OpenAlex
+            <input id="discoverOpenalexLimitInput" type="number" min="1" max="200" value="25">
+          </label>
+          <label>
+            Semantic Scholar
+            <input id="discoverSemanticScholarLimitInput" type="number" min="1" max="100" value="25">
+          </label>
+          <label>
+            Brave
+            <input id="discoverBraveLimitInput" type="number" min="1" max="20" value="20">
+          </label>
+        </div>
+        <p id="discoverProviderLimitsState" class="muted">Provider limits are saved with the active session.</p>
+      </div>
+      <div class="card">
+        <strong>Executed Queries for Active Run</strong>
+        <p class="muted">This list shows only the queries actually persisted and executed for the current run.</p>
         <table>
           <thead><tr><th>#</th><th>Query</th><th>Status</th><th>Providers</th><th>Review</th><th>Results</th></tr></thead>
           <tbody id="discoverRunQueries"></tbody>
         </table>
+        <p id="discoverRunQueriesState" class="muted"></p>
       </div>
       <div class="summary-row">
         <span>Discovered: <strong id="discoverSummaryDiscovered">0</strong></span>
@@ -88,7 +131,7 @@
     </section>
 
     <section id="page-review" class="page" hidden>
-      <h2 id="reviewHeading">Review Sources - Pending: 0</h2>
+      <p id="reviewHeading" class="page-status">Pending: 0</p>
       <p class="muted">Keyboard: A=Accept | R=Reject | L=Later | Arrow Up/Down=Next paper</p>
       <div class="row">
         <div id="reviewFilterChips" class="row" aria-label="Review filters">
@@ -137,7 +180,6 @@
     </section>
 
     <section id="page-documents" class="page" hidden>
-      <h2>Documents</h2>
       <div class="card">
         <label>
           Internal PDF Repository URL
@@ -185,7 +227,6 @@
     </section>
 
     <section id="page-library" class="page" hidden>
-      <h2>Library Export</h2>
       <div class="summary-row">
         <span>Matching papers: <strong id="libraryMatches">0</strong></span>
         <span>Highest AI relevance: <strong id="libraryHighest">-</strong></span>
@@ -231,7 +272,6 @@
     </section>
 
     <section id="page-advanced" class="page" hidden>
-      <h2>Advanced</h2>
       <div class="card">
         <label>
           API Key
@@ -286,6 +326,24 @@
           <button id="runLookupBtn" type="button">Lookup Discovery Run</button>
         </div>
         <pre id="runLookupResult" class="detail-text">No run loaded.</pre>
+      </div>
+      <div class="card">
+        <div class="row">
+          <strong>Operational Events</strong>
+          <button id="advancedEventsPauseBtn" type="button">Pause</button>
+          <button id="advancedEventsAutoscrollBtn" type="button">Autoscroll: On</button>
+        </div>
+        <p id="advancedEventsState" class="muted">No operational events loaded yet.</p>
+        <div class="two-pane">
+          <section class="pane">
+            <h3>Grouped Counters</h3>
+            <ul id="advancedEventCounters" class="detail-list"></ul>
+          </section>
+          <section class="pane">
+            <h3>Recent Events</h3>
+            <pre id="advancedEventsLog" class="detail-text">No operational events loaded yet.</pre>
+          </section>
+        </div>
       </div>
     </section>
   </main>

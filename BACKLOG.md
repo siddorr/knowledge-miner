@@ -529,22 +529,23 @@ Status:
   - there is one canonical terminology set for implementation and testing
   - no developer has to guess whether `Topic` or `Session` is authoritative
 
-32. [ ] P0 - Add AI-generated query suggestions with explicit selected-query list in Discover
+32. [x] P0 - Canonical Discover suggestion workflow: AI suggestions + explicit selected-query list
 - Goal:
   - let operators build discovery runs from AI-suggested queries while keeping final execution under human control.
 - Scope:
   - generate suggested queries with AI in Discover
+  - allow regeneration of suggestions in-place
   - show separate `Suggested queries` and `Selected queries` lists
   - allow operator to press/move suggestions into the selected-query list
-  - allow regeneration of suggestions without auto-running discovery
   - use only the selected-query list for discovery run creation and citation iteration
 - Acceptance criteria:
   - Discover shows separate suggestion and selection lists
+  - Discover can generate and regenerate suggestions without auto-running discovery
   - operator can move suggestions into the selected-query list
   - only selected queries are sent to discovery run creation and citation iteration
   - suggestion regeneration refreshes suggestions without changing the selected-query list automatically
 
-33. [ ] P0 - Show executed selected queries for the active run in Discover
+33. [x] P0 - Show executed selected queries for the active run in Discover
 - Goal:
   - make active run queries transparent to the operator.
 - Scope:
@@ -556,7 +557,7 @@ Status:
   - list is backend-derived from persisted run queries
   - suggestion pool is not mixed into the run-status area
 
-34. [ ] P0 - Show per-query execution state in Discover using `waiting`, `searching`, `ranking`, `completed`, `failed`
+34. [x] P0 - Show per-query execution state in Discover using `waiting`, `searching`, `ranking`, `completed`, `failed`
 - Goal:
   - expose progress at query level instead of only global run-level progress.
 - Scope:
@@ -569,7 +570,7 @@ Status:
   - UI maps backend execution phases consistently to these display states
   - UI remains consistent after refresh/reload
 
-35. [ ] P0 - Disable keyword/frequency query generation and use AI-generated suggestions plus explicit human selection
+35. [x] P0 - Disable keyword/frequency query generation and use AI-generated suggestions plus explicit human selection
 - Goal:
   - remove noisy keyword-frequency query generation while keeping automatic AI suggestions in the workflow.
 - Problem:
@@ -586,7 +587,7 @@ Status:
 - Current decision:
   - AI generates suggestions; human selects what actually runs.
 
-36. [ ] P0 - Disable `Run Next Citation Iteration` when no accepted papers exist
+36. [x] P0 - Disable `Run Next Citation Iteration` when no accepted papers exist
 - Goal:
   - prevent unusable citation-iteration actions when there is no eligible parent set.
 - Scope:
@@ -598,48 +599,39 @@ Status:
   - user sees clear explanation why action is disabled
   - API returns clear validation error if called without accepted parents
 
-37. [ ] P0 - Show raw discovered candidate counts per executed query in Discover
+37. [x] P0 - Show raw discovered candidate counts per executed query in Discover
 - Goal:
   - expose query-level outcome after each query finishes.
 - Scope:
-  - for each executed run query, show state and raw discovered candidate count in the query-status list
+  - for each executed run query, show state and final raw discovered candidate count in the query-status list
   - status shape should reflect the approved query states and final raw count
   - preserve values after refresh/reload and when revisiting Discover
 - Acceptance criteria:
   - each completed query shows raw discovered candidate count for that query before human review
   - status transitions are visible in near-real-time
   - values remain consistent with backend state
+ - Metric definition:
+  - this task is about the final per-query `discovered_count` value after query execution.
 
-38. [ ] P1 - Keep Review filter options visibly discoverable in the primary Review surface
+38. [x] P0 - Canonical `hmi2` Review filter UX: visible chips + full filter set + persistent sort
 - Goal:
-  - ensure end users clearly understand they can browse pending, reviewed, and latest auto-decided items.
+  - provide one clear, fast, and contract-aligned Review filtering experience in `hmi2`.
 - Scope:
-  - keep Review filter controls always visible in the main Review surface
-  - do not hide access to accepted/rejected/latest-auto views behind dropdown-only or Advanced-only controls
+  - use pressable visible controls (chips/buttons), not dropdown-only access
+  - include `Pending`, `Accepted`, `Rejected`, `Later`, `All`, `Latest Auto-Approved`, `Latest Auto-Rejected`
+  - keep filters always visible in primary Review surface (not Advanced-only)
+  - map each filter to correct backend status semantics
+  - preserve current Review sort when filter changes; reset sort only on page load/session change
 - Acceptance criteria:
-  - Review filter controls are visible at all times in the primary Review pane
-  - user does not need Advanced or hidden controls to switch queue views
+  - Review filter controls are visible and pressable in the primary Review pane
+  - full approved filter set is present and functional
+  - each filter updates queue with correct backend semantics
+  - user does not need hidden controls/Advanced to switch queue views
+  - sort behavior remains stable across filter changes
 
-39. [ ] P0 - Keep `hmi2` Review filter behavior aligned with the approved Review filter contract
+40. [x] P0 - Add `hmi2` Review queue filter contract test
 - Goal:
-  - ensure `hmi2` Review behavior matches the approved filter contract directly, without relying on legacy `hmi` wording.
-- Scope:
-  - keep Review filters visible in `hmi2` as pressable controls with:
-    - `Pending`
-    - `Accepted`
-    - `Rejected`
-    - `Later`
-    - `All`
-    - `Latest Auto-Approved`
-    - `Latest Auto-Rejected`
-  - ensure each visible filter maps to the correct backend query/status semantics
-- Acceptance criteria:
-  - `hmi2` Review exposes the full approved filter set
-  - each filter updates the visible review list using the correct backend semantics
-
-40. [ ] P0 - Add `hmi2` Review queue filter contract test
-- Goal:
-  - prevent regression where `hmi2` loses accepted/rejected queue visibility.
+  - prevent regressions of canonical task `#38`.
 - Scope:
   - add/extend frontend contract test for `hmi2`:
     - filter controls exist in Review
@@ -649,7 +641,7 @@ Status:
   - tests fail if filter is missing or options drift
   - tests fail if filter no longer drives the correct backend query behavior
 
-41. [ ] P1 - Add concise helper copy near Review filter controls
+41. [x] P1 - Add concise helper copy near Review filter controls
 - Goal:
   - make Review queue/filter browsing obvious to end users in `hmi2`.
 - Scope:
@@ -717,7 +709,7 @@ Status:
 - Result:
   - closed as complete; API payloads and `hmi2` metadata rendering already use real `journal`, `authors`, and `citation_count` values with fallback only when absent.
 
-46. [ ] P1 - Place session naming control next to `Save` in `hmi2` controls row
+46. [x] P1 - Place session naming control next to `Save` in `hmi2` controls row
 - Goal:
   - make naming/renaming a session immediate and obvious in the primary session-controls area.
 - Problem:
@@ -731,36 +723,72 @@ Status:
   - naming flow is visible without navigating to secondary page sections
   - existing session save/load behavior remains stable
 
-47. [ ] P1 - Add AI query suggestion generation and regeneration in Discover
-- Goal:
-  - help operators bootstrap discovery faster by generating AI suggestions directly in `hmi2` Discover.
-- Scope:
-  - add a Discover-screen action to generate AI query suggestions
-  - show generated suggestions in the `Suggested queries` list
-  - allow regeneration of the suggestion pool
-  - let operator explicitly move/select suggestions before running discovery
-  - keep final execution under operator control
-- Acceptance criteria:
-  - Discover can generate and regenerate AI suggestions in-place
-  - suggestions appear in the suggestion list only
-  - discovery run uses only the queries explicitly selected by the operator
+47. [x] P1 - Merged into `#32` (AI suggestions + regeneration canonicalized)
+- Resolution:
+  - duplicate scope merged into task `#32` to keep one implementation owner.
 
-48. [ ] P0 - Replace Review filter dropdown with pressable filter chips and persistent sort behavior
-- Goal:
-  - make Review queue filtering faster and more visible than a dropdown interaction.
-- Scope:
-  - replace the current Review filter dropdown with pressable text controls (tabs/chips/buttons)
-  - include options for `Pending`, `Accepted`, `Rejected`, `Later`, `All`, `Latest Auto-Approved`, and `Latest Auto-Rejected`
-  - add clear visual indication of the active filter
-  - preserve the current Review sort when filter changes
-  - reset sort to default only on page load or session change
-- Acceptance criteria:
-  - Review filter is selectable via pressable text controls, not dropdown
-  - active filter is clearly highlighted
-  - switching filters updates the queue exactly as current status API mapping expects
-  - sort is preserved across filter changes and reset only on page load/session change
+48. [x] P0 - Merged into `#38` (Review filter UX canonicalized)
+- Resolution:
+  - duplicate Review-filter implementation scope merged into task `#38`.
 
-49. [ ] P0 - Add session-level per-provider search limits in Discover
+49. [x] P1 - Fix unreadable nav badge text on selected tab in `hmi2`
+- Goal:
+  - keep badge counts readable when a navigation item is selected.
+- Problem:
+  - when `Discover` or `Review` is selected, the badge font is not visible enough against the selected-state styling.
+- Scope:
+  - adjust selected-tab + badge color/contrast in `hmi2` navigation styles
+  - preserve current badge behavior and counts
+  - verify the selected state remains visually clear while badge text stays readable
+- Acceptance criteria:
+  - badge text is readable on selected `Discover` and `Review` tabs
+  - selected nav item and badge both meet clear visual contrast expectations
+  - no regression in nav badge rendering on unselected tabs
+
+50. [x] P1 - Reset session list selection/state on `New Session` in `hmi2`
+- Goal:
+  - make new-session creation switch the UI cleanly to the new session context.
+- Problem:
+  - after creating a new session, the session list/selection is not reset as expected.
+- Scope:
+  - on `New Session`, reset session list selection to the newly created session
+  - clear stale per-session UI state tied to the previous session where applicable
+  - keep existing save/load/delete behavior unchanged
+- Acceptance criteria:
+  - creating a new session immediately selects it in the session list
+  - previous-session list state does not leak into the new session context
+  - session controls continue to work correctly after the reset
+
+51. [x] P0 - Add required Session Context panel for AI relevance ranking in Discover
+- Goal:
+  - ensure AI ranking is grounded in explicit operator-provided research context.
+- Scope:
+  - replace Discover right panel placeholder with editable `Session context` input
+  - require non-empty context before `Run Discovery`
+  - persist context in backend session profile and run snapshot
+  - store context in per-query metadata for audit
+  - pass context into AI filter evaluation payload
+- Acceptance criteria:
+  - `Run Discovery` is blocked when context is empty
+  - context persists per session and reloads on session switch/reload
+  - run and query metadata include context snapshot
+  - AI ranking input includes session context
+
+52. [x] P1 - Show explicit offline state when server stops
+- Goal:
+  - make server stoppage immediately visible in `hmi2` and prevent confusing UI actions.
+- Scope:
+  - poll `/healthz` on a short interval (for example, every 3-5 seconds)
+  - treat two consecutive poll failures as offline state
+  - show a visible `Server offline` banner/status in the main shell
+  - disable run/action buttons while offline
+  - auto-clear offline state and re-enable actions when health checks recover
+- Acceptance criteria:
+  - when backend is stopped, UI shows explicit offline indication within one poll window
+  - offline indication disappears automatically after backend recovery
+  - primary action buttons are disabled only while offline
+
+53. [x] P0 - Add session-level per-provider search limits in Discover
 - Goal:
   - let operator control provider fetch limits per session from the primary Discover workflow.
 - Problem:
@@ -777,7 +805,7 @@ Status:
   - invalid values are rejected with clear feedback
   - future runs in that session use the configured provider limits
 
-50. [ ] P1 - Add structured live operational event viewer in `Advanced`
+54. [x] P1 - Add structured live operational event viewer in `Advanced`
 - Goal:
   - give operators a clear real-time view of what the system is doing without opening server files manually.
 - Scope:
@@ -793,7 +821,7 @@ Status:
   - operator can see grouped counters alongside event lines
   - raw server-log tailing is not required for completion
 
-51. [ ] P0 - Auto-update raw fetched candidate counts per provider in Discover query status
+55. [x] P0 - Auto-update raw fetched candidate counts per provider in Discover query status
 - Goal:
   - make provider progress visible in real time for each query execution line.
 - Scope:
@@ -804,8 +832,10 @@ Status:
   - each query row shows provider-specific raw fetched counts with auto-refresh
   - counts increase during execution and settle to final totals on completion
   - UI state remains consistent after reload/rebind to the same run
+- Metric definition:
+  - this task is about live per-provider counts while query status is `searching`/`running`, distinct from task `#37` final `discovered_count`.
 
-52. [ ] P0 - Keep Review list pointer on next paper after `Reject` (no jump to start)
+56. [x] P0 - Keep Review list pointer on next paper after `Reject` (no jump to start)
 - Goal:
   - preserve reviewer flow by advancing to the next item after decision.
 - Problem:
@@ -819,7 +849,7 @@ Status:
   - pointer does not jump back to first item unless list is truly exhausted/reset
   - behavior is stable across repeated reject actions
 
-53. [ ] P1 - Add `Iter` column to the Review list and make numeric Review columns sortable
+57. [x] P1 - Add `Iter` column to the Review list and make numeric Review columns sortable
 - Goal:
   - make it clear which search iteration produced each review item and improve numeric review ordering.
 - Scope:
@@ -839,7 +869,7 @@ Status:
   - default sort is `Iter desc`
   - current sort persists across filter changes and resets only on page load/session change
 
-54. [ ] P1 - Add Review filters for latest auto-approved and latest auto-rejected documents
+58. [x] P1 - Add Review filters for latest auto-approved and latest auto-rejected documents
 - Goal:
   - let operator quickly inspect the newest AI/heuristic auto decisions without mixing them with older reviewed sets.
 - Problem:
@@ -856,38 +886,83 @@ Status:
   - each filter shows only papers auto-decided in the active session/current run context
   - switching between these filters and the existing queue views updates the Review list correctly
 
+59. [x] P1 - Remove redundant screen titles when the active page is already identified in the navigation
+- Goal:
+  - reduce visual duplication and free vertical space in the main workflow pages.
+- Problem:
+  - page titles are repeated in the content area even though the active screen is already identified by the green navigation buttons above.
+- Scope:
+  - remove redundant top-of-page titles from the main workflow pages where the navigation already makes the active screen obvious
+  - preserve titles only where they carry unique contextual value beyond the active navigation state
+  - keep page-specific subtitles/help text only when they add real information rather than restating the page name
+- Acceptance criteria:
+  - main workflow screens do not repeat their page name as a redundant heading
+  - navigation remains the primary active-screen indicator
+  - layout gains vertical space without losing orientation/context
+
+60. [x] P0 - Remove 1000-item cap in Documents data loading/export flows
+- Goal:
+  - ensure Documents workflow handles corpora larger than 1000 sources/items.
+- Problem:
+  - current Documents-related requests use `limit=1000`, truncating visible and exportable data for large runs.
+- Scope:
+  - replace hard-coded `limit=1000` usage in Documents/discovery source loading with paginated or full-iteration retrieval
+  - ensure summary counters and badges reflect full dataset, not first 1000 rows
+  - ensure Documents CSV/export operations can include all relevant rows beyond 1000
+  - keep UI responsive for large result sets (chunked fetch or pagination)
+- Acceptance criteria:
+  - runs with >1000 documents are fully represented in Documents metrics and operations
+  - no silent truncation at 1000 rows in normal Documents workflow
+  - export includes complete intended set, not only first 1000
+
+61. [x] P1 - Remove predefined default query `ultrapure water semiconductor`
+- Goal:
+  - start new sessions with an empty query list so operators always add explicit queries.
+- Problem:
+  - a predefined query (`ultrapure water semiconductor`) is auto-added and can bias accidental runs.
+- Scope:
+  - remove hardcoded default query insertion from new-session initialization in `hmi2`
+  - keep query list empty for newly created sessions
+  - keep `Run Discovery` disabled until at least one query is added and selected
+  - preserve behavior for already-saved sessions
+- Acceptance criteria:
+  - new session starts with zero queries
+  - no auto-inserted `ultrapure water semiconductor` query
+  - discovery run remains blocked until user selects at least one query
+
 ## GUI Spec Review Checklist
 
-- [ ] Global shell is `header/status -> controls -> navigation -> workspace -> footer`
-- [ ] Controls row shows `New Session | Save | Load | Delete`
-- [ ] Navigation shows `Discover | Review | Documents | Library Export | Advanced`
-- [ ] Discover is one screen, not split into competing `build` and `discover` operator workflows
-- [ ] Discover shows one single-row summary for discovered/approved/rejected/reviewed/pending
-- [ ] Discover shows separate AI-generated suggested queries and explicit selected queries
-- [ ] Discover shows all executed run queries in a list
-- [ ] Discover shows per-query state (`waiting`/`searching`/`ranking`/`completed`/`failed`)
+- [x] Global shell is `header/status -> controls -> navigation -> workspace -> footer`
+- [x] Controls row shows `New Session | Save | Load | Delete`
+- [x] Navigation shows `Discover | Review | Documents | Library Export | Advanced`
+- [ ] Main workflow pages do not repeat redundant page titles already identified by the active navigation
+- [x] Discover is one screen, not split into competing `build` and `discover` operator workflows
+- [x] Discover shows one single-row summary for discovered/approved/rejected/reviewed/pending
+- [x] Discover shows separate AI-generated suggested queries and explicit selected queries
+- [x] Discover shows all executed run queries in a list
+- [x] Discover shows per-query state (`waiting`/`searching`/`ranking`/`completed`/`failed`)
 - [ ] Discover query generation uses AI suggestions; keyword/frequency generation is disabled
-- [ ] Citation iteration action is disabled until at least one paper is accepted
-- [ ] Discover per-query status includes raw discovered candidate counts after completion
+- [x] Citation iteration action is disabled until at least one paper is accepted
+- [x] Discover per-query status includes raw discovered candidate counts after completion
 - [ ] Discover exposes session-level per-provider search limits
-- [ ] Review header shows pending count prominently
-- [ ] Review queue controls clearly expose Accepted, Rejected, and latest-auto views
-- [ ] `hmi2` Review filter behavior matches the approved Review filter contract
-- [ ] Active-work status uses animated indicator and explanatory stage text
-- [ ] `hmi2` Documents row click selects item and shows actionable details
-- [ ] Source and DOI links are visibly clickable in Review, Documents, and Library Export
-- [ ] `hmi2` metadata shows real `Journal`, `Authors`, and `Citations` values
-- [ ] Review is clearly two-pane: list left, details right
-- [ ] Review list shows a visible `Iter` column for each paper
-- [ ] Review exposes focused filters for latest auto-approved and latest auto-rejected papers
-- [ ] Review shows visible keyboard help for `A`, `R`, `L`, and next-paper navigation
-- [ ] Review metadata order is `Year | Journal | Citations | Authors | Link`
-- [ ] Documents shows only the primary spec flow in the main pane, while allowing lightweight selected-row details/actions consistent with task `#43`
-- [ ] Documents includes summary row, export CSV, ranked table, actions row, and batch upload row
-- [ ] Documents does not require `Source ID` entry in the normal workflow
-- [ ] Library Export shows a summary row with counts/relevance range
-- [ ] Library Export is two-pane: ranked results left, details right
-- [ ] Library Export uses export-list controls matching the spec intent
-- [ ] Technical parsed/source internals are not shown in the main Library Export surface
+- [x] Review header shows pending count prominently
+- [x] Review queue controls clearly expose Accepted, Rejected, and latest-auto views
+- [x] `hmi2` Review filter behavior matches the approved Review filter contract
+- [x] Active-work status uses animated indicator and explanatory stage text
+- [x] `hmi2` Documents row click selects item and shows actionable details
+- [x] Source and DOI links are visibly clickable in Review, Documents, and Library Export
+- [x] `hmi2` metadata shows real `Journal`, `Authors`, and `Citations` values
+- [x] Review is clearly two-pane: list left, details right
+- [x] Review list shows a visible `Iter` column for each paper
+- [x] Review exposes focused filters for latest auto-approved and latest auto-rejected papers
+- [x] Review shows visible keyboard help for `A`, `R`, `L`, and next-paper navigation
+- [x] Review metadata order is `Year | Journal | Citations | Authors | Link`
+- [x] Documents shows only the primary spec flow in the main pane, while allowing lightweight selected-row details/actions consistent with task `#43`
+- [x] Documents includes summary row, export CSV, ranked table, actions row, and batch upload row
+- [x] Documents does not require `Source ID` entry in the normal workflow
+- [x] Library Export shows a summary row with counts/relevance range
+- [x] Library Export is two-pane: ranked results left, details right
+- [x] Library Export uses export-list controls matching the spec intent
+- [x] Technical parsed/source internals are not shown in the main Library Export surface
 - [ ] `Advanced` is the only place for low-level IDs, run lookup, and stage controls
-- [ ] Footer is stable and shows system, AI, DB, and last-update status
+- [x] Footer is stable and shows system, AI, DB, and last-update status

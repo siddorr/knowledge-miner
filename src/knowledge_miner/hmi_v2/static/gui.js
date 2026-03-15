@@ -2,8 +2,10 @@ const AUTH_STORAGE_KEY = "km_hmi2_api_key";
 const SESSION_STORAGE_KEY = "km_hmi2_sessions";
 const ACTIVE_SESSION_KEY = "km_hmi2_active_session";
 const INTERNAL_REPO_URL_KEY = "km_hmi2_internal_repo_url";
-
-const DEFAULT_QUERY = "ultrapure water semiconductor";
+const SESSION_CONTEXT_MAX = 4096;
+const DEFAULT_PROVIDER_LIMITS = Object.freeze({ openalex: 25, semantic_scholar: 25, brave: 20 });
+const OFFLINE_HEALTH_POLL_MS = 4000;
+const OFFLINE_FAILURE_THRESHOLD = 2;
 const REVIEW_STATUS_TO_API = {
   pending: "needs_review",
   accepted: "accepted",
@@ -33,6 +35,7 @@ const state = {
   selectedReviewSourceId: "",
   selectedDocumentSourceId: "",
   discoverRunQueries: [],
+  suggestedQueries: [],
   eventSource: null,
   inFlight: 0,
   busyLabel: "",
@@ -40,6 +43,15 @@ const state = {
   currentAcquisitionStatus: null,
   liveRefreshTimer: null,
   internalRepositoryBaseUrl: localStorage.getItem(INTERNAL_REPO_URL_KEY) || "",
+  advancedEventsPaused: false,
+  advancedEventsAutoscroll: true,
+  advancedEventRows: [],
+  advancedEventGroupedCounts: [],
+  advancedEventPollTimer: null,
+  healthPollTimer: null,
+  healthFailureCount: 0,
+  serverOffline: false,
+  offlineMessage: "",
 };
 
 const els = {};
@@ -61,9 +73,11 @@ function readDom() {
   const ids = [
     "activityLine", "activityIndicator", "authStatus", "aiStatus", "dbStatus", "headerProgress", "headerProgressLabel",
     "newSessionBtn", "saveSessionBtn", "loadSessionBtn", "deleteSessionBtn", "stopRunningBtn", "sessionSelect", "sessionState",
-    "discoverSessionName", "discoverQueryInput", "addQueryBtn", "runDiscoveryBtn", "runNextCitationBtn", "resumeCitationBtn", "discoverIterationLine",
-    "discoverQueryList", "discoverSelectedCount", "discoverRunQueries", "discoverCitationHint",
+    "discoverSessionName", "discoverQueryInput", "addQueryBtn", "generateQuerySuggestionsBtn", "runDiscoveryBtn", "runNextCitationBtn", "resumeCitationBtn", "discoverIterationLine",
+    "discoverQueryList", "discoverSuggestedQueryList", "discoverSuggestionsState", "discoverSelectedCount", "discoverRunQueries", "discoverRunQueriesState", "discoverCitationHint",
+    "discoverOpenalexLimitInput", "discoverSemanticScholarLimitInput", "discoverBraveLimitInput", "discoverProviderLimitsState",
     "discoverSummaryDiscovered", "discoverSummaryApproved", "discoverSummaryRejected", "discoverSummaryReviewed", "discoverSummaryPending", "discoverState",
+    "sessionContextInput", "saveSessionContextBtn", "sessionContextCounter", "sessionContextState", "sessionContextUpdated",
     "reviewHeading", "reviewRows", "reviewTitle", "reviewAbstract", "reviewMetadata", "reviewSignals",
     "reviewAcceptBtn", "reviewRejectBtn", "reviewLaterBtn", "reviewState", "reviewBadge", "reviewQueueHelp", "reviewFilterChips",
     "documentsDownloaded", "documentsFailed", "documentsManual", "documentsPending", "documentsRows",
@@ -76,6 +90,7 @@ function readDom() {
     "apiKeyInput", "saveApiKeyBtn", "apiKeyState", "latestDiscoveryId", "latestAcquisitionId", "latestParseId",
     "openalexLimitInput", "braveCountInput", "braveAllowlistCheckbox", "saveProviderSettingsBtn", "providerSettingsState",
     "globalSearchInput", "globalSearchBtn", "globalSearchResults", "runLookupInput", "runLookupBtn", "runLookupResult",
+    "advancedEventsPauseBtn", "advancedEventsAutoscrollBtn", "advancedEventsState", "advancedEventCounters", "advancedEventsLog",
     "footerSystem", "footerAi", "footerDb", "footerUpdated",
   ];
   for (const id of ids) {
@@ -114,10 +129,14 @@ function normalizeSession(raw) {
   return {
     id: raw?.id || `session_${Math.random().toString(36).slice(2, 10)}`,
     name: raw?.name || "New Session",
-    queries: normalizedQueries.length ? normalizedQueries : [{ id: `query_${Math.random().toString(36).slice(2, 10)}`, text: DEFAULT_QUERY, selected: true }],
+    queries: normalizedQueries,
     discoveryRunId: raw?.discoveryRunId || "",
+    resultsRunId: raw?.resultsRunId || raw?.discoveryRunId || "",
     acquisitionRunId: raw?.acquisitionRunId || "",
     exportSourceIds: Array.isArray(raw?.exportSourceIds) ? raw.exportSourceIds : [],
+    sessionContext: typeof raw?.sessionContext === "string" ? raw.sessionContext : "",
+    sessionContextUpdatedAt: typeof raw?.sessionContextUpdatedAt === "string" ? raw.sessionContextUpdatedAt : "",
+    providerLimits: normalizeProviderLimits(raw?.providerLimits),
   };
 }
 
@@ -156,6 +175,14 @@ function activeQueries(session = activeSession()) {
   return session.queries.filter((query) => query.selected).map((query) => query.text.trim()).filter(Boolean);
 }
 
+function discoverRunId(session = activeSession()) {
+  return (session?.discoveryRunId || "").trim();
+}
+
+function resultsRunId(session = activeSession()) {
+  return (session?.resultsRunId || session?.discoveryRunId || "").trim();
+}
+
 function saveToken() {
   if (state.token) {
     localStorage.setItem(AUTH_STORAGE_KEY, state.token);
@@ -180,6 +207,37 @@ function normalizeHttpUrl(value) {
   }
 }
 
+function normalizeSessionContext(value) {
+  return String(value || "").trim();
+}
+
+function normalizeProviderLimits(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const bounded = (value, fallback, max) => {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      return fallback;
+    }
+    return Math.min(parsed, max);
+  };
+  return {
+    openalex: bounded(source.openalex, DEFAULT_PROVIDER_LIMITS.openalex, 200),
+    semantic_scholar: bounded(source.semantic_scholar, DEFAULT_PROVIDER_LIMITS.semantic_scholar, 100),
+    brave: bounded(source.brave, DEFAULT_PROVIDER_LIMITS.brave, 20),
+  };
+}
+
+function formatIsoTime(value) {
+  if (!value) {
+    return "-";
+  }
+  const ts = Date.parse(value);
+  if (Number.isNaN(ts)) {
+    return value;
+  }
+  return new Date(ts).toLocaleString();
+}
+
 function beginBusy(label) {
   state.inFlight += 1;
   state.busyLabel = label || state.busyLabel;
@@ -199,7 +257,14 @@ async function api(path, options = {}) {
   if (state.authEnabled && state.token) {
     headers.set("Authorization", `Bearer ${state.token}`);
   }
-  const response = await fetch(path, { ...options, headers });
+  let response;
+  try {
+    response = await fetch(path, { ...options, headers });
+    clearOfflineState();
+  } catch (error) {
+    setOfflineState(errorDetail(error) || "server_unreachable");
+    throw error;
+  }
   if (response.status === 304) {
     return { ok: true, status: 304, data: null, response };
   }
@@ -212,6 +277,22 @@ async function api(path, options = {}) {
     return { ok: true, status: response.status, data: await response.json(), response };
   }
   return { ok: true, status: response.status, data: await response.blob(), response };
+}
+
+async function fetchAllPages(fetchPage, pageSize = 1000) {
+  const items = [];
+  let offset = 0;
+  while (true) {
+    const page = await fetchPage(offset, pageSize);
+    const pageItems = Array.isArray(page.items) ? page.items : [];
+    items.push(...pageItems);
+    const total = Number(page.total ?? pageItems.length);
+    if (!pageItems.length || items.length >= total) {
+      break;
+    }
+    offset += pageSize;
+  }
+  return items;
 }
 
 function errorDetail(error) {
@@ -248,6 +329,7 @@ async function rebindSessionToLatestRun(reasonText) {
   }
   const previous = session.discoveryRunId || "";
   session.discoveryRunId = latestRunId;
+  session.resultsRunId = latestRunId;
   persistSessions();
   renderSessions();
   if (reasonText) {
@@ -266,10 +348,10 @@ async function ensureBoundDiscoveryRun() {
   if (!session) {
     return "";
   }
-  const runId = (session.discoveryRunId || "").trim();
+  const runId = discoverRunId(session);
   if (!runId) {
     await rebindSessionToLatestRun("Session had no discovery run.");
-    return activeSession()?.discoveryRunId || "";
+    return discoverRunId(activeSession());
   }
   try {
     await api(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
@@ -279,7 +361,7 @@ async function ensureBoundDiscoveryRun() {
       throw error;
     }
     await rebindSessionToLatestRun("Saved discovery run was not found.");
-    return activeSession()?.discoveryRunId || "";
+    return discoverRunId(activeSession());
   }
 }
 
@@ -289,10 +371,52 @@ function setProgress(percent, label) {
   els.headerProgressLabel.textContent = label || `${Math.round(value)}%`;
 }
 
+function setOfflineState(detail) {
+  state.serverOffline = true;
+  state.offlineMessage = detail || "server unavailable";
+  els.authStatus.textContent = "Auth: offline";
+  els.aiStatus.textContent = "AI: offline";
+  els.dbStatus.textContent = "DB: offline";
+  els.footerSystem.textContent = "System: offline";
+  els.footerAi.textContent = "AI: offline";
+  els.footerDb.textContent = "DB: offline";
+  els.footerUpdated.textContent = "Last update: offline";
+  const message = `Offline: ${state.offlineMessage}`;
+  els.discoverState.textContent = message;
+  els.reviewState.textContent = message;
+  els.documentsState.textContent = message;
+  els.libraryState.textContent = message;
+  if (els.advancedEventsState) {
+    els.advancedEventsState.textContent = message;
+  }
+  renderShell();
+  renderActivity();
+}
+
+function clearOfflineState() {
+  const wasOffline = state.serverOffline;
+  if (!wasOffline) {
+    state.healthFailureCount = 0;
+    return;
+  }
+  state.serverOffline = false;
+  state.offlineMessage = "";
+  state.healthFailureCount = 0;
+  renderShell();
+  renderActivity();
+  window.setTimeout(() => {
+    refreshAll().catch(() => {
+      // best effort recovery refresh
+    });
+  }, 0);
+}
+
 function renderActivity() {
   let text = "Idle";
   let active = false;
-  if (state.inFlight > 0) {
+  if (state.serverOffline) {
+    text = `Offline: ${state.offlineMessage || "server unavailable"}`;
+  } else if (state.inFlight > 0) {
     text = state.busyLabel || "Refreshing session state";
     active = true;
   } else if (state.currentAcquisitionStatus?.stage_status === "running") {
@@ -323,7 +447,47 @@ function renderShell() {
   renderReviewFilterChips();
   renderReviewSortButtons();
   renderStopButton();
+  applyOfflineActionState();
+  renderAdvancedOperationalEvents();
   renderActivity();
+}
+
+function applyOfflineActionState() {
+  const controls = [
+    "addQueryBtn",
+    "generateQuerySuggestionsBtn",
+    "runDiscoveryBtn",
+    "runNextCitationBtn",
+    "resumeCitationBtn",
+    "saveSessionContextBtn",
+    "reviewAcceptBtn",
+    "reviewRejectBtn",
+    "reviewLaterBtn",
+    "downloadMissingBtn",
+    "retryFailedBtn",
+    "documentsExportCsvBtn",
+    "documentsRowActionBtn",
+    "saveInternalRepoUrlBtn",
+    "libraryAddBtn",
+    "libraryRemoveBtn",
+    "libraryZipBtn",
+    "libraryMetadataBtn",
+    "stopRunningBtn",
+    "saveProviderSettingsBtn",
+    "globalSearchBtn",
+    "runLookupBtn",
+  ];
+  controls.forEach((id) => {
+    if (els[id]) {
+      if (state.serverOffline) {
+        els[id].disabled = true;
+      }
+    }
+  });
+  const uploadButton = els.batchUploadForm?.querySelector('button[type="submit"]');
+  if (uploadButton && state.serverOffline) {
+    uploadButton.disabled = true;
+  }
 }
 
 function renderReviewFilterChips() {
@@ -402,18 +566,18 @@ function renderSessionQueries() {
   els.discoverQueryList.innerHTML = "";
   session.queries.forEach((query) => {
     const li = document.createElement("li");
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = query.selected !== false;
-    checkbox.addEventListener("change", () => {
-      query.selected = checkbox.checked;
-      persistSessions();
-      updateQuerySelectionState();
-    });
     const label = document.createElement("span");
     label.textContent = query.text;
-    li.appendChild(checkbox);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      session.queries = session.queries.filter((entry) => entry.id !== query.id);
+      persistSessions();
+      renderSessions();
+    });
     li.appendChild(label);
+    li.appendChild(remove);
     els.discoverQueryList.appendChild(li);
   });
   updateQuerySelectionState();
@@ -433,19 +597,248 @@ function renderSessions() {
   els.sessionState.textContent = `Active: ${current.name} | ${state.sessions.length} saved session(s).`;
   els.discoverSessionName.value = current.name;
   els.discoverQueryInput.value = "";
+  els.sessionContextInput.value = current.sessionContext || "";
+  if (els.discoverOpenalexLimitInput) {
+    const providerLimits = normalizeProviderLimits(current.providerLimits);
+    els.discoverOpenalexLimitInput.value = String(providerLimits.openalex);
+    els.discoverSemanticScholarLimitInput.value = String(providerLimits.semantic_scholar);
+    els.discoverBraveLimitInput.value = String(providerLimits.brave);
+  }
+  els.sessionContextCounter.textContent = `${normalizeSessionContext(current.sessionContext).length} / ${SESSION_CONTEXT_MAX}`;
+  els.sessionContextUpdated.textContent = `Updated: ${formatIsoTime(current.sessionContextUpdatedAt)}`;
   renderSessionQueries();
+  renderSuggestedQueries();
+}
+
+function updateSessionProviderLimits() {
+  const session = activeSession();
+  if (!session || !els.discoverOpenalexLimitInput) {
+    return;
+  }
+  session.providerLimits = normalizeProviderLimits({
+    openalex: els.discoverOpenalexLimitInput.value,
+    semantic_scholar: els.discoverSemanticScholarLimitInput.value,
+    brave: els.discoverBraveLimitInput.value,
+  });
+  els.discoverOpenalexLimitInput.value = String(session.providerLimits.openalex);
+  els.discoverSemanticScholarLimitInput.value = String(session.providerLimits.semantic_scholar);
+  els.discoverBraveLimitInput.value = String(session.providerLimits.brave);
+  persistSessions();
+  els.discoverProviderLimitsState.textContent = "Provider limits saved with the active session.";
 }
 
 function updateQuerySelectionState() {
   const count = activeQueries().length;
   els.discoverSelectedCount.textContent = `Selected queries: ${count}`;
-  els.runDiscoveryBtn.disabled = count === 0;
+  const contextLength = normalizeSessionContext(activeSession()?.sessionContext || "").length;
+  els.runDiscoveryBtn.disabled = count === 0 || contextLength === 0;
+  if (contextLength === 0) {
+    els.sessionContextState.textContent = "Session context is required before running discovery.";
+  }
+  applyOfflineActionState();
+}
+
+function renderSuggestedQueries() {
+  if (!els.discoverSuggestedQueryList) {
+    return;
+  }
+  els.discoverSuggestedQueryList.innerHTML = "";
+  state.suggestedQueries.forEach((text) => {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = text;
+    button.addEventListener("click", () => {
+      const session = activeSession();
+      if (!session.queries.some((query) => query.text.toLowerCase() === text.toLowerCase())) {
+        session.queries.push({ id: `query_${Math.random().toString(36).slice(2, 10)}`, text, selected: true });
+        persistSessions();
+        renderSessions();
+        els.discoverSuggestionsState.textContent = `Added suggested query: ${text}`;
+      } else {
+        els.discoverSuggestionsState.textContent = `Query already selected: ${text}`;
+      }
+    });
+    li.appendChild(button);
+    els.discoverSuggestedQueryList.appendChild(li);
+  });
+  if (!state.suggestedQueries.length) {
+    els.discoverSuggestionsState.textContent = "No suggestions generated yet.";
+  }
+}
+
+function formatOperationalEvent(row) {
+  const payload = row.payload || {};
+  const prefix = `${row.timestamp} ${row.event}`;
+  if (row.event === "provider_call") {
+    return `${prefix} run=${payload.run_id || "-"} provider=${payload.provider || "-"} op=${payload.operation || "-"} ok=${payload.ok} latency_ms=${payload.latency_ms ?? "-"}${payload.error ? ` error=${payload.error}` : ""}`;
+  }
+  if (row.event === "run_summary") {
+    return `${prefix} run=${payload.run_id || "-"} status=${payload.status || "-"} iter=${payload.current_iteration ?? "-"} counters=${JSON.stringify(payload.counters || {})}`;
+  }
+  if (row.event === "acquisition_download") {
+    return `${prefix} acq=${payload.acq_run_id || "-"} source=${payload.source_id || "-"} domain=${payload.domain || "-"} status=${payload.status || "-"} latency_ms=${payload.latency_ms ?? "-"}${payload.error ? ` error=${payload.error}` : ""}`;
+  }
+  if (row.event === "acquisition_summary") {
+    return `${prefix} acq=${payload.acq_run_id || "-"} status=${payload.status || "-"} counters=${JSON.stringify(payload.counters || {})}`;
+  }
+  if (row.event === "parse_document") {
+    return `${prefix} parse=${payload.parse_run_id || "-"} doc=${payload.document_id || "-"} status=${payload.status || "-"} chunks=${payload.chunks ?? "-"}${payload.error ? ` error=${payload.error}` : ""}`;
+  }
+  if (row.event === "parse_index") {
+    return `${prefix} parse=${payload.parse_run_id || "-"} status=${payload.status || "-"} docs=${payload.indexed_documents ?? "-"} chunks=${payload.indexed_chunks ?? "-"}${payload.error ? ` error=${payload.error}` : ""}`;
+  }
+  if (row.event === "parse_summary") {
+    return `${prefix} parse=${payload.parse_run_id || "-"} status=${payload.status || "-"} counters=${JSON.stringify(payload.counters || {})}`;
+  }
+  if (row.event === "acquisition_http_call") {
+    return `${prefix} acq=${payload.acq_run_id || "-"} method=${payload.method || "-"} domain=${payload.domain || "-"} status=${payload.status_code ?? "-"} latency_ms=${payload.latency_ms ?? "-"}${payload.error ? ` error=${payload.error}` : ""}`;
+  }
+  if (row.event === "acquisition_http_trace") {
+    return `${prefix} acq=${payload.acq_run_id || "-"} source=${payload.source_id || "-"} attempts=${payload.attempt_count ?? "-"} selected=${payload.selected_url_source || "-"} final=${payload.final_status || "-"}${payload.error ? ` error=${payload.error}` : ""}`;
+  }
+  return `${prefix} ${JSON.stringify(payload)}`;
+}
+
+function renderAdvancedOperationalEvents() {
+  if (!els.advancedEventsPauseBtn) {
+    return;
+  }
+  els.advancedEventsPauseBtn.textContent = state.advancedEventsPaused ? "Resume" : "Pause";
+  els.advancedEventsAutoscrollBtn.textContent = `Autoscroll: ${state.advancedEventsAutoscroll ? "On" : "Off"}`;
+  els.advancedEventCounters.innerHTML = "";
+  state.advancedEventGroupedCounts.forEach((row) => {
+    const li = document.createElement("li");
+    li.textContent = `${row.group}: ${row.count}`;
+    els.advancedEventCounters.appendChild(li);
+  });
+  if (!state.advancedEventGroupedCounts.length) {
+    const li = document.createElement("li");
+    li.textContent = "No grouped counters yet.";
+    els.advancedEventCounters.appendChild(li);
+  }
+  const lines = state.advancedEventRows.map(formatOperationalEvent);
+  els.advancedEventsLog.textContent = lines.length ? lines.join("\n") : "No operational events loaded yet.";
+  if (state.advancedEventsAutoscroll) {
+    els.advancedEventsLog.scrollTop = els.advancedEventsLog.scrollHeight;
+  }
+}
+
+async function loadSessionProfile(sessionId) {
+  if (!sessionId) {
+    return;
+  }
+  const session = state.sessions.find((entry) => entry.id === sessionId);
+  if (!session) {
+    return;
+  }
+  try {
+    const result = await api(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+    const profile = result.data || {};
+    session.sessionContext = String(profile.session_context || "");
+    session.sessionContextUpdatedAt = String(profile.updated_at || "");
+    if (typeof profile.name === "string" && profile.name.trim()) {
+      session.name = profile.name.trim();
+    }
+    persistSessions();
+    if (state.activeSessionId === sessionId) {
+      renderSessions();
+      els.sessionContextState.textContent = session.sessionContext
+        ? "Session context loaded."
+        : "Session context is required before running discovery.";
+    }
+  } catch (error) {
+    const detail = errorDetail(error);
+    if (detail.includes("session_not_found")) {
+      session.sessionContext = "";
+      session.sessionContextUpdatedAt = "";
+      persistSessions();
+      if (state.activeSessionId === sessionId) {
+        renderSessions();
+        els.sessionContextState.textContent = "No context saved for this session yet.";
+      }
+      return;
+    }
+    if (state.activeSessionId === sessionId) {
+      els.sessionContextState.textContent = `Unable to load context: ${detail}`;
+    }
+  }
+}
+
+async function saveSessionContext() {
+  const session = activeSession();
+  const context = normalizeSessionContext(els.sessionContextInput.value);
+  if (!context) {
+    els.sessionContextState.textContent = "Session context is required.";
+    updateQuerySelectionState();
+    return false;
+  }
+  if (context.length > SESSION_CONTEXT_MAX) {
+    els.sessionContextState.textContent = `Session context must be <= ${SESSION_CONTEXT_MAX} characters.`;
+    return false;
+  }
+  const payload = {
+    name: session.name,
+    session_context: context,
+  };
+  try {
+    const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const profile = result.data || {};
+    session.sessionContext = String(profile.session_context || context);
+    session.sessionContextUpdatedAt = String(profile.updated_at || new Date().toISOString());
+    if (typeof profile.name === "string" && profile.name.trim()) {
+      session.name = profile.name.trim();
+    }
+    persistSessions();
+    renderSessions();
+    els.sessionContextState.textContent = "Session context saved.";
+    updateQuerySelectionState();
+    return true;
+  } catch (error) {
+    els.sessionContextState.textContent = `Unable to save context: ${errorDetail(error)}`;
+    return false;
+  }
+}
+
+async function generateQuerySuggestions() {
+  const session = activeSession();
+  const context = normalizeSessionContext(session.sessionContext || els.sessionContextInput.value);
+  if (!context) {
+    els.discoverSuggestionsState.textContent = "Save session context before generating suggestions.";
+    return;
+  }
+  beginBusy("Generating query suggestions");
+  try {
+    const result = await api("/v1/discovery/query-suggestions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_context: context,
+        existing_queries: session.queries.map((query) => query.text),
+        max_suggestions: 8,
+      }),
+    });
+    state.suggestedQueries = Array.isArray(result.data?.suggestions) ? result.data.suggestions : [];
+    renderSuggestedQueries();
+    els.discoverSuggestionsState.textContent = state.suggestedQueries.length
+      ? `Generated ${state.suggestedQueries.length} suggestion(s). Click one to add it to the selected query list.`
+      : (result.data?.warning || "No suggestions returned.");
+  } catch (error) {
+    els.discoverSuggestionsState.textContent = `Unable to generate suggestions: ${errorDetail(error)}`;
+  } finally {
+    endBusy();
+  }
 }
 
 function bindLatestIdsToSession() {
   const session = activeSession();
-  if (!session.discoveryRunId && state.latest.discovery) {
+  if (!session.discoveryRunId && !session.resultsRunId && state.latest.discovery) {
     session.discoveryRunId = state.latest.discovery;
+    session.resultsRunId = state.latest.discovery;
   }
 }
 
@@ -509,8 +902,17 @@ function buildMetadataHtml(item) {
   ].join(" ");
 }
 
+function displayQueryStatus(status) {
+  return status === "ranking_relevance" ? "ranking" : String(status || "waiting");
+}
+
 function renderDiscoverRunQueries() {
   els.discoverRunQueries.innerHTML = "";
+  if (!state.discoverRunQueries.length) {
+    els.discoverRunQueriesState.textContent = "No executed queries for the active run yet.";
+    return;
+  }
+  els.discoverRunQueriesState.textContent = `${state.discoverRunQueries.length} executed quer${state.discoverRunQueries.length === 1 ? "y" : "ies"} loaded for the active run.`;
   state.discoverRunQueries.forEach((item) => {
     const tr = document.createElement("tr");
     const providers = [
@@ -527,13 +929,14 @@ function renderDiscoverRunQueries() {
     const scopeProgress = item.query === "citation expansion"
       ? `Parents: ${item.scope_processed_parents ?? 0}/${item.scope_total_parents ?? 0} (${item.checkpoint_state || "none"})`
       : "";
+    const displayStatus = displayQueryStatus(item.status);
     const countText = item.status === "completed" || item.status === "ranking_relevance"
       ? String(item.discovered_count)
       : "-";
     tr.innerHTML = `
       <td>${item.position}</td>
       <td>${escapeHtml(item.query)}</td>
-      <td><span class="status-chip ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></td>
+      <td><span class="status-chip ${escapeHtml(item.status)}">${escapeHtml(displayStatus)}</span></td>
       <td>${escapeHtml(providers)}</td>
       <td>${escapeHtml(reviewCounts)}${scopeProgress ? `<div class="muted">${escapeHtml(scopeProgress)}</div>` : ""}</td>
       <td>${countText}</td>
@@ -606,7 +1009,16 @@ async function loadDiscover(recoverOnNotFound = true) {
   els.discoverSummaryRejected.textContent = String(rejectedItems.length);
   els.discoverSummaryReviewed.textContent = String(reviewedCount);
   els.discoverSummaryPending.textContent = String(pendingItems.length);
-  els.discoverState.textContent = run.message;
+  if (run.stage_status === "running" && resultsRunId(session) && resultsRunId(session) !== discoverRunId(session)) {
+    els.discoverState.textContent = `New discovery run is in progress. Review/Documents/Library still show results from ${resultsRunId(session)}.`;
+  } else if (run.status === "completed" && discoverRunId(session) && resultsRunId(session) !== discoverRunId(session)) {
+    session.resultsRunId = discoverRunId(session);
+    session.acquisitionRunId = "";
+    persistSessions();
+    els.discoverState.textContent = `New discovery run completed. Review/Documents/Library switched to ${session.resultsRunId}.`;
+  } else {
+    els.discoverState.textContent = run.message;
+  }
   updateCitationAvailability(approvedCount);
   renderActivity();
 }
@@ -646,7 +1058,7 @@ function reviewHeadingForQueue(queue, count) {
     latest_auto_rejected: "Latest Auto-Rejected",
   };
   const label = labels[queue] || queue;
-  return `Review Sources - ${label}: ${count}`;
+  return `${label}: ${count}`;
 }
 
 function renderReviewRows() {
@@ -698,7 +1110,8 @@ async function loadReview(recoverOnNotFound = true, selectionHint = null) {
   const session = activeSession();
   const queue = state.reviewQueue || "pending";
   const status = REVIEW_STATUS_TO_API[queue] || "needs_review";
-  if (!session.discoveryRunId) {
+  const runId = resultsRunId(session);
+  if (!runId) {
     state.reviewItems = [];
     state.reviewIndex = -1;
     renderReviewRows();
@@ -707,7 +1120,7 @@ async function loadReview(recoverOnNotFound = true, selectionHint = null) {
   }
   let result;
   try {
-    result = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=${encodeURIComponent(status)}&limit=200`);
+    result = await api(`/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=200`);
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
       const rebound = await rebindSessionToLatestRun("Saved discovery run was not found.");
@@ -735,7 +1148,8 @@ async function loadReview(recoverOnNotFound = true, selectionHint = null) {
 async function submitReviewDecision(decision) {
   const session = activeSession();
   const item = state.reviewItems[state.reviewIndex];
-  if (!session.discoveryRunId || !item) {
+  const runId = resultsRunId(session);
+  if (!runId || !item) {
     return;
   }
   const selectionHint = decision === "reject" ? nextReviewSelectionHint() : null;
@@ -744,7 +1158,7 @@ async function submitReviewDecision(decision) {
     await api(`/v1/sources/${encodeURIComponent(item.id)}/review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision, run_id: session.discoveryRunId }),
+      body: JSON.stringify({ decision, run_id: runId }),
     });
     await loadReview(true, selectionHint);
     await loadDiscover();
@@ -801,6 +1215,7 @@ function renderDocumentsDetail() {
   } else {
     els.documentsRowActionBtn.textContent = "Open Source";
   }
+  applyOfflineActionState();
 }
 
 function renderDocuments() {
@@ -821,7 +1236,8 @@ function renderDocuments() {
 async function loadDocuments(recoverOnNotFound = true) {
   const session = activeSession();
   state.currentAcquisitionStatus = null;
-  if (!session.discoveryRunId) {
+  const runId = resultsRunId(session);
+  if (!runId) {
     state.documentRows = [];
     state.selectedDocumentSourceId = "";
     els.documentsDownloaded.textContent = "0";
@@ -835,7 +1251,13 @@ async function loadDocuments(recoverOnNotFound = true) {
   }
   let acceptedResult;
   try {
-    acceptedResult = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=accepted&limit=1000`);
+    const acceptedItems = await fetchAllPages(async (offset, limit) => {
+      const response = await api(
+        `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=accepted&limit=${limit}&offset=${offset}`,
+      );
+      return response.data || {};
+    });
+    acceptedResult = { data: { items: acceptedItems } };
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
       const rebound = await rebindSessionToLatestRun("Saved discovery run was not found.");
@@ -851,8 +1273,13 @@ async function loadDocuments(recoverOnNotFound = true) {
   if (session.acquisitionRunId) {
     try {
       statusData = (await api(`/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}`)).data;
-      if (statusData?.discovery_run_id === session.discoveryRunId) {
-        items = (await api(`/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}/items?limit=1000`)).data.items || [];
+      if (statusData?.discovery_run_id === runId) {
+        items = await fetchAllPages(async (offset, limit) => {
+          const response = await api(
+            `/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}/items?limit=${limit}&offset=${offset}`,
+          );
+          return response.data || {};
+        });
       } else {
         session.acquisitionRunId = "";
         statusData = null;
@@ -928,16 +1355,59 @@ function renderLibraryRows() {
   renderLibraryDetail(detail);
 }
 
+function resetSessionBoundPaneState() {
+  state.currentDiscoveryStatus = null;
+  state.currentAcquisitionStatus = null;
+  state.discoverRunQueries = [];
+  state.suggestedQueries = [];
+  state.reviewItems = [];
+  state.reviewIndex = -1;
+  state.documentRows = [];
+  state.libraryRows = [];
+  state.libraryFilteredRows = [];
+  state.selectedDocumentSourceId = "";
+  state.selectedReviewSourceId = "";
+  state.selectedLibrarySourceId = "";
+
+  els.discoverIterationLine.textContent = "Iteration: -";
+  ["discoverSummaryDiscovered", "discoverSummaryApproved", "discoverSummaryRejected", "discoverSummaryReviewed", "discoverSummaryPending"].forEach((id) => {
+    els[id].textContent = "0";
+  });
+  renderDiscoverRunQueries();
+  renderSuggestedQueries();
+  updateCitationAvailability(0);
+  els.resumeCitationBtn.disabled = true;
+  els.discoverState.textContent = "No discovery run attached to the active session.";
+
+  renderReviewRows();
+  els.reviewState.textContent = "No discovery run attached to the active session.";
+
+  els.documentsDownloaded.textContent = "0";
+  els.documentsFailed.textContent = "0";
+  els.documentsManual.textContent = "0";
+  els.documentsPending.textContent = "0";
+  els.documentsBadge.textContent = "0";
+  renderDocuments();
+  els.documentsState.textContent = "No discovery run attached to the active session.";
+
+  renderLibraryRows();
+  els.libraryState.textContent = "No discovery run attached to the active session.";
+
+  renderStopButton();
+  renderActivity();
+}
+
 async function loadLibrary(recoverOnNotFound = true) {
   const session = activeSession();
-  if (!session.discoveryRunId) {
+  const runId = resultsRunId(session);
+  if (!runId) {
     state.libraryRows = [];
     renderLibraryRows();
     return;
   }
   let result;
   try {
-    result = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=accepted&limit=1000`);
+    result = await api(`/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=accepted&limit=1000`);
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
       const rebound = await rebindSessionToLatestRun("Saved discovery run was not found.");
@@ -955,8 +1425,21 @@ async function loadLibrary(recoverOnNotFound = true) {
 async function createDiscoveryRun() {
   const session = activeSession();
   const queries = activeQueries(session);
+  const context = normalizeSessionContext(session.sessionContext || els.sessionContextInput.value);
+  const previousResultsRunId = resultsRunId(session);
+  const providerLimits = normalizeProviderLimits(session.providerLimits);
   if (!queries.length) {
     els.discoverState.textContent = "Select at least one manual query.";
+    return;
+  }
+  if (!context) {
+    els.discoverState.textContent = "Session context is required before running discovery.";
+    els.sessionContextState.textContent = "Session context is required before running discovery.";
+    return;
+  }
+  const saved = await saveSessionContext();
+  if (!saved) {
+    els.discoverState.textContent = "Save session context first.";
     return;
   }
   beginBusy("Searching providers");
@@ -965,9 +1448,22 @@ async function createDiscoveryRun() {
     const result = await api("/v1/discovery/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seed_queries: queries, selected_queries: queries, max_iterations: 1 }),
+      body: JSON.stringify({
+        seed_queries: queries,
+        selected_queries: queries,
+        session_id: session.id,
+        session_context: context,
+        max_iterations: 1,
+        provider_limits: providerLimits,
+      }),
     });
     session.discoveryRunId = result.data.run_id;
+    if (previousResultsRunId && previousResultsRunId !== result.data.run_id) {
+      session.resultsRunId = previousResultsRunId;
+      els.discoverState.textContent = `Discovery started. Review/Documents still show previous results from ${previousResultsRunId} until the new run completes.`;
+    } else {
+      session.resultsRunId = result.data.run_id;
+    }
     session.acquisitionRunId = "";
     session.exportSourceIds = [];
     persistSessions();
@@ -980,6 +1476,8 @@ async function createDiscoveryRun() {
 async function createNextCitationIteration() {
   const session = activeSession();
   const queries = activeQueries(session);
+  const previousResultsRunId = resultsRunId(session);
+  const providerLimits = normalizeProviderLimits(session.providerLimits);
   if (!session.discoveryRunId) {
     els.discoverState.textContent = "Run the first discovery iteration before starting citation expansion.";
     return;
@@ -994,9 +1492,15 @@ async function createNextCitationIteration() {
     const result = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/next-citation-iteration`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ selected_queries: queries }),
+      body: JSON.stringify({ selected_queries: queries, provider_limits: providerLimits }),
     });
     session.discoveryRunId = result.data.run_id;
+    if (previousResultsRunId && previousResultsRunId !== result.data.run_id) {
+      session.resultsRunId = previousResultsRunId;
+      els.discoverState.textContent = `Citation iteration started. Review/Documents still show previous results from ${previousResultsRunId} until the new run completes.`;
+    } else {
+      session.resultsRunId = result.data.run_id;
+    }
     persistSessions();
     await refreshAll();
   } catch (error) {
@@ -1028,7 +1532,8 @@ async function resumeCitationIteration() {
 
 async function startAcquisition(retryFailedOnly, selectedSourceIds = null) {
   const session = activeSession();
-  if (!session.discoveryRunId) {
+  const runId = resultsRunId(session);
+  if (!runId) {
     els.documentsState.textContent = "Run discovery first.";
     return;
   }
@@ -1039,7 +1544,7 @@ async function startAcquisition(retryFailedOnly, selectedSourceIds = null) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        run_id: session.discoveryRunId,
+        run_id: runId,
         retry_failed_only: retryFailedOnly,
         selected_source_ids: selectedSourceIds,
         internal_repository_base_url: state.internalRepositoryBaseUrl || null,
@@ -1141,7 +1646,8 @@ function downloadBlob(blob, filename) {
 
 async function exportDocumentsCsv() {
   const session = activeSession();
-  if (!session.discoveryRunId) {
+  const runId = resultsRunId(session);
+  if (!runId) {
     return;
   }
   beginBusy("Preparing export");
@@ -1150,8 +1656,8 @@ async function exportDocumentsCsv() {
     for (const id of state.documentRows.map((row) => row.source.id)) {
       params.append("source_id", id);
     }
-    const result = await api(`/v1/library-export/runs/${encodeURIComponent(session.discoveryRunId)}/metadata.csv?${params.toString()}`);
-    downloadBlob(result.data, `documents_${session.discoveryRunId}.csv`);
+    const result = await api(`/v1/library-export/runs/${encodeURIComponent(runId)}/metadata.csv?${params.toString()}`);
+    downloadBlob(result.data, `documents_${runId}.csv`);
   } finally {
     endBusy();
   }
@@ -1159,7 +1665,8 @@ async function exportDocumentsCsv() {
 
 async function exportLibraryMetadata() {
   const session = activeSession();
-  if (!session.discoveryRunId) {
+  const runId = resultsRunId(session);
+  if (!runId) {
     return;
   }
   beginBusy("Preparing export");
@@ -1168,8 +1675,8 @@ async function exportLibraryMetadata() {
     for (const id of selectedLibraryIds()) {
       params.append("source_id", id);
     }
-    const result = await api(`/v1/library-export/runs/${encodeURIComponent(session.discoveryRunId)}/metadata.csv?${params.toString()}`);
-    downloadBlob(result.data, `library_export_${session.discoveryRunId}.csv`);
+    const result = await api(`/v1/library-export/runs/${encodeURIComponent(runId)}/metadata.csv?${params.toString()}`);
+    downloadBlob(result.data, `library_export_${runId}.csv`);
   } finally {
     endBusy();
   }
@@ -1177,7 +1684,8 @@ async function exportLibraryMetadata() {
 
 async function exportLibraryZip() {
   const session = activeSession();
-  if (!session.discoveryRunId) {
+  const runId = resultsRunId(session);
+  if (!runId) {
     return;
   }
   beginBusy("Preparing export");
@@ -1186,8 +1694,8 @@ async function exportLibraryZip() {
     for (const id of selectedLibraryIds()) {
       params.append("source_id", id);
     }
-    const result = await api(`/v1/library-export/runs/${encodeURIComponent(session.discoveryRunId)}/pdfs.zip?${params.toString()}`);
-    downloadBlob(result.data, `library_export_${session.discoveryRunId}.zip`);
+    const result = await api(`/v1/library-export/runs/${encodeURIComponent(runId)}/pdfs.zip?${params.toString()}`);
+    downloadBlob(result.data, `library_export_${runId}.zip`);
   } finally {
     endBusy();
   }
@@ -1261,12 +1769,74 @@ async function saveProviderSettings() {
   }
 }
 
+async function loadAdvancedOperationalEvents() {
+  if (state.advancedEventsPaused) {
+    els.advancedEventsState.textContent = "Operational event polling paused.";
+    renderAdvancedOperationalEvents();
+    return;
+  }
+  try {
+    const result = await api("/v1/advanced/operational-events?limit=60");
+    const data = result.data || {};
+    state.advancedEventRows = Array.isArray(data.items) ? data.items : [];
+    state.advancedEventGroupedCounts = Array.isArray(data.grouped_counts) ? data.grouped_counts : [];
+    const logPath = data.log_path ? ` Log: ${data.log_path}` : "";
+    els.advancedEventsState.textContent = `Loaded ${data.total || 0} operational event(s).${logPath}`;
+    renderAdvancedOperationalEvents();
+  } catch (error) {
+    els.advancedEventsState.textContent = `Unable to load operational events: ${errorDetail(error)}`;
+  }
+}
+
+async function pollServerHealth() {
+  try {
+    const response = await fetch("/healthz", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`healthz_${response.status}`);
+    }
+    state.healthFailureCount = 0;
+    clearOfflineState();
+  } catch (error) {
+    state.healthFailureCount += 1;
+    if (state.healthFailureCount >= OFFLINE_FAILURE_THRESHOLD) {
+      setOfflineState("server offline");
+    }
+  }
+}
+
+function startAdvancedEventPolling() {
+  if (state.advancedEventPollTimer) {
+    window.clearInterval(state.advancedEventPollTimer);
+  }
+  state.advancedEventPollTimer = window.setInterval(() => {
+    if (state.activePage === "advanced" && !state.advancedEventsPaused) {
+      loadAdvancedOperationalEvents();
+    }
+  }, 5000);
+}
+
+function startHealthPolling() {
+  if (state.healthPollTimer) {
+    window.clearInterval(state.healthPollTimer);
+  }
+  state.healthPollTimer = window.setInterval(() => {
+    pollServerHealth();
+  }, OFFLINE_HEALTH_POLL_MS);
+  pollServerHealth();
+}
+
 function connectLiveUpdates() {
   if (state.eventSource) {
     state.eventSource.close();
   }
   const tokenParam = state.authEnabled && state.token ? `?api_key=${encodeURIComponent(state.token)}` : "";
   state.eventSource = new EventSource(`/v1/events/stream${tokenParam}`);
+  state.eventSource.addEventListener("open", () => {
+    clearOfflineState();
+  });
+  state.eventSource.onerror = () => {
+    setOfflineState("live updates disconnected");
+  };
   state.eventSource.addEventListener("run_started", async (event) => {
     const payload = JSON.parse(event.data || "{}");
     if (payload.phase === "discovery") {
@@ -1318,6 +1888,7 @@ function scheduleLiveDiscoverRefresh(payload) {
 async function refreshAll() {
   beginBusy("Refreshing session state");
   try {
+    await loadSessionProfile(activeSession()?.id || "");
     await loadLatestIds();
     try {
       await ensureBoundDiscoveryRun();
@@ -1345,6 +1916,9 @@ async function refreshAll() {
       await loadLibrary();
     } catch (error) {
       els.libraryState.textContent = `Unable to load library: ${errorDetail(error)}`;
+    }
+    if (state.activePage === "advanced") {
+      await loadAdvancedOperationalEvents();
     }
   } finally {
     endBusy();
@@ -1387,6 +1961,9 @@ function wireEvents() {
       if (state.activePage === "library") {
         await loadLibrary();
       }
+      if (state.activePage === "advanced") {
+        await loadAdvancedOperationalEvents();
+      }
     });
   });
 
@@ -1399,6 +1976,8 @@ function wireEvents() {
     persistSessions();
     renderSessions();
     renderShell();
+    resetSessionBoundPaneState();
+    els.sessionContextState.textContent = "No context saved for this session yet.";
     els.sessionState.textContent = `Created new session: ${session.name}`;
   });
   els.saveSessionBtn.addEventListener("click", () => {
@@ -1418,6 +1997,7 @@ function wireEvents() {
     resetReviewSort();
     persistSessions();
     renderSessions();
+    resetSessionBoundPaneState();
     await refreshAll();
     els.sessionState.textContent = `Loaded session: ${activeSession().name}`;
   });
@@ -1431,6 +2011,7 @@ function wireEvents() {
     resetReviewSort();
     persistSessions();
     renderSessions();
+    resetSessionBoundPaneState();
     await refreshAll();
     els.sessionState.textContent = `Deleted session. Active: ${activeSession().name}`;
   });
@@ -1448,6 +2029,25 @@ function wireEvents() {
     persistSessions();
     renderSessions();
   });
+  els.sessionContextInput.addEventListener("input", () => {
+    const session = activeSession();
+    session.sessionContext = els.sessionContextInput.value;
+    els.sessionContextCounter.textContent = `${normalizeSessionContext(session.sessionContext).length} / ${SESSION_CONTEXT_MAX}`;
+    persistSessions();
+    updateQuerySelectionState();
+    if (!normalizeSessionContext(session.sessionContext)) {
+      els.sessionContextState.textContent = "Session context is required before running discovery.";
+    } else {
+      els.sessionContextState.textContent = "Unsaved context changes.";
+    }
+  });
+  ["discoverOpenalexLimitInput", "discoverSemanticScholarLimitInput", "discoverBraveLimitInput"].forEach((id) => {
+    els[id].addEventListener("input", updateSessionProviderLimits);
+    els[id].addEventListener("change", updateSessionProviderLimits);
+  });
+  els.saveSessionContextBtn.addEventListener("click", async () => {
+    await saveSessionContext();
+  });
   els.addQueryBtn.addEventListener("click", () => {
     const value = els.discoverQueryInput.value.trim();
     if (!value) {
@@ -1458,9 +2058,11 @@ function wireEvents() {
       session.queries.push({ id: `query_${Math.random().toString(36).slice(2, 10)}`, text: value, selected: true });
       persistSessions();
       renderSessions();
+      els.discoverSuggestionsState.textContent = `Added manual query: ${value}`;
     }
     els.discoverQueryInput.value = "";
   });
+  els.generateQuerySuggestionsBtn.addEventListener("click", generateQuerySuggestions);
   els.runDiscoveryBtn.addEventListener("click", createDiscoveryRun);
   els.runNextCitationBtn.addEventListener("click", createNextCitationIteration);
   els.resumeCitationBtn.addEventListener("click", resumeCitationIteration);
@@ -1532,6 +2134,17 @@ function wireEvents() {
     refreshAll();
   });
   els.saveProviderSettingsBtn.addEventListener("click", saveProviderSettings);
+  els.advancedEventsPauseBtn.addEventListener("click", async () => {
+    state.advancedEventsPaused = !state.advancedEventsPaused;
+    renderAdvancedOperationalEvents();
+    if (!state.advancedEventsPaused && state.activePage === "advanced") {
+      await loadAdvancedOperationalEvents();
+    }
+  });
+  els.advancedEventsAutoscrollBtn.addEventListener("click", () => {
+    state.advancedEventsAutoscroll = !state.advancedEventsAutoscroll;
+    renderAdvancedOperationalEvents();
+  });
   els.globalSearchBtn.addEventListener("click", globalSearch);
   els.runLookupBtn.addEventListener("click", lookupRun);
   document.addEventListener("keydown", handleKeyboard);
@@ -1545,6 +2158,8 @@ async function init() {
   wireEvents();
   await refreshAll();
   connectLiveUpdates();
+  startAdvancedEventPolling();
+  startHealthPolling();
 }
 
 init().catch((error) => {

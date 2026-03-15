@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..auth import require_api_key
+from ..ai_filter import AIAuthError, AIProviderError, AIRateLimitError, AITimeoutError, generate_query_suggestions
 from ..config import settings
 from ..db import get_db
 from ..discovery import create_run, enqueue_citation_iteration_run, enqueue_run, export_sources_raw, review_source
@@ -16,6 +17,8 @@ from ..rate_limit import require_rate_limit
 from ..runtime_state import request_run_stop
 from ..schemas import (
     CitationIterationRequest,
+    QuerySuggestionsRequest,
+    QuerySuggestionsResponse,
     DiscoveryRunQueriesResponse,
     DiscoveryRunQueryOut,
     RunCreateRequest,
@@ -74,12 +77,52 @@ def create_discovery_run(
     db: Session = Depends(get_db),
 ) -> RunCreateResponse:
     selected_queries = payload.selected_queries or payload.seed_queries
+    normalized_session_id = payload.session_id.strip()
+    normalized_session_context = payload.session_context.strip()
+    if not normalized_session_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="session_id_required")
+    if not normalized_session_context:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="session_context_required")
     try:
-        run = create_run(db, selected_queries, 1, ai_filter_enabled=payload.ai_filter_enabled)
+        run = create_run(
+            db,
+            selected_queries,
+            1,
+            session_id=normalized_session_id,
+            session_context=normalized_session_context,
+            ai_filter_enabled=payload.ai_filter_enabled,
+            provider_limits=payload.provider_limits.model_dump(exclude_none=True) if payload.provider_limits else None,
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="selected_queries_required") from exc
+        detail = str(exc) or "invalid_request"
+        if detail not in {"selected_queries_required", "seed_queries_required", "session_context_required", "session_id_required"}:
+            detail = "invalid_request"
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail) from exc
     _enqueue_discovery_task(background_tasks, run.id)
     return RunCreateResponse(run_id=run.id, status=run.status)
+
+
+@router.post("/v1/discovery/query-suggestions", response_model=QuerySuggestionsResponse)
+def suggest_discovery_queries(
+    payload: QuerySuggestionsRequest,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+) -> QuerySuggestionsResponse:
+    try:
+        suggestions = generate_query_suggestions(
+            session_context=payload.session_context.strip(),
+            existing_queries=[q.strip() for q in payload.existing_queries if str(q).strip()],
+            max_suggestions=payload.max_suggestions,
+        )
+    except AIAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except AIRateLimitError as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    except (AITimeoutError, AIProviderError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    if not suggestions:
+        return QuerySuggestionsResponse(suggestions=[], source="ai", warning="No suggestions returned.")
+    return QuerySuggestionsResponse(suggestions=suggestions, source="ai", warning=None)
 
 
 @router.post("/v1/discovery/runs/{run_id}/next-citation-iteration", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -189,6 +232,12 @@ def list_discovery_run_queries(
                 scope_total_parents=row.scope_total_parents,
                 scope_processed_parents=row.scope_processed_parents,
                 checkpoint_state=row.checkpoint_state,
+                has_session_context=bool(isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")),
+                session_context_preview=(
+                    str(row.query_metadata.get("session_context"))[:120]
+                    if isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")
+                    else None
+                ),
                 error_message=row.error_message,
             )
             for row in rows

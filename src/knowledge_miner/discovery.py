@@ -5,6 +5,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
+import logging
 import time
 from pathlib import Path
 import threading
@@ -37,17 +38,26 @@ class RunStopRequested(RuntimeError):
     pass
 from .scoring import decision_from_score, score_text
 
+logger = logging.getLogger("knowledge_miner")
+
 
 def create_run(
     db: Session,
     seed_queries: list[str],
     max_iterations: int,
     *,
+    session_id: str | None = None,
+    session_context: str | None = None,
     ai_filter_enabled: bool | None = None,
+    provider_limits: dict[str, int] | None = None,
 ) -> Run:
     normalized_queries = _normalize_queries(seed_queries)
     if not normalized_queries:
         raise ValueError("seed_queries_required")
+    normalized_session_context = (session_context or "").strip()
+    normalized_session_id = (session_id or "").strip()
+    if not normalized_session_id:
+        normalized_session_id = f"legacy_session_{uuid.uuid4().hex[:12]}"
     use_ai_filter = settings.use_ai_filter if ai_filter_enabled is None else ai_filter_enabled
     ai_filter_active, ai_filter_warning = describe_ai_filter_runtime(
         use_ai_filter=use_ai_filter,
@@ -57,6 +67,8 @@ def create_run(
         id=f"run_{uuid.uuid4().hex[:12]}",
         status="queued",
         seed_queries=normalized_queries,
+        session_id=normalized_session_id,
+        session_context=normalized_session_context,
         max_iterations=max_iterations,
         current_iteration=0,
         accepted_total=0,
@@ -74,6 +86,11 @@ def create_run(
                 id=f"run_query_{uuid.uuid4().hex[:12]}",
                 run_id=run.id,
                 query_text=query,
+                query_metadata=_query_context_metadata(
+                    session_id=normalized_session_id,
+                    session_context=normalized_session_context,
+                    provider_limits=provider_limits,
+                ),
                 position=position,
                 status="waiting",
                 discovered_count=0,
@@ -238,7 +255,8 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
             else None
         )
 
-        active_connectors = connectors or build_connectors()
+        provider_limits = _provider_limits_for_run(db, run.id)
+        active_connectors = connectors or build_connectors(provider_limits=provider_limits)
         for iteration in range(1, max_iterations + 1):
             _assert_discovery_not_stopped(run_id, phase="discovery")
             _ensure_run_queries(db, run_id, queries)
@@ -260,6 +278,9 @@ def execute_run(db: Session, run: Run, connectors: list[Connector] | None = None
                     ai_filter=ai_filter,
                     ai_policy_no_ai=not ai_effective_enabled,
                     session_queries=list(run.seed_queries),
+                    session_context=run.session_context,
+                    query_id=run_query.id,
+                    query_text=run_query.query_text,
                     observability=observability,
                 )
                 new_accepted_unique += stats.new_accepted_unique
@@ -346,7 +367,7 @@ def execute_citation_iteration_run(db: Session, run: Run, *, source_run_id: str)
         if ai_effective_enabled
         else None
     )
-    connectors = build_connectors()
+    connectors = build_connectors(provider_limits=_provider_limits_for_run(db, run.id))
     connectors_by_name = {c.name: c for c in connectors}
     try:
         run.status = "running"
@@ -374,6 +395,11 @@ def execute_citation_iteration_run(db: Session, run: Run, *, source_run_id: str)
                 id=f"run_query_{uuid.uuid4().hex[:12]}",
                 run_id=run_id,
                 query_text="citation expansion",
+                query_metadata=_query_context_metadata(
+                    session_id=run.session_id,
+                    session_context=run.session_context,
+                    provider_limits=_provider_limits_for_run(db, run.id),
+                ),
                 position=next_position,
                 status="searching",
                 discovered_count=0,
@@ -394,6 +420,14 @@ def execute_citation_iteration_run(db: Session, run: Run, *, source_run_id: str)
             query_row.status = "searching"
             query_row.checkpoint_state = "running"
             query_row.error_message = None
+            if not isinstance(query_row.query_metadata, dict):
+                query_row.query_metadata = {}
+            if not query_row.query_metadata.get("session_context") and run.session_context:
+                query_row.query_metadata = _query_context_metadata(
+                    session_id=run.session_id,
+                    session_context=run.session_context,
+                    provider_limits=_provider_limits_for_run(db, run.id),
+                )
         query_row.updated_at = datetime.now(UTC)
         db.commit()
 
@@ -467,6 +501,9 @@ def execute_citation_iteration_run(db: Session, run: Run, *, source_run_id: str)
                 ai_filter=ai_filter,
                 ai_policy_no_ai=not ai_effective_enabled,
                 session_queries=list(run.seed_queries),
+                session_context=run.session_context,
+                query_id=query_row.id,
+                query_text=query_row.query_text,
                 observability=observability,
             )
             query_row.accepted_count = int(query_row.accepted_count) + stats.accepted
@@ -675,12 +712,20 @@ def _ensure_run_queries(db: Session, run_id: str, queries: list[str]) -> None:
     ).all()
     if existing:
         return
+    run = db.get(Run, run_id)
+    session_context = run.session_context if run is not None else None
+    session_id = run.session_id if run is not None else None
     for position, query in enumerate(_normalize_queries(queries), start=1):
         db.add(
             DiscoveryRunQuery(
                 id=f"run_query_{uuid.uuid4().hex[:12]}",
                 run_id=run_id,
                 query_text=query,
+                query_metadata=_query_context_metadata(
+                    session_id=session_id,
+                    session_context=session_context,
+                    provider_limits=_provider_limits_for_run(db, run_id),
+                ),
                 position=position,
                 status="waiting",
                 discovered_count=0,
@@ -712,6 +757,9 @@ def _collect_candidates(
         .order_by(DiscoveryRunQuery.position.asc())
         .limit(10)
     ).all()
+    run = db.get(Run, run_id)
+    session_context = run.session_context if run is not None else None
+    session_id = run.session_id if run is not None else None
     if not run_queries:
         run_queries = []
         for position, query in enumerate(_normalize_queries(queries)[:10], start=1):
@@ -720,6 +768,10 @@ def _collect_candidates(
                     id=f"run_query_{uuid.uuid4().hex[:12]}",
                     run_id=run_id,
                     query_text=query,
+                    query_metadata=_query_context_metadata(
+                        session_id=session_id,
+                        session_context=session_context,
+                    ),
                     position=position,
                     status="waiting",
                     discovered_count=0,
@@ -736,6 +788,14 @@ def _collect_candidates(
         db.commit()
 
     for run_query in run_queries:
+        if not isinstance(run_query.query_metadata, dict):
+            run_query.query_metadata = {}
+        if not run_query.query_metadata.get("session_context") and session_context:
+            run_query.query_metadata = _query_context_metadata(
+                session_id=session_id,
+                session_context=session_context,
+                provider_limits=_provider_limits_for_run(db, run_id),
+            )
         query = run_query.query_text
         run_query.status = "searching"
         run_query.error_message = None
@@ -979,10 +1039,14 @@ def _ingest_candidates(
     ai_filter: AIRelevanceFilter | None = None,
     ai_policy_no_ai: bool = False,
     session_queries: list[str] | None = None,
+    session_context: str | None = None,
+    query_id: str | None = None,
+    query_text: str | None = None,
     observability: RunObservability | None = None,
 ) -> IngestStats:
     stats = IngestStats()
     pending_source_ids: set[str] = set()
+    logged_context = False
 
     def _inc(bucket: str, value: int = 1) -> None:
         setattr(stats, bucket, getattr(stats, bucket) + value)
@@ -997,12 +1061,25 @@ def _ingest_candidates(
         else:
             _inc("pending")
 
+    def _normalize_candidate_year(raw_year: object) -> int | None:
+        if raw_year is None:
+            return None
+        try:
+            year = int(raw_year)
+        except (TypeError, ValueError):
+            return None
+        # Keep ingestion compatible with the current DB check constraint.
+        if year < 1900 or year > 2100:
+            return None
+        return year
+
     for c in candidates:
+        normalized_year = _normalize_candidate_year(c.get("year"))
         canonical_sid = canonical_id(
             doi=c.get("doi"),
             url=c.get("url"),
             title=c["title"],
-            year=c.get("year"),
+            year=normalized_year,
             openalex_id=(c.get("openalex_id") or c.get("source_native_id")) if c.get("source") == "openalex" else None,
             semantic_scholar_id=(c.get("semantic_scholar_id") or c.get("source_native_id"))
             if c.get("source") == "semantic_scholar"
@@ -1034,6 +1111,15 @@ def _ingest_candidates(
         ai_decision = None
         ai_confidence = None
         if not ai_policy_no_ai and ai_filter is not None:
+            if session_context and not logged_context:
+                logger.info(
+                    "ai_context run_id=%s query_id=%s query_text=%s context_source=run_snapshot session_context=%s",
+                    run_id,
+                    query_id or "-",
+                    query_text or "-",
+                    session_context,
+                )
+                logged_context = True
             try:
                 ai_result = ai_filter.evaluate(
                     title=c["title"],
@@ -1041,6 +1127,7 @@ def _ingest_candidates(
                     base_score=score,
                     base_decision=heuristic_recommendation,
                     session_queries=session_queries or [],
+                    session_context=session_context or "",
                 )
             except TypeError:
                 # Backward-compat for tests/stubs that still use the old evaluate signature.
@@ -1113,7 +1200,7 @@ def _ingest_candidates(
             "id": sid,
             "run_id": run_id,
             "title": c["title"],
-            "year": c.get("year"),
+            "year": normalized_year,
             "url": c.get("url"),
             "doi": c.get("doi"),
             "abstract": c.get("abstract"),
@@ -1298,6 +1385,51 @@ def _provenance_event(candidate: dict, iteration: int) -> dict:
         "parent_source_id": candidate.get("parent_source_id"),
         "provider": candidate.get("source"),
         "source_native_id": candidate.get("source_native_id"),
+    }
+
+
+def _normalize_provider_limits(provider_limits: dict[str, int] | None) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    if not isinstance(provider_limits, dict):
+        return normalized
+    for key, max_value in (("openalex", 200), ("semantic_scholar", 100), ("brave", 20)):
+        value = provider_limits.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed < 1:
+            continue
+        normalized[key] = min(parsed, max_value)
+    return normalized
+
+
+def _provider_limits_for_run(db: Session, run_id: str) -> dict[str, int]:
+    rows = db.scalars(
+        select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run_id).order_by(DiscoveryRunQuery.position.asc())
+    ).all()
+    for row in rows:
+        if isinstance(row.query_metadata, dict):
+            provider_limits = _normalize_provider_limits(row.query_metadata.get("provider_limits"))
+            if provider_limits:
+                return provider_limits
+    return {}
+
+
+def _query_context_metadata(
+    *,
+    session_id: str | None,
+    session_context: str | None,
+    provider_limits: dict[str, int] | None = None,
+) -> dict:
+    normalized_context = (session_context or "").strip()
+    return {
+        "session_id": (session_id or "").strip() or None,
+        "session_context": normalized_context or None,
+        "session_context_updated_at": datetime.now(UTC).isoformat() if normalized_context else None,
+        "provider_limits": _normalize_provider_limits(provider_limits),
     }
 
 

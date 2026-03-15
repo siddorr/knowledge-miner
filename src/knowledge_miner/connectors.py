@@ -27,9 +27,10 @@ class Connector(Protocol):
 
 
 class MockConnector:
-    def __init__(self, name: str, source_type: str) -> None:
+    def __init__(self, name: str, source_type: str, *, search_limit: int | None = None) -> None:
         self.name = name
         self.source_type = source_type
+        self.search_limit = search_limit
 
     def search(self, query: str, *, run_id: str, iteration: int) -> list[dict]:
         rnd = random.Random(f"{self.name}:{run_id}:{iteration}:{query}")
@@ -65,6 +66,8 @@ class MockConnector:
                     "parent_source_id": None,
                 }
             )
+        if self.search_limit is not None:
+            return results[: max(0, self.search_limit)]
         return results
 
     def expand_citations(self, source: "Source", *, per_direction_limit: int, iteration: int) -> tuple[list[dict], list[dict]]:
@@ -116,10 +119,14 @@ class MockConnector:
 class OpenAlexConnector:
     name = "openalex"
 
+    def __init__(self, *, search_limit: int | None = None) -> None:
+        self.search_limit = search_limit
+
     def search(self, query: str, *, run_id: str, iteration: int) -> list[dict]:
         del run_id
         url = f"{settings.openalex_base_url.rstrip('/')}/works"
-        params = {"search": query, "per-page": max(1, min(int(settings.openalex_search_limit), 200))}
+        configured_limit = settings.openalex_search_limit if self.search_limit is None else self.search_limit
+        params = {"search": query, "per-page": max(1, min(int(configured_limit), 200))}
         response = _request_json("GET", url, params=params)
         rows = response.get("results", [])
         out: list[dict] = []
@@ -203,12 +210,16 @@ class OpenAlexConnector:
 class SemanticScholarConnector:
     name = "semantic_scholar"
 
+    def __init__(self, *, search_limit: int | None = None) -> None:
+        self.search_limit = search_limit
+
     def search(self, query: str, *, run_id: str, iteration: int) -> list[dict]:
         del run_id
         url = f"{settings.semantic_scholar_base_url.rstrip('/')}/paper/search"
+        configured_limit = 25 if self.search_limit is None else self.search_limit
         params = {
             "query": query,
-            "limit": 25,
+            "limit": max(1, min(int(configured_limit), 100)),
             "fields": "paperId,title,year,url,abstract,externalIds",
         }
         headers: dict[str, str] = {}
@@ -284,12 +295,16 @@ class SemanticScholarConnector:
 class BraveConnector:
     name = "brave"
 
+    def __init__(self, *, search_count: int | None = None) -> None:
+        self.search_count = search_count
+
     def search(self, query: str, *, run_id: str, iteration: int) -> list[dict]:
         del run_id
         if not settings.brave_api_key:
             return []
         url = f"{settings.brave_base_url.rstrip('/')}/res/v1/web/search"
-        params = {"q": query, "count": max(1, min(int(settings.brave_search_count), 20))}
+        configured_count = settings.brave_search_count if self.search_count is None else self.search_count
+        params = {"q": query, "count": max(1, min(int(configured_count), 20))}
         headers = {"Accept": "application/json", "X-Subscription-Token": settings.brave_api_key}
         response = _request_json("GET", url, params=params, headers=headers)
         rows = response.get("web", {}).get("results", [])
@@ -331,24 +346,35 @@ class BraveConnector:
         return [], []
 
 
-def build_mock_connectors() -> list[Connector]:
-    out = [MockConnector("openalex", "academic"), MockConnector("brave", "web")]
+def build_mock_connectors(provider_limits: dict[str, int] | None = None) -> list[Connector]:
+    provider_limits = provider_limits or {}
+    out = [
+        MockConnector("openalex", "academic", search_limit=provider_limits.get("openalex")),
+        MockConnector("brave", "web", search_limit=provider_limits.get("brave")),
+    ]
     if settings.use_semantic_scholar:
-        out.insert(1, MockConnector("semantic_scholar", "academic"))
+        out.insert(
+            1,
+            MockConnector("semantic_scholar", "academic", search_limit=provider_limits.get("semantic_scholar")),
+        )
     return out
 
 
-def build_real_connectors() -> list[Connector]:
-    out: list[Connector] = [OpenAlexConnector(), BraveConnector()]
+def build_real_connectors(provider_limits: dict[str, int] | None = None) -> list[Connector]:
+    provider_limits = provider_limits or {}
+    out: list[Connector] = [
+        OpenAlexConnector(search_limit=provider_limits.get("openalex")),
+        BraveConnector(search_count=provider_limits.get("brave")),
+    ]
     if settings.use_semantic_scholar:
-        out.insert(1, SemanticScholarConnector())
+        out.insert(1, SemanticScholarConnector(search_limit=provider_limits.get("semantic_scholar")))
     return out
 
 
-def build_connectors() -> list[Connector]:
+def build_connectors(provider_limits: dict[str, int] | None = None) -> list[Connector]:
     if settings.use_mock_connectors:
-        return build_mock_connectors()
-    return build_real_connectors()
+        return build_mock_connectors(provider_limits=provider_limits)
+    return build_real_connectors(provider_limits=provider_limits)
 
 
 def _request_json(

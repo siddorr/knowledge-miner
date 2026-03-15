@@ -4,16 +4,38 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class DiscoveryProviderLimits(BaseModel):
+    openalex: int | None = Field(default=None, ge=1, le=200)
+    semantic_scholar: int | None = Field(default=None, ge=1, le=100)
+    brave: int | None = Field(default=None, ge=1, le=20)
+
+
 class RunCreateRequest(BaseModel):
     seed_queries: list[str] = Field(min_length=1)
     selected_queries: list[str] | None = None
+    session_id: str = Field(min_length=1, max_length=120)
+    session_context: str = Field(min_length=1, max_length=4096)
     max_iterations: int = Field(default=6, ge=1, le=6)
     ai_filter_enabled: bool | None = None
+    provider_limits: DiscoveryProviderLimits | None = None
 
 
 class CitationIterationRequest(BaseModel):
     selected_queries: list[str] | None = None
     ai_filter_enabled: bool | None = None
+    provider_limits: DiscoveryProviderLimits | None = None
+
+
+class QuerySuggestionsRequest(BaseModel):
+    session_context: str = Field(min_length=1, max_length=4096)
+    existing_queries: list[str] = Field(default_factory=list)
+    max_suggestions: int = Field(default=8, ge=1, le=12)
+
+
+class QuerySuggestionsResponse(BaseModel):
+    suggestions: list[str]
+    source: str
+    warning: str | None = None
 
 
 class RunCreateResponse(BaseModel):
@@ -59,6 +81,8 @@ class DiscoveryRunQueryOut(BaseModel):
     scope_total_parents: int = 0
     scope_processed_parents: int = 0
     checkpoint_state: str = "none"
+    has_session_context: bool = False
+    session_context_preview: str | None = None
     error_message: str | None
 
 
@@ -445,3 +469,15 @@ class HMIEventsIngestRequest(BaseModel):
 
 class HMIEventsIngestResponse(BaseModel):
     accepted: int
+
+
+class SessionProfileUpsertRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    session_context: str = Field(min_length=1, max_length=4096)
+
+
+class SessionProfileResponse(BaseModel):
+    session_id: str
+    name: str | None
+    session_context: str | None
+    updated_at: str | None
