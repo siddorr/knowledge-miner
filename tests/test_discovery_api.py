@@ -226,6 +226,173 @@ def test_create_discovery_run_persists_provider_limits_in_query_metadata(monkeyp
         }
 
 
+def test_session_sources_accumulate_accepted_results_across_runs():
+    with SessionLocal() as db:
+        run_old = Run(
+            id="run_session_old",
+            session_id="session_accumulated",
+            status="completed",
+            seed_queries=["old"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        run_new = Run(
+            id="run_session_new",
+            session_id="session_accumulated",
+            status="completed",
+            seed_queries=["new"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        db.add_all([run_old, run_new])
+        db.add_all(
+            [
+                Source(
+                    id="src_old_unique",
+                    run_id=run_old.id,
+                    title="Accepted old paper",
+                    year=2020,
+                    url="https://example.org/old",
+                    doi="10.1000/old",
+                    abstract="old",
+                    type="academic",
+                    source="openalex",
+                    source_native_id="old",
+                    patent_office=None,
+                    patent_number=None,
+                    iteration=1,
+                    discovery_method="seed_search",
+                    relevance_score=4.0,
+                    accepted=True,
+                    review_status="human_accept",
+                    provenance_history=[],
+                ),
+                Source(
+                    id="src_new_unique",
+                    run_id=run_new.id,
+                    title="Accepted new paper",
+                    year=2024,
+                    url="https://example.org/new",
+                    doi="10.1000/new",
+                    abstract="new",
+                    type="academic",
+                    source="openalex",
+                    source_native_id="new",
+                    patent_office=None,
+                    patent_number=None,
+                    iteration=2,
+                    discovery_method="forward_citation",
+                    relevance_score=6.0,
+                    accepted=True,
+                    review_status="auto_accept",
+                    provenance_history=[],
+                ),
+                Source(
+                    id="src_dup_rejected",
+                    run_id=run_new.id,
+                    title="Accepted old paper",
+                    year=2020,
+                    url="https://example.org/old",
+                    doi="10.1000/old",
+                    abstract="duplicate",
+                    type="academic",
+                    source="openalex",
+                    source_native_id="dup",
+                    patent_office=None,
+                    patent_number=None,
+                    iteration=2,
+                    discovery_method="forward_citation",
+                    relevance_score=1.0,
+                    accepted=False,
+                    review_status="auto_reject",
+                    provenance_history=[],
+                ),
+            ]
+        )
+        db.commit()
+
+    client = TestClient(app)
+    response = client.get("/v1/sessions/session_accumulated/sources?status=accepted&limit=20", headers=_auth_headers())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    ids = {item["id"] for item in body["items"]}
+    assert ids == {"src_old_unique", "src_new_unique"}
+
+
+def test_session_discovery_queries_accumulate_across_runs():
+    with SessionLocal() as db:
+        run_old = Run(
+            id="run_query_old",
+            session_id="session_query_history",
+            status="completed",
+            seed_queries=["old query"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=0,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        run_new = Run(
+            id="run_query_new",
+            session_id="session_query_history",
+            status="running",
+            seed_queries=["new query"],
+            max_iterations=1,
+            current_iteration=2,
+            accepted_total=0,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        db.add_all([run_old, run_new])
+        db.add_all(
+            [
+                DiscoveryRunQuery(
+                    id="dq_old",
+                    run_id=run_old.id,
+                    query_text="old query",
+                    position=1,
+                    status="completed",
+                    discovered_count=3,
+                ),
+                DiscoveryRunQuery(
+                    id="dq_new",
+                    run_id=run_new.id,
+                    query_text="new query",
+                    position=1,
+                    status="searching",
+                    discovered_count=0,
+                ),
+            ]
+        )
+        db.commit()
+
+    client = TestClient(app)
+    response = client.get("/v1/sessions/session_query_history/queries", headers=_auth_headers())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == "session_query_history"
+    assert [item["query"] for item in body["queries"]] == ["new query", "old query"]
+    assert body["queries"][0]["run_id"] == "run_query_new"
+    assert body["queries"][1]["run_id"] == "run_query_old"
+    assert body["queries"][0]["run_number"] == 2
+    assert body["queries"][1]["run_number"] == 1
+
+
 def test_create_discovery_run_requires_non_empty_session_context(monkeypatch):
     monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
     client = TestClient(app)

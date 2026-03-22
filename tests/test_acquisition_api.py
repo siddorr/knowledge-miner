@@ -26,6 +26,7 @@ def _seed_discovery_run(*, completed: bool) -> tuple[str, str]:
     with SessionLocal() as db:
         run = Run(
             id="run_seed_1",
+            session_id="session_seed_acq",
             status="completed" if completed else "running",
             seed_queries=["upw semiconductor"],
             max_iterations=1,
@@ -97,6 +98,52 @@ def _seed_discovery_run_with_two_sources() -> tuple[str, str, str]:
     return run_id, first_source_id, "doi:10.1000/test-acq-2"
 
 
+def _seed_cross_run_session_sources() -> tuple[str, str, str]:
+    run_id, source_a = _seed_discovery_run(completed=True)
+    with SessionLocal() as db:
+        run = Run(
+            id="run_seed_2",
+            session_id=db.get(Run, run_id).session_id,
+            status="completed",
+            seed_queries=["citation"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        db.add(run)
+        db.add(
+            Source(
+                id="doi:10.1000/test-acq-cross",
+                run_id=run.id,
+                title="Cross-run accepted source",
+                year=2024,
+                url="https://example.org/cross",
+                doi="10.1000/test-acq-cross",
+                abstract="cross",
+                type="academic",
+                source="openalex",
+                source_native_id="W3",
+                patent_office=None,
+                patent_number=None,
+                iteration=2,
+                discovery_method="forward_citation",
+                relevance_score=7.0,
+                accepted=True,
+                review_status="auto_accept",
+                ai_decision=None,
+                ai_confidence=None,
+                parent_source_id=None,
+                provenance_history=[],
+            )
+        )
+        db.commit()
+    return run_id, source_a, "doi:10.1000/test-acq-cross"
+
+
 def _seed_manual_recovery_case() -> tuple[str, str]:
     run_id, source_id = _seed_discovery_run(completed=True)
     with SessionLocal() as db:
@@ -156,6 +203,24 @@ def test_create_acquisition_run_supports_selected_source_ids(monkeypatch):
     assert items.status_code == 200
     ids = [row["source_id"] for row in items.json()["items"]]
     assert source_b in ids
+    assert source_a not in ids
+
+
+def test_create_acquisition_run_supports_selected_source_ids_across_session_runs(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    run_id, source_a, source_cross = _seed_cross_run_session_sources()
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/acquisition/runs",
+        json={"run_id": run_id, "retry_failed_only": False, "selected_source_ids": [source_cross]},
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 202
+    acq_run_id = resp.json()["acq_run_id"]
+    items = client.get(f"/v1/acquisition/runs/{acq_run_id}/items", headers=_auth_headers())
+    assert items.status_code == 200
+    ids = [row["source_id"] for row in items.json()["items"]]
+    assert source_cross in ids
     assert source_a not in ids
 
 

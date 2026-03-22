@@ -43,13 +43,22 @@ def create_acquisition_run(
     if run.status != "completed":
         raise RuntimeError("run_not_complete")
 
+    selected_ids = {value.strip() for value in (selected_source_ids or []) if value and value.strip()}
     accepted_sources = db.scalars(
         select(Source).where(Source.run_id == discovery_run_id, Source.accepted.is_(True)).order_by(Source.id.asc())
     ).all()
     selected_sources = accepted_sources
-    selected_ids = {value.strip() for value in (selected_source_ids or []) if value and value.strip()}
     if selected_ids and not retry_failed_only:
-        selected_sources = [source for source in accepted_sources if source.id in selected_ids]
+        selected_sources = db.scalars(
+            select(Source)
+            .join(Run, Run.id == Source.run_id)
+            .where(
+                Run.session_id == run.session_id,
+                Source.accepted.is_(True),
+                Source.id.in_(list(selected_ids)),
+            )
+            .order_by(Source.id.asc())
+        ).all()
     if retry_failed_only:
         prev_run = db.scalars(
             select(AcquisitionRun)
@@ -65,7 +74,31 @@ def create_acquisition_run(
                     )
                 ).all()
             )
-            selected_sources = [source for source in accepted_sources if source.id in failed_source_ids]
+            if selected_ids:
+                failed_source_ids &= selected_ids
+                selected_sources = db.scalars(
+                    select(Source)
+                    .join(Run, Run.id == Source.run_id)
+                    .where(
+                        Run.session_id == run.session_id,
+                        Source.accepted.is_(True),
+                        Source.id.in_(list(failed_source_ids)),
+                    )
+                    .order_by(Source.id.asc())
+                ).all()
+            else:
+                selected_sources = [source for source in accepted_sources if source.id in failed_source_ids]
+        elif selected_ids:
+            selected_sources = db.scalars(
+                select(Source)
+                .join(Run, Run.id == Source.run_id)
+                .where(
+                    Run.session_id == run.session_id,
+                    Source.accepted.is_(True),
+                    Source.id.in_(list(selected_ids)),
+                )
+                .order_by(Source.id.asc())
+            ).all()
         else:
             selected_sources = []
     acq_run = AcquisitionRun(

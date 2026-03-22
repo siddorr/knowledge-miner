@@ -260,6 +260,66 @@ def _title_tokens(value: str) -> set[str]:
     return {part for part in parts if len(part) >= 3}
 
 
+def _source_identity_key(source: Source) -> tuple[str, str]:
+    if source.doi:
+        return ("doi", source.doi.strip().lower())
+    if source.url:
+        return ("url", source.url.strip().lower())
+    normalized_title = re.sub(r"\s+", " ", (source.title or "").strip().lower())
+    return ("title", f"{normalized_title}|{source.year or ''}")
+
+
+def _source_decision_rank(source: Source) -> int:
+    if source.accepted:
+        return 4
+    if source.review_status == "needs_review":
+        return 3
+    if source.review_status == "human_later":
+        return 2
+    return 1
+
+
+def _source_sort_tuple(source: Source, effective_status: str) -> tuple:
+    if effective_status in {"latest_auto_approved", "latest_auto_rejected"}:
+        return (
+            source.updated_at or source.created_at,
+            source.created_at,
+            source.id,
+        )
+    return (
+        float(source.relevance_score or 0.0),
+        source.updated_at or source.created_at,
+        source.id,
+    )
+
+
+def _serialize_source(source: Source) -> SourceOut:
+    return SourceOut(
+        id=source.id,
+        title=source.title,
+        year=source.year,
+        url=source.url,
+        doi=source.doi,
+        doi_url=(f"https://doi.org/{source.doi}" if source.doi else None),
+        abstract=source.abstract,
+        journal=source.journal,
+        authors=list(source.authors or []),
+        citation_count=source.citation_count,
+        type=source.type,
+        source=source.source,
+        iteration=source.iteration,
+        discovery_method=source.discovery_method,
+        relevance_score=float(source.relevance_score),
+        accepted=source.accepted,
+        review_status=source.review_status,
+        final_decision=source.final_decision,
+        decision_source=source.decision_source,
+        heuristic_recommendation=source.heuristic_recommendation,
+        heuristic_score=float(source.heuristic_score),
+        parent_source=source.parent_source_id,
+    )
+
+
 def _hot_read_client_key(request: Request) -> str:
     ip = request.client.host if request.client else "unknown"
     auth = request.headers.get("authorization", "")
@@ -664,33 +724,74 @@ def list_sources(
     all_rows = db.scalars(order_stmt).all()
     page = all_rows[offset : offset + limit]
     return SourcesListResponse(
-        items=[
-            SourceOut(
-                id=s.id,
-                title=s.title,
-                year=s.year,
-                url=s.url,
-                doi=s.doi,
-                doi_url=(f"https://doi.org/{s.doi}" if s.doi else None),
-                abstract=s.abstract,
-                journal=s.journal,
-                authors=list(s.authors or []),
-                citation_count=s.citation_count,
-                type=s.type,
-                source=s.source,
-                iteration=s.iteration,
-                discovery_method=s.discovery_method,
-                relevance_score=float(s.relevance_score),
-                accepted=s.accepted,
-                review_status=s.review_status,
-                final_decision=s.final_decision,
-                decision_source=s.decision_source,
-                heuristic_recommendation=s.heuristic_recommendation,
-                heuristic_score=float(s.heuristic_score),
-                parent_source=s.parent_source_id,
-            )
-            for s in page
-        ],
+        items=[_serialize_source(s) for s in page],
+        total=len(all_rows),
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/v1/sessions/{session_id}/sources", response_model=SourcesListResponse)
+def list_session_sources(
+    session_id: str,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    type: str | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    min_score: float | None = Query(default=None, ge=0),
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> SourcesListResponse:
+    _guard_hot_read(request, "session_sources")
+    run_ids = db.scalars(select(Run.id).where(Run.session_id == session_id)).all()
+    if not run_ids:
+        return SourcesListResponse(items=[], total=0, limit=limit, offset=offset)
+
+    effective_status = (status_filter or "accepted").strip().lower()
+    if effective_status in {"latest_auto_approved", "latest_auto_rejected"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="latest_auto_filters_require_run_scope")
+
+    stmt = select(Source).where(Source.run_id.in_(run_ids))
+    if effective_status == "accepted":
+        stmt = stmt.where(Source.accepted.is_(True))
+    elif effective_status == "rejected":
+        stmt = stmt.where(Source.review_status.in_(("auto_reject", "human_reject")))
+    elif effective_status == "needs_review":
+        stmt = stmt.where(Source.review_status == "needs_review")
+    elif effective_status == "later":
+        stmt = stmt.where(Source.review_status == "human_later")
+    elif effective_status == "all":
+        pass
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_request")
+    if type is not None:
+        stmt = stmt.where(Source.type == type)
+    if min_score is not None:
+        stmt = stmt.where(Source.relevance_score >= min_score)
+
+    rows = db.scalars(stmt.order_by(Source.updated_at.desc(), Source.created_at.desc(), Source.id.desc())).all()
+    best_by_key: dict[tuple[str, str], Source] = {}
+    for row in rows:
+        key = _source_identity_key(row)
+        current = best_by_key.get(key)
+        if current is None:
+            best_by_key[key] = row
+            continue
+        candidate_rank = (_source_decision_rank(row), _source_sort_tuple(row, effective_status))
+        current_rank = (_source_decision_rank(current), _source_sort_tuple(current, effective_status))
+        if candidate_rank > current_rank:
+            best_by_key[key] = row
+
+    all_rows = sorted(
+        best_by_key.values(),
+        key=lambda item: _source_sort_tuple(item, effective_status),
+        reverse=True,
+    )
+    page = all_rows[offset : offset + limit]
+    return SourcesListResponse(
+        items=[_serialize_source(s) for s in page],
         total=len(all_rows),
         limit=limit,
         offset=offset,

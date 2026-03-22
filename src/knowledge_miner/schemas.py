@@ -67,6 +67,8 @@ class RunStatusResponse(BaseModel):
 
 
 class DiscoveryRunQueryOut(BaseModel):
+    run_id: str | None = None
+    run_number: int | None = None
     query: str
     position: int
     status: str
@@ -88,6 +90,11 @@ class DiscoveryRunQueryOut(BaseModel):
 
 class DiscoveryRunQueriesResponse(BaseModel):
     run_id: str
+    queries: list[DiscoveryRunQueryOut]
+
+
+class SessionDiscoveryQueriesResponse(BaseModel):
+    session_id: str
     queries: list[DiscoveryRunQueryOut]
 
 

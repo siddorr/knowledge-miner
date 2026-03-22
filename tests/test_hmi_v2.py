@@ -34,7 +34,7 @@ def test_hmi2_shell_route_and_navigation():
     assert "Selected queries: 0" in body
     assert 'id="discoverQueryInput"' in body
     assert 'placeholder="Add a search query"' in body
-    assert "Executed Queries for Active Run" in body
+    assert "Executed Queries in Session" in body
     assert "Provider Limits" in body
     assert 'id="discoverOpenalexLimitInput"' in body
     assert 'id="discoverSemanticScholarLimitInput"' in body

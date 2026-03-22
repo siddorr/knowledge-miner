@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..auth import require_api_key
+from ..config import settings
 from ..db import get_db
 from ..models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
 from ..rate_limit import require_rate_limit
@@ -26,12 +27,25 @@ def _load_export_run(db: Session, run_id: str) -> Run:
 
 
 def _accepted_sources(db: Session, run_id: str, source_ids: list[str] | None) -> list[Source]:
-    stmt = select(Source).where(Source.run_id == run_id, Source.accepted.is_(True)).order_by(Source.relevance_score.desc(), Source.id.asc())
-    rows = db.scalars(stmt).all()
-    if not source_ids:
-        return rows
-    wanted = set(source_ids)
-    filtered = [row for row in rows if row.id in wanted]
+    run = _load_export_run(db, run_id)
+    if source_ids:
+        wanted = {value for value in source_ids if value}
+        filtered = db.scalars(
+            select(Source)
+            .join(Run, Run.id == Source.run_id)
+            .where(
+                Run.session_id == run.session_id,
+                Source.accepted.is_(True),
+                Source.id.in_(list(wanted)),
+            )
+            .order_by(Source.relevance_score.desc(), Source.id.asc())
+        ).all()
+    else:
+        filtered = db.scalars(
+            select(Source)
+            .where(Source.run_id == run_id, Source.accepted.is_(True))
+            .order_by(Source.relevance_score.desc(), Source.id.asc())
+        ).all()
     if not filtered:
         raise HTTPException(status_code=404, detail="sources_not_found")
     return filtered
@@ -50,6 +64,14 @@ def _source_link(source: Source) -> str:
     if source.doi:
         return f"https://doi.org/{source.doi}"
     return source.url or ""
+
+
+def _artifact_file_path(path_value: str | None) -> Path:
+    raw = (path_value or "").strip()
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    return Path(settings.artifacts_dir) / path
 
 
 @router.get("/v1/library-export/runs/{run_id}/metadata.csv")
@@ -141,7 +163,7 @@ def export_library_pdfs_zip(
             artifact = best_pdf_by_source.get(source.id)
             if artifact is None:
                 continue
-            path = Path(artifact.path)
+            path = _artifact_file_path(artifact.path)
             if not path.exists() or not path.is_file():
                 continue
             safe_title = "".join(ch if ch.isalnum() or ch in {"-", "_", " "} else "_" for ch in source.title).strip()

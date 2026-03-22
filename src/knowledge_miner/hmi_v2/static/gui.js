@@ -183,6 +183,10 @@ function resultsRunId(session = activeSession()) {
   return (session?.resultsRunId || session?.discoveryRunId || "").trim();
 }
 
+function sessionSourcesPath(sessionId, status, limit, offset = 0) {
+  return `/v1/sessions/${encodeURIComponent(sessionId)}/sources?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`;
+}
+
 function saveToken() {
   if (state.token) {
     localStorage.setItem(AUTH_STORAGE_KEY, state.token);
@@ -909,10 +913,10 @@ function displayQueryStatus(status) {
 function renderDiscoverRunQueries() {
   els.discoverRunQueries.innerHTML = "";
   if (!state.discoverRunQueries.length) {
-    els.discoverRunQueriesState.textContent = "No executed queries for the active run yet.";
+    els.discoverRunQueriesState.textContent = "No executed queries in the active session yet.";
     return;
   }
-  els.discoverRunQueriesState.textContent = `${state.discoverRunQueries.length} executed quer${state.discoverRunQueries.length === 1 ? "y" : "ies"} loaded for the active run.`;
+  els.discoverRunQueriesState.textContent = `${state.discoverRunQueries.length} executed quer${state.discoverRunQueries.length === 1 ? "y" : "ies"} loaded for the active session.`;
   state.discoverRunQueries.forEach((item) => {
     const tr = document.createElement("tr");
     const providers = [
@@ -933,7 +937,11 @@ function renderDiscoverRunQueries() {
     const countText = item.status === "completed" || item.status === "ranking_relevance"
       ? String(item.discovered_count)
       : "-";
+    const runLabel = item.run_id
+      ? `Run ${item.run_number ?? "-"}`
+      : "-";
     tr.innerHTML = `
+      <td>${escapeHtml(runLabel)}</td>
       <td>${item.position}</td>
       <td>${escapeHtml(item.query)}</td>
       <td><span class="status-chip ${escapeHtml(item.status)}">${escapeHtml(displayStatus)}</span></td>
@@ -979,7 +987,7 @@ async function loadDiscover(recoverOnNotFound = true) {
       api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=all&limit=1000`),
       api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=needs_review&limit=1000`),
       api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=rejected&limit=1000`),
-      api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/queries`),
+      api(`/v1/sessions/${encodeURIComponent(session.id)}/queries`),
     ]);
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
@@ -994,7 +1002,8 @@ async function loadDiscover(recoverOnNotFound = true) {
   state.currentDiscoveryStatus = run;
   state.discoverRunQueries = queryResult.data.queries || [];
   renderDiscoverRunQueries();
-  const hasResumableCitation = state.discoverRunQueries.some(
+  const activeRunQueries = state.discoverRunQueries.filter((item) => item.run_id === session.discoveryRunId);
+  const hasResumableCitation = activeRunQueries.some(
     (item) => item.query === "citation expansion" && item.checkpoint_state === "resumable",
   );
   els.resumeCitationBtn.disabled = !hasResumableCitation;
@@ -1010,12 +1019,11 @@ async function loadDiscover(recoverOnNotFound = true) {
   els.discoverSummaryReviewed.textContent = String(reviewedCount);
   els.discoverSummaryPending.textContent = String(pendingItems.length);
   if (run.stage_status === "running" && resultsRunId(session) && resultsRunId(session) !== discoverRunId(session)) {
-    els.discoverState.textContent = `New discovery run is in progress. Review/Documents/Library still show results from ${resultsRunId(session)}.`;
+    els.discoverState.textContent = "New discovery run is in progress. Review/Documents/Library keep the accumulated session results.";
   } else if (run.status === "completed" && discoverRunId(session) && resultsRunId(session) !== discoverRunId(session)) {
     session.resultsRunId = discoverRunId(session);
-    session.acquisitionRunId = "";
     persistSessions();
-    els.discoverState.textContent = `New discovery run completed. Review/Documents/Library switched to ${session.resultsRunId}.`;
+    els.discoverState.textContent = "New discovery run completed. Session-level results were refreshed.";
   } else {
     els.discoverState.textContent = run.message;
   }
@@ -1111,16 +1119,19 @@ async function loadReview(recoverOnNotFound = true, selectionHint = null) {
   const queue = state.reviewQueue || "pending";
   const status = REVIEW_STATUS_TO_API[queue] || "needs_review";
   const runId = resultsRunId(session);
-  if (!runId) {
+  if (!session.id || (queue.startsWith("latest_auto_") && !runId)) {
     state.reviewItems = [];
     state.reviewIndex = -1;
     renderReviewRows();
-    els.reviewState.textContent = "No discovery run attached to the active session.";
+    els.reviewState.textContent = "No discovery results attached to the active session.";
     return;
   }
   let result;
   try {
-    result = await api(`/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=200`);
+    const path = queue.startsWith("latest_auto_")
+      ? `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=200`
+      : sessionSourcesPath(session.id, status, 200);
+    result = await api(path);
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
       const rebound = await rebindSessionToLatestRun("Saved discovery run was not found.");
@@ -1146,10 +1157,8 @@ async function loadReview(recoverOnNotFound = true, selectionHint = null) {
 }
 
 async function submitReviewDecision(decision) {
-  const session = activeSession();
   const item = state.reviewItems[state.reviewIndex];
-  const runId = resultsRunId(session);
-  if (!runId || !item) {
+  if (!item) {
     return;
   }
   const selectionHint = decision === "reject" ? nextReviewSelectionHint() : null;
@@ -1158,7 +1167,7 @@ async function submitReviewDecision(decision) {
     await api(`/v1/sources/${encodeURIComponent(item.id)}/review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision, run_id: runId }),
+      body: JSON.stringify({ decision }),
     });
     await loadReview(true, selectionHint);
     await loadDiscover();
@@ -1236,8 +1245,7 @@ function renderDocuments() {
 async function loadDocuments(recoverOnNotFound = true) {
   const session = activeSession();
   state.currentAcquisitionStatus = null;
-  const runId = resultsRunId(session);
-  if (!runId) {
+  if (!session.id) {
     state.documentRows = [];
     state.selectedDocumentSourceId = "";
     els.documentsDownloaded.textContent = "0";
@@ -1245,16 +1253,14 @@ async function loadDocuments(recoverOnNotFound = true) {
     els.documentsManual.textContent = "0";
     els.documentsPending.textContent = "0";
     els.documentsBadge.textContent = "0";
-    els.documentsState.textContent = "No discovery run attached to the active session.";
+    els.documentsState.textContent = "No discovery results attached to the active session.";
     renderDocuments();
     return;
   }
   let acceptedResult;
   try {
     const acceptedItems = await fetchAllPages(async (offset, limit) => {
-      const response = await api(
-        `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=accepted&limit=${limit}&offset=${offset}`,
-      );
+      const response = await api(sessionSourcesPath(session.id, "accepted", limit, offset));
       return response.data || {};
     });
     acceptedResult = { data: { items: acceptedItems } };
@@ -1273,19 +1279,12 @@ async function loadDocuments(recoverOnNotFound = true) {
   if (session.acquisitionRunId) {
     try {
       statusData = (await api(`/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}`)).data;
-      if (statusData?.discovery_run_id === runId) {
-        items = await fetchAllPages(async (offset, limit) => {
-          const response = await api(
-            `/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}/items?limit=${limit}&offset=${offset}`,
-          );
-          return response.data || {};
-        });
-      } else {
-        session.acquisitionRunId = "";
-        statusData = null;
-        items = [];
-        persistSessions();
-      }
+      items = await fetchAllPages(async (offset, limit) => {
+        const response = await api(
+          `/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}/items?limit=${limit}&offset=${offset}`,
+        );
+        return response.data || {};
+      });
     } catch {
       session.acquisitionRunId = "";
       persistSessions();
@@ -1399,15 +1398,18 @@ function resetSessionBoundPaneState() {
 
 async function loadLibrary(recoverOnNotFound = true) {
   const session = activeSession();
-  const runId = resultsRunId(session);
-  if (!runId) {
+  if (!session.id) {
     state.libraryRows = [];
     renderLibraryRows();
     return;
   }
   let result;
   try {
-    result = await api(`/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=accepted&limit=1000`);
+    const acceptedItems = await fetchAllPages(async (offset, limit) => {
+      const response = await api(sessionSourcesPath(session.id, "accepted", limit, offset));
+      return response.data || {};
+    });
+    result = { data: { items: acceptedItems } };
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
       const rebound = await rebindSessionToLatestRun("Saved discovery run was not found.");
@@ -1460,7 +1462,7 @@ async function createDiscoveryRun() {
     session.discoveryRunId = result.data.run_id;
     if (previousResultsRunId && previousResultsRunId !== result.data.run_id) {
       session.resultsRunId = previousResultsRunId;
-      els.discoverState.textContent = `Discovery started. Review/Documents still show previous results from ${previousResultsRunId} until the new run completes.`;
+      els.discoverState.textContent = "Discovery started. Review/Documents/Library keep the accumulated session results while the new run executes.";
     } else {
       session.resultsRunId = result.data.run_id;
     }
@@ -1497,7 +1499,7 @@ async function createNextCitationIteration() {
     session.discoveryRunId = result.data.run_id;
     if (previousResultsRunId && previousResultsRunId !== result.data.run_id) {
       session.resultsRunId = previousResultsRunId;
-      els.discoverState.textContent = `Citation iteration started. Review/Documents still show previous results from ${previousResultsRunId} until the new run completes.`;
+      els.discoverState.textContent = "Citation iteration started. Review/Documents/Library keep the accumulated session results while the new run executes.";
     } else {
       session.resultsRunId = result.data.run_id;
     }
@@ -1694,8 +1696,19 @@ async function exportLibraryZip() {
     for (const id of selectedLibraryIds()) {
       params.append("source_id", id);
     }
-    const result = await api(`/v1/library-export/runs/${encodeURIComponent(runId)}/pdfs.zip?${params.toString()}`);
-    downloadBlob(result.data, `library_export_${runId}.zip`);
+    const path = `/v1/library-export/runs/${encodeURIComponent(runId)}/pdfs.zip?${params.toString()}`;
+    if (state.authEnabled && state.token) {
+      const result = await api(path);
+      downloadBlob(result.data, `library_export_${runId}.zip`);
+      return;
+    }
+    const anchor = document.createElement("a");
+    anchor.href = path;
+    anchor.download = `library_export_${runId}.zip`;
+    anchor.rel = "noopener noreferrer";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
   } finally {
     endBusy();
   }

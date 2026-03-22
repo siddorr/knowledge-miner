@@ -21,6 +21,7 @@ from ..schemas import (
     QuerySuggestionsResponse,
     DiscoveryRunQueriesResponse,
     DiscoveryRunQueryOut,
+    SessionDiscoveryQueriesResponse,
     RunCreateRequest,
     RunCreateResponse,
     SourceReviewRequest,
@@ -218,6 +219,7 @@ def list_discovery_run_queries(
         run_id=run_id,
         queries=[
             DiscoveryRunQueryOut(
+                run_id=run_id,
                 query=row.query_text,
                 position=row.position,
                 status=row.status,
@@ -241,6 +243,56 @@ def list_discovery_run_queries(
                 error_message=row.error_message,
             )
             for row in rows
+        ],
+    )
+
+
+@router.get("/v1/sessions/{session_id}/queries", response_model=SessionDiscoveryQueriesResponse)
+def list_session_discovery_queries(
+    session_id: str,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> SessionDiscoveryQueriesResponse:
+    ordered_run_ids = db.scalars(
+        select(Run.id).where(Run.session_id == session_id).order_by(Run.created_at.asc(), Run.id.asc())
+    ).all()
+    run_numbers = {run_id: index + 1 for index, run_id in enumerate(ordered_run_ids)}
+    rows = db.execute(
+        select(DiscoveryRunQuery, Run)
+        .join(Run, Run.id == DiscoveryRunQuery.run_id)
+        .where(Run.session_id == session_id)
+        .order_by(Run.created_at.desc(), Run.id.desc(), DiscoveryRunQuery.position.asc())
+    ).all()
+    return SessionDiscoveryQueriesResponse(
+        session_id=session_id,
+        queries=[
+            DiscoveryRunQueryOut(
+                run_id=run.id,
+                run_number=run_numbers.get(run.id),
+                query=row.query_text,
+                position=row.position,
+                status=row.status,
+                discovered_count=row.discovered_count,
+                openalex_count=row.openalex_count,
+                brave_count=row.brave_count,
+                semantic_scholar_count=row.semantic_scholar_count,
+                accepted_count=row.accepted_count,
+                rejected_count=row.rejected_count,
+                pending_count=row.pending_count,
+                processing_count=row.processing_count,
+                scope_total_parents=row.scope_total_parents,
+                scope_processed_parents=row.scope_processed_parents,
+                checkpoint_state=row.checkpoint_state,
+                has_session_context=bool(isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")),
+                session_context_preview=(
+                    str(row.query_metadata.get("session_context"))[:120]
+                    if isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")
+                    else None
+                ),
+                error_message=row.error_message,
+            )
+            for row, run in rows
         ],
     )
 

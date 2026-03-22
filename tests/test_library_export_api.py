@@ -26,6 +26,7 @@ def _seed_exportable_run(tmp_path: Path) -> tuple[str, str]:
     with SessionLocal() as db:
         run = Run(
             id="run_export_1",
+            session_id="session_export_1",
             status="completed",
             seed_queries=["upw"],
             max_iterations=1,
@@ -97,6 +98,82 @@ def _seed_exportable_run(tmp_path: Path) -> tuple[str, str]:
         return run.id, source.id
 
 
+def _seed_cross_run_exportable_source(tmp_path: Path) -> tuple[str, str]:
+    anchor_run_id, _ = _seed_exportable_run(tmp_path)
+    pdf_path = tmp_path / "cross-paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 cross test pdf")
+    with SessionLocal() as db:
+        run = Run(
+            id="run_export_2",
+            session_id="session_export_1",
+            status="completed",
+            seed_queries=["citation"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        source = Source(
+            id="src_export_cross",
+            run_id=run.id,
+            title="Cross-session export paper",
+            year=2025,
+            url="https://example.org/cross-export",
+            doi="10.1000/cross-export",
+            abstract="cross export abstract",
+            journal="Water Systems",
+            authors=["C. Exporter"],
+            citation_count=12,
+            type="academic",
+            source="openalex",
+            source_native_id="oa_cross",
+            patent_office=None,
+            patent_number=None,
+            iteration=2,
+            discovery_method="forward_citation",
+            relevance_score=8.0,
+            accepted=True,
+            review_status="human_accept",
+            final_decision="human_accept",
+            decision_source="human_review",
+            heuristic_recommendation="accept",
+            heuristic_score=7.4,
+            ai_decision=None,
+            ai_confidence=None,
+            parent_source_id=None,
+            provenance_history=[],
+        )
+        acq_run = AcquisitionRun(
+            id="acq_export_2",
+            discovery_run_id=run.id,
+            retry_failed_only=False,
+            status="completed",
+            total_sources=1,
+            downloaded_total=1,
+            partial_total=0,
+            failed_total=0,
+            skipped_total=0,
+            error_message=None,
+        )
+        artifact = Artifact(
+            id="art_export_cross",
+            acq_run_id=acq_run.id,
+            source_id=source.id,
+            item_id=None,
+            kind="pdf",
+            path=str(pdf_path),
+            checksum_sha256="def",
+            size_bytes=pdf_path.stat().st_size,
+            mime_type="application/pdf",
+        )
+        db.add_all([run, source, acq_run, artifact])
+        db.commit()
+    return anchor_run_id, "src_export_cross"
+
+
 def test_library_export_metadata_csv(tmp_path: Path):
     run_id, source_id = _seed_exportable_run(tmp_path)
     client = TestClient(app)
@@ -128,3 +205,15 @@ def test_library_export_pdfs_zip(tmp_path: Path):
     names = archive.namelist()
     assert names
     assert names[0].endswith(".pdf")
+
+
+def test_library_export_supports_selected_cross_run_sources(tmp_path: Path):
+    anchor_run_id, source_id = _seed_cross_run_exportable_source(tmp_path)
+    client = TestClient(app)
+    response = client.get(
+        f"/v1/library-export/runs/{anchor_run_id}/metadata.csv",
+        params=[("source_id", source_id)],
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 200
+    assert "Cross-session export paper" in response.text
