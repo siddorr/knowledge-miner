@@ -22,7 +22,7 @@ from .connectors import Connector, RetryableProviderError, build_connectors
 from .db import SessionLocal
 from .dedup import canonical_id, canonicalize_url, is_fuzzy_duplicate
 from .iteration import build_next_queries, extract_keywords
-from .models import CitationEdge, CitationExpansionParent, DiscoveryRunQuery, Keyword, Run, Source
+from .models import Bookmark, CitationEdge, CitationExpansionParent, DiscoveryCitationSeed, DiscoveryRunQuery, Keyword, Run, Source
 from .observability import RunObservability
 from .retry import retry_call
 from .runtime_state import (
@@ -108,6 +108,57 @@ def create_run(
     return run
 
 
+def create_bookmark_seeded_run(
+    db: Session,
+    *,
+    session_id: str,
+    session_context: str,
+    bookmark: Bookmark,
+    seed_source_ids: list[str],
+) -> Run:
+    normalized_session_id = (session_id or "").strip()
+    normalized_session_context = (session_context or "").strip()
+    if not normalized_session_id:
+        raise ValueError("session_id_required")
+    if not seed_source_ids:
+        raise ValueError("bookmark_seed_sources_required")
+    ai_filter_active, ai_filter_warning = describe_ai_filter_runtime(
+        use_ai_filter=settings.use_ai_filter,
+        api_key=settings.ai_api_key,
+    )
+    run = Run(
+        id=f"run_{uuid.uuid4().hex[:12]}",
+        status="queued",
+        seed_queries=[],
+        session_id=normalized_session_id,
+        session_context=normalized_session_context,
+        max_iterations=1,
+        current_iteration=0,
+        accepted_total=0,
+        expanded_candidates_total=0,
+        citation_edges_total=0,
+        ai_filter_active=ai_filter_active,
+        ai_filter_warning=ai_filter_warning,
+    )
+    clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery", run_id=run.id)
+    clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run.id)
+    db.add(run)
+    for position, source_id in enumerate(seed_source_ids, start=1):
+        db.add(
+            DiscoveryCitationSeed(
+                run_id=run.id,
+                seed_source_id=source_id,
+                origin_bookmark_id=bookmark.id,
+                origin_session_id=bookmark.source_session_id,
+                seed_kind="bookmark",
+                position=position,
+            )
+        )
+    db.commit()
+    db.refresh(run)
+    return run
+
+
 def enqueue_run(run_id: str) -> None:
     if not is_primary_instance():
         return
@@ -132,6 +183,20 @@ def enqueue_citation_iteration_run(run_id: str, *, source_run_id: str) -> None:
     worker.start()
 
 
+def enqueue_bookmark_seed_run(run_id: str) -> None:
+    if not is_primary_instance():
+        return
+    run_lock = acquire_run_lock(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
+    if run_lock is None:
+        return
+    worker = threading.Thread(
+        target=_execute_bookmark_seed_run_with_lock,
+        args=(run_id, run_lock),
+        daemon=True,
+    )
+    worker.start()
+
+
 def _execute_run_with_lock(run_id: str, run_lock: Path) -> None:
     try:
         execute_run_by_id(run_id)
@@ -142,6 +207,13 @@ def _execute_run_with_lock(run_id: str, run_lock: Path) -> None:
 def _execute_citation_run_with_lock(run_id: str, source_run_id: str, run_lock: Path) -> None:
     try:
         execute_citation_iteration_run_by_id(run_id, source_run_id=source_run_id)
+    finally:
+        release_run_lock(run_lock)
+
+
+def _execute_bookmark_seed_run_with_lock(run_id: str, run_lock: Path) -> None:
+    try:
+        execute_bookmark_seed_run_by_id(run_id)
     finally:
         release_run_lock(run_lock)
 
@@ -160,6 +232,14 @@ def execute_citation_iteration_run_by_id(run_id: str, *, source_run_id: str) -> 
         if run is None:
             return
         execute_citation_iteration_run(db, run, source_run_id=source_run_id)
+
+
+def execute_bookmark_seed_run_by_id(run_id: str) -> None:
+    with SessionLocal() as db:
+        run = db.get(Run, run_id)
+        if run is None:
+            return
+        execute_bookmark_seed_run(db, run)
 
 
 @dataclass(slots=True)
@@ -549,6 +629,247 @@ def execute_citation_iteration_run(db: Session, run: Run, *, source_run_id: str)
         query_row.processing_count = 0
         query_row.updated_at = datetime.now(UTC)
         run.current_iteration = max(int(run.current_iteration or 0), 1)
+        run.accepted_total = _count_accepted(db, run_id)
+        run.status = "completed"
+        run.updated_at = datetime.now(UTC)
+        db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
+        observability.emit_run_summary(run_id=run_id, status=run.status, current_iteration=run.current_iteration)
+    except RunStopRequested:
+        db.rollback()
+        if "query_row" in locals() and query_row is not None:
+            with suppress(Exception):
+                refreshed_query = db.get(DiscoveryRunQuery, query_row.id)
+                if refreshed_query is not None:
+                    refreshed_query.checkpoint_state = "resumable"
+                    refreshed_query.status = "failed"
+                    refreshed_query.error_message = "stopped_by_user"
+                    refreshed_query.updated_at = datetime.now(UTC)
+                    db.commit()
+        failed_run = db.get(Run, run_id)
+        if failed_run is not None:
+            failed_run.status = "failed"
+            failed_run.error_message = "stopped_by_user"
+            failed_run.updated_at = datetime.now(UTC)
+            db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
+        observability.emit_run_summary(run_id=run_id, status="failed", current_iteration=0)
+    except Exception as exc:  # pragma: no cover - defensive failure path
+        db.rollback()
+        if "query_row" in locals() and query_row is not None:
+            with suppress(Exception):
+                refreshed_query = db.get(DiscoveryRunQuery, query_row.id)
+                if refreshed_query is not None:
+                    refreshed_query.checkpoint_state = "resumable"
+                    refreshed_query.status = "failed"
+                    refreshed_query.error_message = str(exc)
+                    refreshed_query.updated_at = datetime.now(UTC)
+                    db.commit()
+        failed_run = db.get(Run, run_id)
+        if failed_run is not None:
+            failed_run.status = "failed"
+            failed_run.error_message = str(exc)
+            failed_run.updated_at = datetime.now(UTC)
+            db.commit()
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
+        observability.inc("api_errors")
+        observability.emit_run_summary(run_id=run_id, status="failed", current_iteration=0)
+        raise
+
+
+def _bookmark_seed_parent_ids(db: Session, run_id: str, *, query_id: str | None = None) -> list[str]:
+    rows = db.scalars(
+        select(DiscoveryCitationSeed)
+        .where(DiscoveryCitationSeed.run_id == run_id)
+        .order_by(DiscoveryCitationSeed.position.asc())
+    ).all()
+    parent_ids: list[str] = []
+    for row in rows:
+        if db.get(CitationExpansionParent, (run_id, row.seed_source_id)) is not None:
+            continue
+        parent_ids.append(row.seed_source_id)
+    return parent_ids
+
+
+def execute_bookmark_seed_run(db: Session, run: Run) -> None:
+    observability = RunObservability()
+    run_id = run.id
+    ai_requested = bool(run.ai_filter_active)
+    ai_effective_enabled = bool(ai_requested and settings.ai_api_key)
+    ai_filter = (
+        AIRelevanceFilter(
+            enabled=True,
+            api_key=settings.ai_api_key,
+            model=settings.ai_model,
+            base_url=settings.ai_base_url,
+            timeout_seconds=settings.ai_timeout_seconds,
+        )
+        if ai_effective_enabled
+        else None
+    )
+    connectors = build_connectors(provider_limits=_provider_limits_for_run(db, run.id))
+    connectors_by_name = {c.name: c for c in connectors}
+    try:
+        run.status = "running"
+        run.error_message = None
+        db.commit()
+        query_row = db.scalars(
+            select(DiscoveryRunQuery)
+            .where(
+                DiscoveryRunQuery.run_id == run_id,
+                DiscoveryRunQuery.query_text == "citation expansion",
+                DiscoveryRunQuery.checkpoint_state.in_(("running", "resumable")),
+            )
+            .order_by(DiscoveryRunQuery.position.desc())
+            .limit(1)
+        ).first()
+        if query_row is None:
+            query_row = DiscoveryRunQuery(
+                id=f"run_query_{uuid.uuid4().hex[:12]}",
+                run_id=run_id,
+                query_text="citation expansion",
+                query_metadata={
+                    **_query_context_metadata(
+                        session_id=run.session_id,
+                        session_context=run.session_context,
+                        provider_limits=_provider_limits_for_run(db, run.id),
+                    ),
+                    "seed_kind": "bookmark",
+                    "seeded_run": True,
+                },
+                position=1,
+                status="searching",
+                discovered_count=0,
+                openalex_count=0,
+                brave_count=0,
+                semantic_scholar_count=0,
+                accepted_count=0,
+                rejected_count=0,
+                pending_count=0,
+                processing_count=0,
+                scope_total_parents=0,
+                scope_processed_parents=0,
+                checkpoint_state="running",
+            )
+            db.add(query_row)
+            query_row.started_at = datetime.now(UTC)
+        else:
+            query_row.status = "searching"
+            query_row.checkpoint_state = "running"
+            query_row.error_message = None
+            if not isinstance(query_row.query_metadata, dict):
+                query_row.query_metadata = {}
+            query_row.query_metadata = {
+                **query_row.query_metadata,
+                **_query_context_metadata(
+                    session_id=run.session_id,
+                    session_context=run.session_context,
+                    provider_limits=_provider_limits_for_run(db, run.id),
+                ),
+                "seed_kind": "bookmark",
+                "seeded_run": True,
+            }
+        query_row.updated_at = datetime.now(UTC)
+        db.commit()
+
+        checkpoint = _load_checkpoint(run_id, query_row.id) or {}
+        processed_parents = int(checkpoint.get("processed_parents", 0))
+        if isinstance(checkpoint.get("remaining_parent_ids"), list):
+            parent_ids = [str(value) for value in checkpoint["remaining_parent_ids"]]
+        else:
+            parent_ids = _bookmark_seed_parent_ids(db, run_id, query_id=query_row.id)
+            processed_parents = 0
+        query_row.scope_total_parents = len(parent_ids) + processed_parents
+        query_row.scope_processed_parents = processed_parents
+        query_row.updated_at = datetime.now(UTC)
+        db.commit()
+
+        for index, parent_id in enumerate(parent_ids):
+            _assert_discovery_not_stopped(run_id, phase="discovery_citation")
+            parent = db.get(Source, parent_id)
+            if parent is None:
+                processed_parents += 1
+                query_row.scope_processed_parents = processed_parents
+                _save_checkpoint(
+                    run_id,
+                    query_row.id,
+                    {
+                        "processed_parents": processed_parents,
+                        "remaining_parent_ids": parent_ids[index + 1 :],
+                        "updated_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+                db.commit()
+                continue
+            query_row.status = "searching"
+            query_row.checkpoint_state = "running"
+            query_row.updated_at = datetime.now(UTC)
+            db.commit()
+
+            citation_candidates, citation_edges = _expand_citations_for_parent_unbounded(
+                run_id=run_id,
+                parent=parent,
+                connector=connectors_by_name.get(parent.source),
+                observability=observability,
+                iteration=1,
+            )
+            provider_counts = Counter((c.get("source") or "").strip().lower() for c in citation_candidates)
+            query_row.discovered_count = int(query_row.discovered_count) + len(citation_candidates)
+            query_row.openalex_count = int(query_row.openalex_count) + int(provider_counts.get("openalex", 0))
+            query_row.brave_count = int(query_row.brave_count) + int(provider_counts.get("brave", 0))
+            query_row.semantic_scholar_count = int(query_row.semantic_scholar_count) + int(
+                provider_counts.get("semantic_scholar", 0)
+            )
+            query_row.status = "ranking_relevance"
+            query_row.processing_count = len(citation_candidates)
+            query_row.updated_at = datetime.now(UTC)
+            db.commit()
+
+            stats = _ingest_candidates(
+                db,
+                run_id,
+                1,
+                citation_candidates,
+                ai_filter=ai_filter,
+                ai_policy_no_ai=not ai_effective_enabled,
+                session_queries=[],
+                session_context=run.session_context,
+                query_id=query_row.id,
+                query_text=query_row.query_text,
+                observability=observability,
+            )
+            query_row.accepted_count = int(query_row.accepted_count) + stats.accepted
+            query_row.rejected_count = int(query_row.rejected_count) + stats.rejected
+            query_row.pending_count = int(query_row.pending_count) + stats.pending
+            query_row.processing_count = 0
+            if citation_edges:
+                persisted_edges = _persist_citation_edges(db, run_id, 1, citation_edges)
+                run.citation_edges_total = int(run.citation_edges_total) + persisted_edges
+            run.expanded_candidates_total = int(run.expanded_candidates_total) + len(citation_candidates)
+            run.accepted_total = _count_accepted(db, run_id)
+            run.new_accept_rate = (stats.new_accepted_unique / run.accepted_total) if run.accepted_total else 0.0
+            db.merge(CitationExpansionParent(run_id=run_id, parent_source_id=parent_id, query_id=query_row.id))
+            processed_parents += 1
+            query_row.scope_processed_parents = processed_parents
+            query_row.updated_at = datetime.now(UTC)
+            _save_checkpoint(
+                run_id,
+                query_row.id,
+                {
+                    "processed_parents": processed_parents,
+                    "remaining_parent_ids": parent_ids[index + 1 :],
+                    "updated_at": datetime.now(UTC).isoformat(),
+                },
+            )
+            db.commit()
+
+        _clear_checkpoint(run_id, query_row.id)
+        query_row.status = "completed"
+        query_row.checkpoint_state = "completed"
+        query_row.completed_at = datetime.now(UTC)
+        query_row.processing_count = 0
+        query_row.updated_at = datetime.now(UTC)
+        run.current_iteration = 1
         run.accepted_total = _count_accepted(db, run_id)
         run.status = "completed"
         run.updated_at = datetime.now(UTC)

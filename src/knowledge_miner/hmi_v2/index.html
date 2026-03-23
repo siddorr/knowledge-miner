@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Knowledge Miner</title>
+  <title>Knowledge Miner 0.1 Stable</title>
   <link rel="stylesheet" href="/hmi2/static/gui.css?v=__HMI2_STATIC_VERSION__">
 </head>
 <body>
   <header class="shell-header">
     <div>
-      <h1>Knowledge Miner</h1>
+      <h1>Knowledge Miner 0.1 Stable</h1>
       <p class="activity-status"><span id="activityIndicator" class="activity-indicator" hidden></span><span id="activityLine">Idle</span></p>
     </div>
     <div class="header-status">
@@ -46,6 +46,7 @@
     <button data-page="documents" class="nav-btn">Documents <span id="documentsBadge" class="badge">0</span></button>
     <button data-page="library" class="nav-btn">Library Export</button>
     <button data-page="advanced" class="nav-btn">Advanced</button>
+    <button id="openBookmarksBtn" type="button" class="nav-btn nav-action-btn">Bookmarks</button>
   </nav>
 
   <main class="workspace">
@@ -151,7 +152,8 @@
             <thead>
               <tr>
                 <th>Status</th>
-                <th><button type="button" class="sort-btn" data-review-sort="iteration">Iter</button></th>
+                <th><button type="button" class="sort-btn" data-review-sort="run_number">Run</button></th>
+                <th><button type="button" class="sort-btn" data-review-sort="run_source_number">#</button></th>
                 <th><button type="button" class="sort-btn" data-review-sort="year">Year</button></th>
                 <th><button type="button" class="sort-btn" data-review-sort="citation_count">Cit</button></th>
                 <th><button type="button" class="sort-btn" data-review-sort="relevance_score">Score</button></th>
@@ -173,6 +175,7 @@
             <button id="reviewAcceptBtn" type="button">Accept</button>
             <button id="reviewRejectBtn" type="button">Reject</button>
             <button id="reviewLaterBtn" type="button">Later</button>
+            <button id="reviewBookmarkBtn" type="button">Bookmark</button>
           </div>
         </section>
       </div>
@@ -200,7 +203,7 @@
         <button id="documentsExportCsvBtn" type="button">Export CSV</button>
       </div>
       <table>
-        <thead><tr><th>Rank</th><th>Score</th><th>Year</th><th>Cit</th><th>Title</th><th>Status</th></tr></thead>
+        <thead><tr><th><button type="button" class="sort-btn" data-documents-sort="rank">Rank</button></th><th><button type="button" class="sort-btn" data-documents-sort="score">Score</button></th><th><button type="button" class="sort-btn" data-documents-sort="year">Year</button></th><th><button type="button" class="sort-btn" data-documents-sort="citations">Cit</button></th><th><button type="button" class="sort-btn" data-documents-sort="title">Title</button></th><th>DOI</th><th><button type="button" class="sort-btn" data-documents-sort="status">Status</button></th></tr></thead>
         <tbody id="documentsRows"></tbody>
       </table>
       <section class="card detail-pane">
@@ -209,6 +212,7 @@
         <div id="documentsDetailMetadata">Year: - | Journal: - | Citations: - | Authors: - | Link: -</div>
         <div class="row">
           <button id="documentsRowActionBtn" type="button">Download Selected</button>
+          <button id="documentsBookmarkBtn" type="button">Bookmark</button>
         </div>
       </section>
       <div class="row">
@@ -250,7 +254,7 @@
       <div class="two-pane">
         <section class="pane">
           <table>
-            <thead><tr><th>Rank</th><th>AI Score</th><th>Year</th><th>Citations</th><th>Title</th></tr></thead>
+            <thead><tr><th><button type="button" class="sort-btn" data-library-sort="rank">Rank</button></th><th><button type="button" class="sort-btn" data-library-sort="relevance_score">AI Score</button></th><th><button type="button" class="sort-btn" data-library-sort="year">Year</button></th><th><button type="button" class="sort-btn" data-library-sort="citation_count">Citations</button></th><th><button type="button" class="sort-btn" data-library-sort="title">Title</button></th></tr></thead>
             <tbody id="libraryRows"></tbody>
           </table>
         </section>
@@ -261,6 +265,7 @@
           <div class="row">
             <button id="libraryAddBtn" type="button">Add to export list</button>
             <button id="libraryRemoveBtn" type="button">Remove from export list</button>
+            <button id="libraryBookmarkBtn" type="button">Bookmark</button>
           </div>
         </section>
       </div>
@@ -347,6 +352,29 @@
       </div>
     </section>
   </main>
+
+  <section id="bookmarksModal" class="modal-shell" hidden aria-label="Bookmarks">
+    <div class="modal-card">
+      <div class="row">
+        <strong>Bookmarks</strong>
+        <button id="closeBookmarksBtn" type="button">Close</button>
+      </div>
+      <p id="bookmarksState" class="muted">No bookmarks loaded yet.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Source Session</th>
+            <th>Year</th>
+            <th>DOI</th>
+            <th>Abstract</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="bookmarksRows"></tbody>
+      </table>
+    </div>
+  </section>
 
   <footer class="shell-footer">
     <span id="footerSystem">System: unknown</span>

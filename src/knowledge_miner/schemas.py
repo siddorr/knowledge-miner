@@ -112,6 +112,9 @@ class SourceReviewResponse(BaseModel):
 
 class SourceOut(BaseModel):
     id: str
+    run_id: str | None = None
+    run_number: int | None = None
+    run_source_number: int | None = None
     title: str
     year: int | None
     url: str | None
@@ -488,3 +491,37 @@ class SessionProfileResponse(BaseModel):
     name: str | None
     session_context: str | None
     updated_at: str | None
+
+
+class BookmarkCreateRequest(BaseModel):
+    source_id: str = Field(min_length=1)
+
+
+class BookmarkRead(BaseModel):
+    id: str
+    source_id: str
+    title: str
+    abstract: str | None
+    year: int | None
+    doi: str | None
+    doi_url: str | None
+    source_url: str | None
+    source_session_id: str | None
+    source_session_name: str | None
+    source_run_id: str | None
+    created_at: str | None
+
+
+class BookmarksListResponse(BaseModel):
+    items: list[BookmarkRead]
+    total: int
+    limit: int
+    offset: int
+
+
+class BookmarkCreateSessionResponse(BaseModel):
+    session_id: str
+    session_name: str
+    discovery_run_id: str
+    status: str
+    bookmarked_parent_count: int

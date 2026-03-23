@@ -11,8 +11,8 @@ from ..auth import require_api_key
 from ..ai_filter import AIAuthError, AIProviderError, AIRateLimitError, AITimeoutError, generate_query_suggestions
 from ..config import settings
 from ..db import get_db
-from ..discovery import create_run, enqueue_citation_iteration_run, enqueue_run, export_sources_raw, review_source
-from ..models import DiscoveryRunQuery, Run, Source
+from ..discovery import create_run, enqueue_bookmark_seed_run, enqueue_citation_iteration_run, enqueue_run, export_sources_raw, review_source
+from ..models import DiscoveryCitationSeed, DiscoveryRunQuery, Run, Source
 from ..rate_limit import require_rate_limit
 from ..runtime_state import request_run_stop
 from ..schemas import (
@@ -67,6 +67,15 @@ def _enqueue_citation_task(background_tasks: BackgroundTasks, run_id: str, sourc
     except Exception:
         enqueue_fn = enqueue_citation_iteration_run
     background_tasks.add_task(enqueue_fn, run_id, source_run_id=source_run_id)
+
+
+def _enqueue_bookmark_seed_task(background_tasks: BackgroundTasks, run_id: str) -> None:
+    try:
+        from .. import main as main_module
+        enqueue_fn = getattr(main_module, "enqueue_bookmark_seed_run", enqueue_bookmark_seed_run)
+    except Exception:
+        enqueue_fn = enqueue_bookmark_seed_run
+    background_tasks.add_task(enqueue_fn, run_id)
 
 
 @router.post("/v1/discovery/runs", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -167,7 +176,13 @@ def resume_citation_iteration_run(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
     if run.status == "running":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_already_running")
-    _enqueue_citation_task(background_tasks, run.id, run.id)
+    has_bookmark_seed = db.scalars(
+        select(DiscoveryCitationSeed).where(DiscoveryCitationSeed.run_id == run.id).limit(1)
+    ).first()
+    if has_bookmark_seed is not None:
+        _enqueue_bookmark_seed_task(background_tasks, run.id)
+    else:
+        _enqueue_citation_task(background_tasks, run.id, run.id)
     return RunCreateResponse(run_id=run.id, status=run.status)
 
 

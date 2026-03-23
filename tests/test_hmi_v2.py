@@ -24,6 +24,7 @@ def test_hmi2_shell_route_and_navigation():
     assert 'id="discoverSessionName"' in body
     assert "Stop Running Task" in body
     assert "Library Export" in body
+    assert "Bookmarks" in body
     assert 'id="reviewHeading"' in body
     assert "Download missing" in body
     assert "Run Next Citation Iteration" in body
@@ -46,17 +47,34 @@ def test_hmi2_shell_route_and_navigation():
     assert 'data-review-filter="all"' in body
     assert 'data-review-filter="latest_auto_approved"' in body
     assert 'data-review-filter="latest_auto_rejected"' in body
-    assert 'data-review-sort="iteration"' in body
+    assert 'data-review-sort="run_number"' in body
+    assert 'data-review-sort="run_source_number"' in body
     assert 'data-review-sort="year"' in body
     assert 'data-review-sort="citation_count"' in body
     assert 'data-review-sort="relevance_score"' in body
-    assert "Iter</button>" in body
     assert "Browse pending, reviewed, and latest auto-decided papers" in body
     assert "No document selected." in body
     assert "Internal PDF Repository URL" in body
     assert "Save Repository URL" in body
+    assert "<th>DOI</th>" in body
+    assert 'data-documents-sort="rank"' in body
+    assert 'data-documents-sort="score"' in body
+    assert 'data-documents-sort="year"' in body
+    assert 'data-documents-sort="citations"' in body
+    assert 'data-documents-sort="title"' in body
+    assert 'data-documents-sort="status"' in body
+    assert 'data-library-sort="rank"' in body
+    assert 'data-library-sort="relevance_score"' in body
+    assert 'data-library-sort="year"' in body
+    assert 'data-library-sort="citation_count"' in body
+    assert 'data-library-sort="title"' in body
     assert "Download Selected" in body
     assert "Export ZIP with PDFs" in body
+    assert 'id="reviewBookmarkBtn"' in body
+    assert 'id="documentsBookmarkBtn"' in body
+    assert 'id="libraryBookmarkBtn"' in body
+    assert 'id="openBookmarksBtn"' in body
+    assert 'id="bookmarksRows"' in body
     assert "Advanced" in body
     assert "Operational Events" in body
     assert "Autoscroll: On" in body

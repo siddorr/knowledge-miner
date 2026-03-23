@@ -34,13 +34,14 @@ from .ai_filter import describe_ai_filter_runtime
 from .auth import require_api_key
 from .config import is_sqlite_url, settings
 from .db import Base, SessionLocal, database_readiness, engine, ensure_sqlite_schema_compatibility, get_db
-from .discovery import enqueue_citation_iteration_run, enqueue_run  # compatibility export for tests/patching
+from .discovery import enqueue_bookmark_seed_run, enqueue_citation_iteration_run, enqueue_run  # compatibility export for tests/patching
 from .models import AcquisitionItem, AcquisitionRun, Artifact, DiscoveryRunQuery, DocumentChunk, ParseRun, ParsedDocument, Run, Source
 from .parse import create_parse_run, enqueue_parse_run
 from .rate_limit import require_rate_limit
 from .logging_setup import configure_logging
 from .runtime_state import acquire_instance_lock, cleanup_runtime_state, log_cleanup_result
 from .routes.discovery import router as discovery_router
+from .routes.bookmarks import router as bookmarks_router
 from .routes.hmi import router as hmi_router
 from .routes.library_export import router as library_export_router
 from .routes.search import router as search_router
@@ -77,7 +78,7 @@ from .schemas import (
     SourcesListResponse,
 )
 
-app = FastAPI(title="UPW Literature Discovery Engine", version="0.1.0")
+app = FastAPI(title="UPW Literature Discovery Engine (0.1 Stable)", version="0.1.0")
 logger = logging.getLogger("knowledge_miner")
 HMI_V2_DIR = Path(__file__).resolve().parent / "hmi_v2"
 HOT_READ_LIMIT_WINDOW_SECONDS = 10.0
@@ -101,6 +102,7 @@ _LOG_LINE_RE = re.compile(r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) 
 # Create tables on module load for v1 local/dev simplicity.
 app.mount("/hmi2/static", StaticFiles(directory=HMI_V2_DIR / "static"), name="hmi2_static")
 app.include_router(discovery_router)
+app.include_router(bookmarks_router)
 app.include_router(hmi_router)
 app.include_router(library_export_router)
 app.include_router(search_router)
@@ -293,9 +295,42 @@ def _source_sort_tuple(source: Source, effective_status: str) -> tuple:
     )
 
 
-def _serialize_source(source: Source) -> SourceOut:
+def _run_numbers_by_session(db: Session, session_id: str | None) -> dict[str, int]:
+    if not session_id:
+        return {}
+    ordered_run_ids = db.scalars(
+        select(Run.id).where(Run.session_id == session_id).order_by(Run.created_at.asc(), Run.id.asc())
+    ).all()
+    return {run_id: index + 1 for index, run_id in enumerate(ordered_run_ids)}
+
+
+def _run_source_numbers(db: Session, run_ids: list[str]) -> dict[str, int]:
+    if not run_ids:
+        return {}
+    rows = db.scalars(
+        select(Source)
+        .where(Source.run_id.in_(run_ids))
+        .order_by(Source.run_id.asc(), Source.relevance_score.desc(), Source.id.asc())
+    ).all()
+    numbers: dict[str, int] = {}
+    per_run_counter: dict[str, int] = {}
+    for row in rows:
+        per_run_counter[row.run_id] = per_run_counter.get(row.run_id, 0) + 1
+        numbers[row.id] = per_run_counter[row.run_id]
+    return numbers
+
+
+def _serialize_source(
+    source: Source,
+    *,
+    run_number: int | None = None,
+    run_source_number: int | None = None,
+) -> SourceOut:
     return SourceOut(
         id=source.id,
+        run_id=source.run_id,
+        run_number=run_number,
+        run_source_number=run_source_number,
         title=source.title,
         year=source.year,
         url=source.url,
@@ -722,9 +757,18 @@ def list_sources(
         order_stmt = stmt.order_by(Source.relevance_score.desc(), Source.id.asc())
 
     all_rows = db.scalars(order_stmt).all()
+    run_numbers = _run_numbers_by_session(db, run.session_id)
+    source_numbers = _run_source_numbers(db, [run_id])
     page = all_rows[offset : offset + limit]
     return SourcesListResponse(
-        items=[_serialize_source(s) for s in page],
+        items=[
+            _serialize_source(
+                s,
+                run_number=run_numbers.get(s.run_id),
+                run_source_number=source_numbers.get(s.id),
+            )
+            for s in page
+        ],
         total=len(all_rows),
         limit=limit,
         offset=offset,
@@ -748,6 +792,8 @@ def list_session_sources(
     run_ids = db.scalars(select(Run.id).where(Run.session_id == session_id)).all()
     if not run_ids:
         return SourcesListResponse(items=[], total=0, limit=limit, offset=offset)
+    run_numbers = _run_numbers_by_session(db, session_id)
+    source_numbers = _run_source_numbers(db, run_ids)
 
     effective_status = (status_filter or "accepted").strip().lower()
     if effective_status in {"latest_auto_approved", "latest_auto_rejected"}:
@@ -791,7 +837,14 @@ def list_session_sources(
     )
     page = all_rows[offset : offset + limit]
     return SourcesListResponse(
-        items=[_serialize_source(s) for s in page],
+        items=[
+            _serialize_source(
+                s,
+                run_number=run_numbers.get(s.run_id),
+                run_source_number=source_numbers.get(s.id),
+            )
+            for s in page
+        ],
         total=len(all_rows),
         limit=limit,
         offset=offset,

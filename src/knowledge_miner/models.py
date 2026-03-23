@@ -33,6 +33,8 @@ class Run(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
     seed_queries: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    session_context: Mapped[str | None] = mapped_column(Text, nullable=True)
     max_iterations: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
     current_iteration: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     accepted_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -72,6 +74,7 @@ class DiscoveryRunQuery(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), nullable=False)
     query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    query_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="waiting")
     discovered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -154,6 +157,40 @@ class Source(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
 
+class SessionProfile(Base):
+    __tablename__ = "session_profiles"
+    __table_args__ = (
+        Index("ix_session_profiles_updated_at", "updated_at"),
+    )
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class Bookmark(Base):
+    __tablename__ = "bookmarks"
+    __table_args__ = (
+        Index("ix_bookmarks_created_at", "created_at"),
+        Index("ix_bookmarks_source_session_id", "source_session_id"),
+        Index("ix_bookmarks_title", "title"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_id: Mapped[str] = mapped_column(String, ForeignKey("sources.id"), nullable=False, unique=True, index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    doi: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_run_id: Mapped[str | None] = mapped_column(String, ForeignKey("runs.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class CitationEdge(Base):
     __tablename__ = "citation_edges"
     __table_args__ = (
@@ -179,6 +216,24 @@ class CitationExpansionParent(Base):
     parent_source_id: Mapped[str] = mapped_column(String, ForeignKey("sources.id"), nullable=False)
     query_id: Mapped[str | None] = mapped_column(String, nullable=True)
     expanded_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class DiscoveryCitationSeed(Base):
+    __tablename__ = "discovery_citation_seeds"
+    __table_args__ = (
+        PrimaryKeyConstraint("run_id", "seed_source_id"),
+        CheckConstraint("position >= 1", name="ck_discovery_citation_seeds_position_gte_1"),
+        CheckConstraint("seed_kind IN ('bookmark')", name="ck_discovery_citation_seeds_kind_values"),
+        Index("ix_discovery_citation_seeds_run_id_position", "run_id", "position"),
+    )
+
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), nullable=False)
+    seed_source_id: Mapped[str] = mapped_column(String, ForeignKey("sources.id"), nullable=False)
+    origin_bookmark_id: Mapped[str | None] = mapped_column(String, ForeignKey("bookmarks.id"), nullable=True)
+    origin_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    seed_kind: Mapped[str] = mapped_column(String, nullable=False, default="bookmark")
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 
 class Keyword(Base):

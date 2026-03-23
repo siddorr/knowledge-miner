@@ -24,7 +24,9 @@ const state = {
   pendingSessionId: "",
   activePage: window.__KM_HMI2_LAUNCH_SECTION__ || "discover",
   reviewQueue: "pending",
-  reviewSort: { key: "iteration", dir: "desc" },
+  reviewSort: { key: "run_number", dir: "desc" },
+  documentsSort: { key: "rank", dir: "asc" },
+  librarySort: { key: "rank", dir: "asc" },
   latest: { discovery: "", acquisition: "", parse: "" },
   reviewItems: [],
   reviewIndex: -1,
@@ -52,6 +54,8 @@ const state = {
   healthFailureCount: 0,
   serverOffline: false,
   offlineMessage: "",
+  bookmarks: [],
+  bookmarksOpen: false,
 };
 
 const els = {};
@@ -69,6 +73,34 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+async function copyTextToClipboard(text) {
+  if (!text) {
+    return false;
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to legacy copy.
+  }
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "absolute";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 function readDom() {
   const ids = [
     "activityLine", "activityIndicator", "authStatus", "aiStatus", "dbStatus", "headerProgress", "headerProgressLabel",
@@ -79,19 +111,20 @@ function readDom() {
     "discoverSummaryDiscovered", "discoverSummaryApproved", "discoverSummaryRejected", "discoverSummaryReviewed", "discoverSummaryPending", "discoverState",
     "sessionContextInput", "saveSessionContextBtn", "sessionContextCounter", "sessionContextState", "sessionContextUpdated",
     "reviewHeading", "reviewRows", "reviewTitle", "reviewAbstract", "reviewMetadata", "reviewSignals",
-    "reviewAcceptBtn", "reviewRejectBtn", "reviewLaterBtn", "reviewState", "reviewBadge", "reviewQueueHelp", "reviewFilterChips",
+    "reviewAcceptBtn", "reviewRejectBtn", "reviewLaterBtn", "reviewBookmarkBtn", "reviewState", "reviewBadge", "reviewQueueHelp", "reviewFilterChips",
     "documentsDownloaded", "documentsFailed", "documentsManual", "documentsPending", "documentsRows",
     "downloadMissingBtn", "retryFailedBtn", "documentsExportCsvBtn", "batchUploadForm", "batchUploadFiles",
     "batchUploadResults", "documentsState", "documentsBadge", "documentsDetailTitle", "documentsDetailSummary",
-    "documentsDetailMetadata", "documentsRowActionBtn", "internalRepoUrlInput", "saveInternalRepoUrlBtn", "internalRepoUrlState",
+    "documentsDetailMetadata", "documentsRowActionBtn", "documentsBookmarkBtn", "internalRepoUrlInput", "saveInternalRepoUrlBtn", "internalRepoUrlState",
     "libraryMatches", "libraryHighest", "libraryLowest", "libraryQuery", "libraryExportSize", "libraryRows",
-    "libraryTitle", "libraryAbstract", "libraryMetadata", "libraryAddBtn", "libraryRemoveBtn", "libraryZipBtn",
+    "libraryTitle", "libraryAbstract", "libraryMetadata", "libraryAddBtn", "libraryRemoveBtn", "libraryBookmarkBtn", "libraryZipBtn",
     "libraryMetadataBtn", "libraryState",
     "apiKeyInput", "saveApiKeyBtn", "apiKeyState", "latestDiscoveryId", "latestAcquisitionId", "latestParseId",
     "openalexLimitInput", "braveCountInput", "braveAllowlistCheckbox", "saveProviderSettingsBtn", "providerSettingsState",
     "globalSearchInput", "globalSearchBtn", "globalSearchResults", "runLookupInput", "runLookupBtn", "runLookupResult",
     "advancedEventsPauseBtn", "advancedEventsAutoscrollBtn", "advancedEventsState", "advancedEventCounters", "advancedEventsLog",
     "footerSystem", "footerAi", "footerDb", "footerUpdated",
+    "openBookmarksBtn", "bookmarksModal", "closeBookmarksBtn", "bookmarksState", "bookmarksRows",
   ];
   for (const id of ids) {
     els[id] = $(id);
@@ -106,6 +139,8 @@ function readDom() {
   els.navButtons = Array.from(document.querySelectorAll(".nav-btn"));
   els.reviewFilterButtons = Array.from(document.querySelectorAll("[data-review-filter]"));
   els.reviewSortButtons = Array.from(document.querySelectorAll("[data-review-sort]"));
+  els.documentsSortButtons = Array.from(document.querySelectorAll("[data-documents-sort]"));
+  els.librarySortButtons = Array.from(document.querySelectorAll("[data-library-sort]"));
 }
 
 function normalizeSession(raw) {
@@ -134,6 +169,7 @@ function normalizeSession(raw) {
     resultsRunId: raw?.resultsRunId || raw?.discoveryRunId || "",
     acquisitionRunId: raw?.acquisitionRunId || "",
     exportSourceIds: Array.isArray(raw?.exportSourceIds) ? raw.exportSourceIds : [],
+    bookmarkedSourceIds: Array.isArray(raw?.bookmarkedSourceIds) ? raw.bookmarkedSourceIds : [],
     sessionContext: typeof raw?.sessionContext === "string" ? raw.sessionContext : "",
     sessionContextUpdatedAt: typeof raw?.sessionContextUpdatedAt === "string" ? raw.sessionContextUpdatedAt : "",
     providerLimits: normalizeProviderLimits(raw?.providerLimits),
@@ -173,6 +209,14 @@ function activeSession() {
 
 function activeQueries(session = activeSession()) {
   return session.queries.filter((query) => query.selected).map((query) => query.text.trim()).filter(Boolean);
+}
+
+function bookmarkForSource(sourceId) {
+  return state.bookmarks.find((item) => item.source_id === sourceId) || null;
+}
+
+function isBookmarked(sourceId) {
+  return Boolean(bookmarkForSource(sourceId));
 }
 
 function discoverRunId(session = activeSession()) {
@@ -453,6 +497,9 @@ function renderShell() {
   renderStopButton();
   applyOfflineActionState();
   renderAdvancedOperationalEvents();
+  if (els.bookmarksModal) {
+    els.bookmarksModal.hidden = !state.bookmarksOpen;
+  }
   renderActivity();
 }
 
@@ -467,19 +514,23 @@ function applyOfflineActionState() {
     "reviewAcceptBtn",
     "reviewRejectBtn",
     "reviewLaterBtn",
+    "reviewBookmarkBtn",
     "downloadMissingBtn",
     "retryFailedBtn",
     "documentsExportCsvBtn",
     "documentsRowActionBtn",
+    "documentsBookmarkBtn",
     "saveInternalRepoUrlBtn",
     "libraryAddBtn",
     "libraryRemoveBtn",
+    "libraryBookmarkBtn",
     "libraryZipBtn",
     "libraryMetadataBtn",
     "stopRunningBtn",
     "saveProviderSettingsBtn",
     "globalSearchBtn",
     "runLookupBtn",
+    "closeBookmarksBtn",
   ];
   controls.forEach((id) => {
     if (els[id]) {
@@ -504,7 +555,28 @@ function renderReviewFilterChips() {
 }
 
 function resetReviewSort() {
-  state.reviewSort = { key: "iteration", dir: "desc" };
+  state.reviewSort = { key: "run_number", dir: "desc" };
+}
+
+function defaultReviewSortDir(key) {
+  if (key === "run_source_number") {
+    return "asc";
+  }
+  return "desc";
+}
+
+function defaultDocumentsSortDir(key) {
+  if (key === "rank" || key === "title" || key === "status") {
+    return "asc";
+  }
+  return "desc";
+}
+
+function defaultLibrarySortDir(key) {
+  if (key === "rank" || key === "title") {
+    return "asc";
+  }
+  return "desc";
 }
 
 function compareReviewItems(a, b) {
@@ -526,15 +598,99 @@ function renderReviewSortButtons() {
     const active = button.dataset.reviewSort === state.reviewSort.key;
     button.classList.toggle("active", active);
     const suffix = active ? (state.reviewSort.dir === "asc" ? " ▲" : " ▼") : "";
-    const base = button.dataset.reviewSort === "iteration"
-      ? "Iter"
-      : button.dataset.reviewSort === "year"
-        ? "Year"
-        : button.dataset.reviewSort === "citation_count"
-          ? "Cit"
-          : "Score";
+    const base = button.dataset.reviewSort === "run_number"
+      ? "Run"
+      : button.dataset.reviewSort === "run_source_number"
+        ? "#"
+        : button.dataset.reviewSort === "year"
+          ? "Year"
+          : button.dataset.reviewSort === "citation_count"
+            ? "Cit"
+            : "Score";
     button.textContent = `${base}${suffix}`;
   });
+}
+
+function renderDocumentsSortButtons() {
+  if (!els.documentsSortButtons) {
+    return;
+  }
+  const labels = {
+    rank: "Rank",
+    score: "Score",
+    year: "Year",
+    citations: "Cit",
+    title: "Title",
+    status: "Status",
+  };
+  els.documentsSortButtons.forEach((button) => {
+    const key = button.dataset.documentsSort;
+    const active = key === state.documentsSort.key;
+    button.classList.toggle("active", active);
+    const suffix = active ? (state.documentsSort.dir === "asc" ? " ▲" : " ▼") : "";
+    button.textContent = `${labels[key] || "Sort"}${suffix}`;
+  });
+}
+
+function renderLibrarySortButtons() {
+  if (!els.librarySortButtons) {
+    return;
+  }
+  const labels = {
+    rank: "Rank",
+    relevance_score: "AI Score",
+    year: "Year",
+    citation_count: "Citations",
+    title: "Title",
+  };
+  els.librarySortButtons.forEach((button) => {
+    const key = button.dataset.librarySort;
+    const active = key === state.librarySort.key;
+    button.classList.toggle("active", active);
+    const suffix = active ? (state.librarySort.dir === "asc" ? " ▲" : " ▼") : "";
+    button.textContent = `${labels[key] || "Sort"}${suffix}`;
+  });
+}
+
+function sortedDocumentRows() {
+  const rows = [...state.documentRows];
+  const { key, dir } = state.documentsSort;
+  const factor = dir === "asc" ? 1 : -1;
+  rows.sort((left, right) => {
+    if (key === "title" || key === "status") {
+      return String(left[key] || "").localeCompare(String(right[key] || "")) * factor;
+    }
+    const leftValue = left[key] === "-" ? -Infinity : Number(left[key] ?? 0);
+    const rightValue = right[key] === "-" ? -Infinity : Number(right[key] ?? 0);
+    if (leftValue !== rightValue) {
+      return (leftValue - rightValue) * factor;
+    }
+    return String(left.title || "").localeCompare(String(right.title || ""));
+  });
+  return rows;
+}
+
+function sortedLibraryRows(items) {
+  const rows = [...items];
+  const { key, dir } = state.librarySort;
+  const factor = dir === "asc" ? 1 : -1;
+  rows.sort((left, right) => {
+    if (key === "rank") {
+      const leftRank = state.libraryRows.findIndex((item) => item.id === left.id);
+      const rightRank = state.libraryRows.findIndex((item) => item.id === right.id);
+      return (leftRank - rightRank) * factor;
+    }
+    if (key === "title") {
+      return String(left.title || "").localeCompare(String(right.title || "")) * factor;
+    }
+    const leftValue = left[key] == null ? -Infinity : Number(left[key]);
+    const rightValue = right[key] == null ? -Infinity : Number(right[key]);
+    if (leftValue !== rightValue) {
+      return (leftValue - rightValue) * factor;
+    }
+    return String(left.title || "").localeCompare(String(right.title || ""));
+  });
+  return rows;
 }
 
 function currentStoppableTask() {
@@ -668,6 +824,151 @@ function renderSuggestedQueries() {
   });
   if (!state.suggestedQueries.length) {
     els.discoverSuggestionsState.textContent = "No suggestions generated yet.";
+  }
+}
+
+function renderBookmarksModal() {
+  if (!els.bookmarksRows) {
+    return;
+  }
+  els.bookmarksRows.innerHTML = "";
+  if (!state.bookmarks.length) {
+    els.bookmarksState.textContent = "No bookmarks saved yet.";
+    return;
+  }
+  els.bookmarksState.textContent = `${state.bookmarks.length} bookmark${state.bookmarks.length === 1 ? "" : "s"} loaded.`;
+  state.bookmarks.forEach((bookmark) => {
+    const tr = document.createElement("tr");
+    const doiCell = bookmark.doi_url
+      ? `<a href="${escapeHtml(bookmark.doi_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(bookmark.doi || "Open DOI")}</a>`
+      : "-";
+    tr.innerHTML = `
+      <td><div class="bookmark-title">${escapeHtml(bookmark.title)}</div></td>
+      <td>${escapeHtml(bookmark.source_session_name || bookmark.source_session_id || "-")}</td>
+      <td>${escapeHtml(bookmark.year ?? "-")}</td>
+      <td>${doiCell}</td>
+      <td><div class="bookmark-abstract">${escapeHtml(bookmark.abstract || "-")}</div></td>
+      <td>
+        <div class="row">
+          <button type="button" data-bookmark-action="create-session" data-bookmark-id="${escapeHtml(bookmark.id)}">Create Session</button>
+          <button type="button" data-bookmark-action="remove" data-bookmark-id="${escapeHtml(bookmark.id)}">Remove</button>
+        </div>
+      </td>
+    `;
+    tr.querySelector('[data-bookmark-action="create-session"]')?.addEventListener("click", async () => {
+      await createSessionFromBookmark(bookmark.id);
+    });
+    tr.querySelector('[data-bookmark-action="remove"]')?.addEventListener("click", async () => {
+      await removeBookmark(bookmark.id);
+    });
+    els.bookmarksRows.appendChild(tr);
+  });
+}
+
+async function loadBookmarks() {
+  try {
+    const result = await api("/v1/bookmarks?limit=500");
+    state.bookmarks = Array.isArray(result.data?.items) ? result.data.items : [];
+    renderBookmarksModal();
+  } catch (error) {
+    state.bookmarks = [];
+    if (els.bookmarksState) {
+      els.bookmarksState.textContent = `Unable to load bookmarks: ${errorDetail(error)}`;
+    }
+  }
+}
+
+async function addBookmark(sourceId) {
+  const result = await api("/v1/bookmarks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_id: sourceId }),
+  });
+  await loadBookmarks();
+  return result.data;
+}
+
+async function removeBookmark(bookmarkId) {
+  beginBusy("Refreshing session state");
+  try {
+    await api(`/v1/bookmarks/${encodeURIComponent(bookmarkId)}`, { method: "DELETE" });
+    await loadBookmarks();
+    renderReviewRows();
+    renderDocuments();
+    renderLibraryRows();
+    if (els.reviewState && state.activePage === "review") {
+      els.reviewState.textContent = "Bookmark removed.";
+    }
+    if (els.documentsState && state.activePage === "documents") {
+      els.documentsState.textContent = "Bookmark removed.";
+    }
+    if (els.libraryState && state.activePage === "library") {
+      els.libraryState.textContent = "Bookmark removed.";
+    }
+  } finally {
+    endBusy();
+  }
+}
+
+async function toggleBookmarkForSource(sourceId) {
+  const existing = bookmarkForSource(sourceId);
+  if (existing) {
+    await removeBookmark(existing.id);
+    return false;
+  }
+  beginBusy("Refreshing session state");
+  try {
+    await addBookmark(sourceId);
+    renderReviewRows();
+    renderDocuments();
+    renderLibraryRows();
+    return true;
+  } finally {
+    endBusy();
+  }
+}
+
+async function createSessionFromBookmark(bookmarkId) {
+  beginBusy("Searching providers");
+  try {
+    const result = await api(`/v1/bookmarks/${encodeURIComponent(bookmarkId)}/create-session`, {
+      method: "POST",
+    });
+    const payload = result.data || {};
+    let session = state.sessions.find((entry) => entry.id === payload.session_id);
+    if (!session) {
+      session = normalizeSession({
+        id: payload.session_id,
+        name: payload.session_name,
+        discoveryRunId: payload.discovery_run_id,
+        resultsRunId: payload.discovery_run_id,
+        queries: [],
+      });
+      state.sessions.push(session);
+    } else {
+      session.name = payload.session_name || session.name;
+      session.discoveryRunId = payload.discovery_run_id || session.discoveryRunId;
+      session.resultsRunId = payload.discovery_run_id || session.resultsRunId;
+      session.queries = [];
+    }
+    state.activeSessionId = session.id;
+    state.pendingSessionId = session.id;
+    state.activePage = "discover";
+    state.bookmarksOpen = false;
+    resetReviewSort();
+    persistSessions();
+    renderSessions();
+    renderShell();
+    resetSessionBoundPaneState();
+    await loadSessionProfile(session.id);
+    await refreshAll();
+    els.sessionState.textContent = `Created session from bookmark: ${session.name}`;
+  } catch (error) {
+    if (els.bookmarksState) {
+      els.bookmarksState.textContent = `Unable to create session: ${errorDetail(error)}`;
+    }
+  } finally {
+    endBusy();
   }
 }
 
@@ -913,7 +1214,11 @@ function displayQueryStatus(status) {
 function renderDiscoverRunQueries() {
   els.discoverRunQueries.innerHTML = "";
   if (!state.discoverRunQueries.length) {
-    els.discoverRunQueriesState.textContent = "No executed queries in the active session yet.";
+    if (state.currentDiscoveryStatus?.run_id && Array.isArray(state.currentDiscoveryStatus.seed_queries) && state.currentDiscoveryStatus.seed_queries.length === 0) {
+      els.discoverRunQueriesState.textContent = "This run was started from a bookmarked paper and has no text queries.";
+    } else {
+      els.discoverRunQueriesState.textContent = "No executed queries in the active session yet.";
+    }
     return;
   }
   els.discoverRunQueriesState.textContent = `${state.discoverRunQueries.length} executed quer${state.discoverRunQueries.length === 1 ? "y" : "ies"} loaded for the active session.`;
@@ -1047,12 +1352,20 @@ function renderReviewDetail() {
     els.reviewAbstract.textContent = "Select a paper to review.";
     els.reviewMetadata.innerHTML = "Year: - | Journal: - | Citations: - | Authors: - | Link: -";
     els.reviewSignals.textContent = "No AI signals available.";
+    if (els.reviewBookmarkBtn) {
+      els.reviewBookmarkBtn.textContent = "Bookmark";
+      els.reviewBookmarkBtn.disabled = true;
+    }
     return;
   }
-  els.reviewTitle.textContent = item.title;
+  els.reviewTitle.textContent = `${isBookmarked(item.id) ? "[Bookmarked] " : ""}${item.title}`;
   els.reviewAbstract.textContent = item.abstract || "No abstract available.";
   els.reviewMetadata.innerHTML = buildMetadataHtml(item);
   els.reviewSignals.textContent = reviewSignalText(item);
+  if (els.reviewBookmarkBtn) {
+    els.reviewBookmarkBtn.textContent = isBookmarked(item.id) ? "Remove Bookmark" : "Bookmark";
+    els.reviewBookmarkBtn.disabled = false;
+  }
 }
 
 function reviewHeadingForQueue(queue, count) {
@@ -1076,7 +1389,7 @@ function renderReviewRows() {
   state.reviewItems.forEach((item, index) => {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", index === state.reviewIndex);
-    tr.innerHTML = `<td>${escapeHtml(item.review_status || "-")}</td><td>${item.iteration || "-"}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${escapeHtml(item.title)}</td>`;
+    tr.innerHTML = `<td>${escapeHtml(item.review_status || "-")}</td><td>${item.run_number ?? "-"}</td><td>${item.run_source_number ?? "-"}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}${escapeHtml(item.title)}</td>`;
     tr.addEventListener("click", () => {
       state.reviewIndex = index;
       state.selectedReviewSourceId = item.id;
@@ -1207,9 +1520,13 @@ function renderDocumentsDetail() {
     els.documentsDetailMetadata.innerHTML = "Year: - | Journal: - | Citations: - | Authors: - | Link: -";
     els.documentsRowActionBtn.disabled = true;
     els.documentsRowActionBtn.textContent = "Download Selected";
+    if (els.documentsBookmarkBtn) {
+      els.documentsBookmarkBtn.textContent = "Bookmark";
+      els.documentsBookmarkBtn.disabled = true;
+    }
     return;
   }
-  els.documentsDetailTitle.textContent = row.title;
+  els.documentsDetailTitle.textContent = `${isBookmarked(row.source.id) ? "[Bookmarked] " : ""}${row.title}`;
   const detailBits = [`Status: ${row.status}`];
   if (row.acquisitionItem?.last_error) {
     detailBits.push(`Last error: ${row.acquisitionItem.last_error}`);
@@ -1224,15 +1541,28 @@ function renderDocumentsDetail() {
   } else {
     els.documentsRowActionBtn.textContent = "Open Source";
   }
+  if (els.documentsBookmarkBtn) {
+    els.documentsBookmarkBtn.textContent = isBookmarked(row.source.id) ? "Remove Bookmark" : "Bookmark";
+    els.documentsBookmarkBtn.disabled = false;
+  }
   applyOfflineActionState();
 }
 
 function renderDocuments() {
+  renderDocumentsSortButtons();
   els.documentsRows.innerHTML = "";
-  state.documentRows.forEach((row) => {
+  sortedDocumentRows().forEach((row) => {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", row.source.id === state.selectedDocumentSourceId);
-    tr.innerHTML = `<td>${row.rank}</td><td>${row.score}</td><td>${row.year}</td><td>${row.citations}</td><td>${escapeHtml(row.title)}</td><td>${row.status}</td>`;
+    const doiCell = row.source.doi_url
+      ? `<a href="${escapeHtml(row.source.doi_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.source.doi || "Open DOI")}</a>`
+      : "-";
+    tr.innerHTML = `<td>${row.rank}</td><td>${row.score}</td><td>${row.year}</td><td>${row.citations}</td><td>${isBookmarked(row.source.id) ? '<span class="bookmark-chip">B</span> ' : ""}<span>${escapeHtml(row.title)}</span> <button type="button" class="mini-copy-btn" title="Copy title" aria-label="Copy title">Copy</button></td><td>${doiCell}</td><td>${row.status}</td>`;
+    tr.querySelector(".mini-copy-btn")?.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const ok = await copyTextToClipboard(row.title);
+      els.documentsState.textContent = ok ? `Copied title: ${row.title}` : "Unable to copy title.";
+    });
     tr.addEventListener("click", () => {
       state.selectedDocumentSourceId = row.source.id;
       renderDocuments();
@@ -1320,11 +1650,19 @@ function renderLibraryDetail(item) {
     els.libraryTitle.textContent = "No paper selected.";
     els.libraryAbstract.textContent = "Select a paper to inspect and export.";
     els.libraryMetadata.innerHTML = "Year: - | Journal: - | Citations: - | Authors: - | Link: -";
+    if (els.libraryBookmarkBtn) {
+      els.libraryBookmarkBtn.textContent = "Bookmark";
+      els.libraryBookmarkBtn.disabled = true;
+    }
     return;
   }
-  els.libraryTitle.textContent = item.title;
+  els.libraryTitle.textContent = `${isBookmarked(item.id) ? "[Bookmarked] " : ""}${item.title}`;
   els.libraryAbstract.textContent = item.abstract || "No abstract available.";
   els.libraryMetadata.innerHTML = buildMetadataHtml(item);
+  if (els.libraryBookmarkBtn) {
+    els.libraryBookmarkBtn.textContent = isBookmarked(item.id) ? "Remove Bookmark" : "Bookmark";
+    els.libraryBookmarkBtn.disabled = false;
+  }
 }
 
 function renderLibraryRows() {
@@ -1332,12 +1670,18 @@ function renderLibraryRows() {
   const filtered = !query
     ? [...state.libraryRows]
     : state.libraryRows.filter((item) => `${item.title} ${item.abstract || ""}`.toLowerCase().includes(query));
-  state.libraryFilteredRows = filtered;
+  state.libraryFilteredRows = sortedLibraryRows(filtered);
+  renderLibrarySortButtons();
   els.libraryRows.innerHTML = "";
-  filtered.forEach((item, index) => {
+  state.libraryFilteredRows.forEach((item, index) => {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", item.id === state.selectedLibrarySourceId);
-    tr.innerHTML = `<td>${index + 1}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${escapeHtml(item.title)}</td>`;
+    tr.innerHTML = `<td>${index + 1}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}<span>${escapeHtml(item.title)}</span> <button type="button" class="mini-copy-btn" title="Copy title" aria-label="Copy title">Copy</button></td>`;
+    tr.querySelector(".mini-copy-btn")?.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const ok = await copyTextToClipboard(item.title);
+      els.libraryState.textContent = ok ? `Copied title: ${item.title}` : "Unable to copy title.";
+    });
     tr.addEventListener("click", () => {
       state.selectedLibrarySourceId = item.id;
       renderLibraryRows();
@@ -1345,11 +1689,11 @@ function renderLibraryRows() {
     });
     els.libraryRows.appendChild(tr);
   });
-  const scores = filtered.map((item) => Number(item.relevance_score || 0));
-  els.libraryMatches.textContent = String(filtered.length);
+  const scores = state.libraryFilteredRows.map((item) => Number(item.relevance_score || 0));
+  els.libraryMatches.textContent = String(state.libraryFilteredRows.length);
   els.libraryHighest.textContent = scores.length ? Math.max(...scores).toFixed(2) : "-";
   els.libraryLowest.textContent = scores.length ? Math.min(...scores).toFixed(2) : "-";
-  const detail = filtered.find((item) => item.id === state.selectedLibrarySourceId) || filtered[0];
+  const detail = state.libraryFilteredRows.find((item) => item.id === state.selectedLibrarySourceId) || state.libraryFilteredRows[0];
   state.selectedLibrarySourceId = detail?.id || "";
   renderLibraryDetail(detail);
 }
@@ -1561,6 +1905,46 @@ async function startAcquisition(retryFailedOnly, selectedSourceIds = null) {
   }
 }
 
+async function ensureAcquisitionRunForUpload() {
+  const session = activeSession();
+  if (session.acquisitionRunId) {
+    return session.acquisitionRunId;
+  }
+  const visibleSourceIds = state.documentRows.map((row) => row.source.id);
+  if (!visibleSourceIds.length) {
+    throw new Error("No accepted session documents are available for upload.");
+  }
+  const runId = resultsRunId(session);
+  if (!runId) {
+    throw new Error("Run discovery first.");
+  }
+  const result = await api("/v1/acquisition/runs/manual-context", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      run_id: runId,
+      selected_source_ids: visibleSourceIds,
+      internal_repository_base_url: state.internalRepositoryBaseUrl || null,
+    }),
+  });
+  session.acquisitionRunId = result.data.acq_run_id;
+  persistSessions();
+  await loadLatestIds();
+  return session.acquisitionRunId;
+}
+
+function pendingDocumentSourceIds() {
+  return state.documentRows
+    .filter((row) => row.status === "pending")
+    .map((row) => row.source.id);
+}
+
+function retryableDocumentSourceIds() {
+  return state.documentRows
+    .filter((row) => row.status === "failed" || row.status === "partial")
+    .map((row) => row.source.id);
+}
+
 async function stopRunningTask() {
   const task = currentStoppableTask();
   if (!task) {
@@ -1612,11 +1996,6 @@ async function handleSelectedDocumentAction() {
 
 async function uploadBatchFiles(event) {
   event.preventDefault();
-  const session = activeSession();
-  if (!session.acquisitionRunId) {
-    els.documentsState.textContent = "Start document acquisition first.";
-    return;
-  }
   const files = Array.from(els.batchUploadFiles.files || []);
   if (!files.length) {
     els.documentsState.textContent = "Choose at least one file.";
@@ -1624,14 +2003,33 @@ async function uploadBatchFiles(event) {
   }
   beginBusy("Downloading documents");
   try {
+    const acqRunId = await ensureAcquisitionRunForUpload();
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
-    const result = await api(`/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}/manual-upload-batch`, {
+    const result = await api(`/v1/acquisition/runs/${encodeURIComponent(acqRunId)}/manual-upload-batch`, {
       method: "POST",
       body: form,
     });
-    els.batchUploadResults.textContent = JSON.stringify(result.data, null, 2);
+    const payload = result.data || {};
+    const lines = [
+      `Matched: ${payload.matched ?? 0}`,
+      `Unmatched: ${payload.unmatched ?? 0}`,
+      `Ambiguous: ${payload.ambiguous ?? 0}`,
+      "",
+    ];
+    (payload.items || []).forEach((item) => {
+      const source = item.source_id ? ` -> ${item.source_id}` : "";
+      const score = typeof item.score === "number" ? ` (score ${item.score})` : "";
+      const reason = item.reason ? ` [${item.reason}]` : "";
+      lines.push(`${item.status}: ${item.filename}${source}${score}${reason}`);
+    });
+    els.batchUploadResults.textContent = lines.join("\n").trim();
+    els.documentsState.textContent = `Batch upload processed: ${payload.matched ?? 0} matched, ${payload.unmatched ?? 0} unmatched, ${payload.ambiguous ?? 0} ambiguous.`;
     await loadDocuments();
+  } catch (error) {
+    const detail = errorDetail(error) || "batch_upload_failed";
+    els.batchUploadResults.textContent = `Upload failed: ${detail}`;
+    els.documentsState.textContent = `Upload failed: ${detail}`;
   } finally {
     endBusy();
   }
@@ -1901,6 +2299,7 @@ function scheduleLiveDiscoverRefresh(payload) {
 async function refreshAll() {
   beginBusy("Refreshing session state");
   try {
+    await loadBookmarks();
     await loadSessionProfile(activeSession()?.id || "");
     await loadLatestIds();
     try {
@@ -1993,6 +2392,15 @@ function wireEvents() {
     els.sessionContextState.textContent = "No context saved for this session yet.";
     els.sessionState.textContent = `Created new session: ${session.name}`;
   });
+  els.openBookmarksBtn?.addEventListener("click", async () => {
+    state.bookmarksOpen = true;
+    renderShell();
+    await loadBookmarks();
+  });
+  els.closeBookmarksBtn?.addEventListener("click", () => {
+    state.bookmarksOpen = false;
+    renderShell();
+  });
   els.saveSessionBtn.addEventListener("click", () => {
     const session = activeSession();
     session.name = els.discoverSessionName.value.trim() || session.name;
@@ -2082,6 +2490,17 @@ function wireEvents() {
   els.reviewAcceptBtn.addEventListener("click", () => submitReviewDecision("accept"));
   els.reviewRejectBtn.addEventListener("click", () => submitReviewDecision("reject"));
   els.reviewLaterBtn.addEventListener("click", () => submitReviewDecision("later"));
+  els.reviewBookmarkBtn?.addEventListener("click", async () => {
+    const item = state.reviewItems[state.reviewIndex];
+    if (!item) {
+      return;
+    }
+    const bookmarked = await toggleBookmarkForSource(item.id);
+    els.reviewState.textContent = bookmarked ? "Paper bookmarked for later research." : "Bookmark removed.";
+    renderReviewRows();
+    renderDocuments();
+    renderLibraryRows();
+  });
   els.reviewFilterButtons.forEach((button) => {
     button.addEventListener("click", () => {
       const next = button.dataset.reviewFilter || "pending";
@@ -2095,18 +2514,65 @@ function wireEvents() {
   });
   els.reviewSortButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      const key = button.dataset.reviewSort || "iteration";
+      const key = button.dataset.reviewSort || "run_number";
       if (state.reviewSort.key === key) {
         state.reviewSort.dir = state.reviewSort.dir === "desc" ? "asc" : "desc";
       } else {
-        state.reviewSort = { key, dir: key === "iteration" ? "desc" : "desc" };
+        state.reviewSort = { key, dir: defaultReviewSortDir(key) };
       }
       renderReviewRows();
     });
   });
-  els.downloadMissingBtn.addEventListener("click", () => startAcquisition(false));
-  els.retryFailedBtn.addEventListener("click", () => startAcquisition(true));
+  els.documentsSortButtons?.forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.documentsSort || "rank";
+      if (state.documentsSort.key === key) {
+        state.documentsSort.dir = state.documentsSort.dir === "asc" ? "desc" : "asc";
+      } else {
+        state.documentsSort = { key, dir: defaultDocumentsSortDir(key) };
+      }
+      renderDocuments();
+    });
+  });
+  els.librarySortButtons?.forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.librarySort || "rank";
+      if (state.librarySort.key === key) {
+        state.librarySort.dir = state.librarySort.dir === "asc" ? "desc" : "asc";
+      } else {
+        state.librarySort = { key, dir: defaultLibrarySortDir(key) };
+      }
+      renderLibraryRows();
+    });
+  });
+  els.downloadMissingBtn.addEventListener("click", () => {
+    const ids = pendingDocumentSourceIds();
+    if (!ids.length) {
+      els.documentsState.textContent = "No pending documents to download.";
+      return;
+    }
+    startAcquisition(false, ids);
+  });
+  els.retryFailedBtn.addEventListener("click", () => {
+    const ids = retryableDocumentSourceIds();
+    if (!ids.length) {
+      els.documentsState.textContent = "No failed or partial documents to retry.";
+      return;
+    }
+    startAcquisition(true, ids);
+  });
   els.documentsRowActionBtn.addEventListener("click", handleSelectedDocumentAction);
+  els.documentsBookmarkBtn?.addEventListener("click", async () => {
+    const row = selectedDocumentRow();
+    if (!row) {
+      return;
+    }
+    const bookmarked = await toggleBookmarkForSource(row.source.id);
+    els.documentsState.textContent = bookmarked ? "Paper bookmarked for later research." : "Bookmark removed.";
+    renderDocuments();
+    renderReviewRows();
+    renderLibraryRows();
+  });
   els.saveInternalRepoUrlBtn.addEventListener("click", () => {
     const raw = els.internalRepoUrlInput.value;
     if (raw.trim() && !normalizeHttpUrl(raw)) {
@@ -2136,6 +2602,16 @@ function wireEvents() {
     if (state.selectedLibrarySourceId) {
       updateSelectionMembership(state.selectedLibrarySourceId, false);
     }
+  });
+  els.libraryBookmarkBtn?.addEventListener("click", async () => {
+    if (!state.selectedLibrarySourceId) {
+      return;
+    }
+    const bookmarked = await toggleBookmarkForSource(state.selectedLibrarySourceId);
+    els.libraryState.textContent = bookmarked ? "Paper bookmarked for later research." : "Bookmark removed.";
+    renderLibraryRows();
+    renderReviewRows();
+    renderDocuments();
   });
   els.libraryMetadataBtn.addEventListener("click", exportLibraryMetadata);
   els.libraryZipBtn.addEventListener("click", exportLibraryZip);

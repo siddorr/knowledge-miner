@@ -114,6 +114,17 @@ table {
   border-color: var(--accent);
 }
 
+.nav-btn.active .badge {
+  background: #ffffff;
+  color: #0a4d44;
+  border-color: #ffffff;
+  font-weight: 700;
+}
+
+.nav-action-btn {
+  margin-left: auto;
+}
+
 .workspace {
   padding: 16px 0 24px;
 }
@@ -126,6 +137,31 @@ table {
 .pane {
   padding: 16px;
   margin-bottom: 12px;
+}
+
+.discover-top-grid {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 14px;
+}
+
+.context-card {
+  border: 1px solid var(--line);
+  background: #fcfaf4;
+  padding: 12px;
+}
+
+.context-card h3 {
+  margin: 0 0 8px;
+}
+
+textarea {
+  width: 100%;
+  font: inherit;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 8px;
+  resize: vertical;
 }
 
 .summary-row {
@@ -223,6 +259,65 @@ tbody tr.active {
   text-decoration: underline;
 }
 
+.mini-copy-btn {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  padding: 1px 6px;
+  margin-left: 6px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.mini-copy-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.bookmark-chip {
+  display: inline-block;
+  min-width: 1.2rem;
+  padding: 0 0.3rem;
+  margin-right: 0.25rem;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 0.72rem;
+  line-height: 1.2rem;
+  text-align: center;
+}
+
+.modal-shell {
+  position: fixed;
+  inset: 0;
+  background: rgba(30, 26, 21, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  z-index: 40;
+}
+
+.modal-card {
+  width: min(1180px, 100%);
+  max-height: min(88vh, 900px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 16px;
+}
+
+.bookmark-title {
+  font-weight: 700;
+}
+
+.bookmark-abstract {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .status-chip {
   display: inline-flex;
   align-items: center;
@@ -294,6 +389,10 @@ progress {
   }
 
   .two-pane {
+    grid-template-columns: 1fr;
+  }
+
+  .discover-top-grid {
     grid-template-columns: 1fr;
   }
 }
