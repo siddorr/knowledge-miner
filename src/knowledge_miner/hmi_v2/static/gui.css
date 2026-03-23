@@ -122,10 +122,6 @@ table {
   font-weight: 700;
 }
 
-.nav-action-btn {
-  margin-left: auto;
-}
-
 .workspace {
   padding: 16px 0 24px;
 }
@@ -226,6 +222,10 @@ textarea {
   background: var(--panel);
   box-shadow: 0 8px 20px rgba(30, 26, 21, 0.12);
   z-index: 25;
+}
+
+.file-menu-panel[hidden] {
+  display: none;
 }
 
 .file-menu-panel label {
@@ -341,25 +341,6 @@ tbody tr.active {
   font-size: 0.72rem;
   line-height: 1.2rem;
   text-align: center;
-}
-
-.modal-shell {
-  position: fixed;
-  inset: 0;
-  background: rgba(30, 26, 21, 0.45);
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  z-index: 40;
-}
-
-.modal-card {
-  width: min(1180px, 100%);
-  max-height: min(88vh, 900px);
-  overflow: auto;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  padding: 16px;
 }
 
 .bookmark-title {
