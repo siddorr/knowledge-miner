@@ -83,7 +83,12 @@ def test_e2e_discovery_to_search_flow(monkeypatch, tmp_path):
     try:
         created = client.post(
             "/v1/discovery/runs",
-            json={"seed_queries": ["ultrapure water UPW semiconductor"], "max_iterations": 1},
+            json={
+                "seed_queries": ["ultrapure water UPW semiconductor"],
+                "session_id": "session_hmi_e2e_search",
+                "session_context": "UPW semiconductor discovery and ranking context.",
+                "max_iterations": 1,
+            },
             headers=_auth_headers(),
         )
         assert created.status_code == 202
@@ -157,7 +162,12 @@ def test_e2e_failed_acquisition_to_manual_recovery_flow(monkeypatch, tmp_path):
     try:
         created = client.post(
             "/v1/discovery/runs",
-            json={"seed_queries": ["UPW fabs"], "max_iterations": 1},
+            json={
+                "seed_queries": ["UPW fabs"],
+                "session_id": "session_hmi_e2e_manual",
+                "session_context": "UPW fab document recovery context.",
+                "max_iterations": 1,
+            },
             headers=_auth_headers(),
         )
         assert created.status_code == 202

@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -12,9 +12,14 @@ from sqlalchemy.orm import Session
 from ..auth import require_api_key
 from ..config import settings
 from ..db import get_db
-from ..models import AcquisitionItem, Run, Source
+from ..models import AcquisitionItem, Run, SessionProfile, Source
 from ..rate_limit import require_rate_limit
-from ..schemas import HMIEventsIngestRequest, HMIEventsIngestResponse
+from ..schemas import (
+    HMIEventsIngestRequest,
+    HMIEventsIngestResponse,
+    SessionProfileResponse,
+    SessionProfileUpsertRequest,
+)
 
 router = APIRouter(tags=["hmi"])
 logger_name = "knowledge_miner"
@@ -116,3 +121,54 @@ def ingest_hmi_events(
         }
         logger.info("hmi_event %s", json.dumps(record, sort_keys=True, ensure_ascii=True))
     return HMIEventsIngestResponse(accepted=len(payload.events))
+
+
+@router.get("/v1/sessions/{session_id}", response_model=SessionProfileResponse)
+def get_session_profile(
+    session_id: str,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> SessionProfileResponse:
+    session_key = session_id.strip()
+    if not session_key:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="session_id_required")
+    profile = db.get(SessionProfile, session_key)
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session_not_found")
+    return SessionProfileResponse(
+        session_id=profile.session_id,
+        name=profile.name,
+        session_context=profile.session_context,
+        updated_at=profile.updated_at.isoformat() if profile.updated_at else None,
+    )
+
+
+@router.put("/v1/sessions/{session_id}", response_model=SessionProfileResponse)
+def upsert_session_profile(
+    session_id: str,
+    payload: SessionProfileUpsertRequest,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> SessionProfileResponse:
+    session_key = session_id.strip()
+    if not session_key:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="session_id_required")
+    context = payload.session_context.strip()
+    if not context:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="session_context_required")
+    profile = db.get(SessionProfile, session_key)
+    if profile is None:
+        profile = SessionProfile(session_id=session_key)
+        db.add(profile)
+    profile.name = payload.name.strip() if isinstance(payload.name, str) and payload.name.strip() else payload.name
+    profile.session_context = context
+    db.commit()
+    db.refresh(profile)
+    return SessionProfileResponse(
+        session_id=profile.session_id,
+        name=profile.name,
+        session_context=profile.session_context,
+        updated_at=profile.updated_at.isoformat() if profile.updated_at else None,
+    )

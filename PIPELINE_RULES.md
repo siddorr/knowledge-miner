@@ -67,6 +67,7 @@ Heuristic recommendation thresholds:
 3. If AI call fails/times out/errors for candidate: final decision is `needs_review`.
 4. If AI is unavailable at run start: run is allowed, candidates route to `needs_review`.
 5. Human review endpoint (`accept`/`reject`) remains final override.
+6. AI ranking input includes required session context captured at run start.
 
 Decision-source values:
 1. `ai`

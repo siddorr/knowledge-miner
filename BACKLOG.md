@@ -358,6 +358,38 @@ Status:
     - `status`
     - `source_link`
 
+21. [ ] P1 - Constrain scrollable lists to viewport-sized panels with local scrolling
+- Goal:
+  - keep large lists usable without forcing full-page scrolling through dense work areas.
+- Scope:
+  - apply bounded-height layout to list-heavy panes in `hmi2`
+  - ensure Review list, Documents table region, Library Export results, and similar dense lists have their own internal scroller
+  - preserve visible headers, controls, and details panes while list content scrolls independently
+  - verify behavior on common desktop and laptop viewport heights
+- Acceptance criteria:
+  - list-heavy panels do not grow beyond the usable screen/workspace height
+  - list content scrolls inside its own pane
+  - the whole page does not need to scroll just to navigate long result lists
+  - headers/action rows remain accessible while list panes are scrolled
+
+22. [ ] P1 - Group session/file actions under a single `File` menu in the top bar
+- Goal:
+  - reduce top-row button clutter by moving infrequent file/session actions behind one clear entry point.
+- Scope:
+  - replace separate top-level buttons for `New Session`, `Load`, `Delete`, and `History` with a single `File` menu or equivalent compact control
+  - include at minimum:
+    - `New Session`
+    - `Load`
+    - `Delete`
+    - `History`
+  - keep the actions accessible with keyboard and clear labels
+  - preserve current behavior of the underlying actions
+- Acceptance criteria:
+  - primary top bar no longer shows these actions as separate always-visible buttons
+  - `File` menu exposes all required actions
+  - action behavior remains unchanged after relocation
+  - menu works on desktop and compact screen widths
+
 21. [x] P0 - Add Library Export contract tests
 - Goal:
   - verify the final stage is an export workspace, not a generic library browser.
@@ -886,7 +918,7 @@ Status:
   - each filter shows only papers auto-decided in the active session/current run context
   - switching between these filters and the existing queue views updates the Review list correctly
 
-59. [x] P1 - Remove redundant screen titles when the active page is already identified in the navigation
+59. [ ] P1 - Remove redundant screen titles when the active page is already identified in the navigation
 - Goal:
   - reduce visual duplication and free vertical space in the main workflow pages.
 - Problem:
@@ -897,22 +929,24 @@ Status:
   - keep page-specific subtitles/help text only when they add real information rather than restating the page name
 - Acceptance criteria:
   - main workflow screens do not repeat their page name as a redundant heading
+  - no large unused vertical gap remains in place of removed/reduced title blocks
   - navigation remains the primary active-screen indicator
   - layout gains vertical space without losing orientation/context
 
-60. [x] P0 - Remove 1000-item cap in Documents data loading/export flows
+60. [ ] P0 - Remove 1000-item cap in Discover/Documents data loading/export flows
 - Goal:
-  - ensure Documents workflow handles corpora larger than 1000 sources/items.
+  - ensure Discover/Documents workflows handle corpora larger than 1000 sources/items.
 - Problem:
-  - current Documents-related requests use `limit=1000`, truncating visible and exportable data for large runs.
+  - current Discover/Documents requests still use `limit=1000` in some paths, truncating visible data for large runs.
 - Scope:
-  - replace hard-coded `limit=1000` usage in Documents/discovery source loading with paginated or full-iteration retrieval
+  - replace hard-coded `limit=1000` usage in Discover and Documents source loading with paginated or full-iteration retrieval
+  - ensure Discover summary/text reflects full set and not first 1000 rows
   - ensure summary counters and badges reflect full dataset, not first 1000 rows
   - ensure Documents CSV/export operations can include all relevant rows beyond 1000
   - keep UI responsive for large result sets (chunked fetch or pagination)
 - Acceptance criteria:
-  - runs with >1000 documents are fully represented in Documents metrics and operations
-  - no silent truncation at 1000 rows in normal Documents workflow
+  - runs with >1000 sources are fully represented in Discover and Documents metrics/labels
+  - no silent truncation at 1000 rows in normal Discover/Documents workflows
   - export includes complete intended set, not only first 1000
 
 61. [x] P1 - Remove predefined default query `ultrapure water semiconductor`
@@ -929,6 +963,21 @@ Status:
   - new session starts with zero queries
   - no auto-inserted `ultrapure water semiconductor` query
   - discovery run remains blocked until user selects at least one query
+
+62. [ ] P1 - Add ability to change ChatGPT model from UI
+- Goal:
+  - allow operator to switch the AI model without editing environment/config files manually.
+- Problem:
+  - model changes currently require technical configuration edits outside the main UI flow.
+- Scope:
+  - add editable model control in `Advanced` AI settings
+  - save model via existing AI settings API
+  - show current active model in UI
+  - apply updated model for new AI requests after save
+- Acceptance criteria:
+  - operator can view and change active ChatGPT model from UI
+  - saved model is returned by `/v1/settings/ai-filter`
+  - new discovery/review AI calls use updated model value
 
 ## GUI Spec Review Checklist
 

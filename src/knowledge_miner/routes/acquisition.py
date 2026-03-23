@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import csv
+import difflib
 import hashlib
 import io
+import logging
 import re
 import time
 from collections import defaultdict, deque
@@ -22,6 +24,7 @@ from ..acquisition import (
     mark_manual_complete,
     register_manual_upload,
 )
+from ..ai_filter import extract_document_identity
 from ..auth import require_api_key
 from ..db import get_db
 from ..models import AcquisitionItem, AcquisitionRun, Artifact, Source
@@ -45,6 +48,8 @@ from ..schemas import (
 )
 
 router = APIRouter(tags=["acquisition"])
+logger = logging.getLogger("knowledge_miner")
+_UPLOAD_PYPDF_MISSING_LOGGED = False
 
 HOT_READ_LIMIT_WINDOW_SECONDS = 10.0
 HOT_READ_LIMIT_COUNT = 120
@@ -108,6 +113,125 @@ def _title_tokens(value: str) -> set[str]:
     return {part for part in parts if len(part) >= 3}
 
 
+def _extract_upload_text(filename: str, content_type: str | None, content: bytes) -> str:
+    global _UPLOAD_PYPDF_MISSING_LOGGED
+    if not content:
+        return ""
+    is_pdf = (content_type or "").lower() == "application/pdf" or filename.lower().endswith(".pdf")
+    if is_pdf:
+        try:
+            from pypdf import PdfReader  # type: ignore
+        except Exception:
+            if not _UPLOAD_PYPDF_MISSING_LOGGED:
+                logger.warning("manual_upload_pdf_text_extraction_unavailable parser=pypdf reason=module_not_installed")
+                _UPLOAD_PYPDF_MISSING_LOGGED = True
+            return ""
+        try:
+            reader = PdfReader(io.BytesIO(content))
+            page_texts: list[str] = []
+            for page in reader.pages[:2]:
+                try:
+                    extracted = page.extract_text() or ""
+                except Exception:
+                    extracted = ""
+                cleaned = re.sub(r"\s+", " ", extracted).strip()
+                if cleaned:
+                    page_texts.append(cleaned)
+            return "\n".join(page_texts)[:4000]
+        except Exception:
+            return ""
+    return content[:4000].decode("latin-1", errors="ignore")
+
+
+def _pdf_text_parser_available() -> bool:
+    try:
+        from pypdf import PdfReader  # type: ignore  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+def _candidate_title_score(file_tokens: set[str], text_tokens: set[str], candidate_tokens: set[str]) -> float:
+    if not candidate_tokens:
+        return 0.0
+    file_overlap = len(file_tokens & candidate_tokens) / max(len(candidate_tokens), 1) if file_tokens else 0.0
+    text_overlap = len(text_tokens & candidate_tokens) / max(len(candidate_tokens), 1) if text_tokens else 0.0
+    return max(file_overlap, text_overlap)
+
+
+def _normalize_match_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def _extract_probable_pdf_title(text: str) -> str | None:
+    if not text:
+        return None
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    ignore_prefixes = {
+        "abstract",
+        "keywords",
+        "received",
+        "accepted",
+        "published",
+        "doi",
+        "http",
+        "www.",
+    }
+    candidates: list[tuple[float, str]] = []
+    for idx, line in enumerate(lines[:20]):
+        lowered = line.lower()
+        if any(lowered.startswith(prefix) for prefix in ignore_prefixes):
+            continue
+        if "@" in line:
+            continue
+        if len(line) < 20 or len(line) > 220:
+            continue
+        alpha_ratio = sum(char.isalpha() for char in line) / max(len(line), 1)
+        if alpha_ratio < 0.55:
+            continue
+        score = alpha_ratio + (0.15 if idx < 8 else 0.0)
+        if not lowered.endswith("."):
+            score += 0.05
+        if line.count(",") <= 2 and line.count(";") == 0:
+            score += 0.05
+        candidates.append((score, line))
+        if idx + 1 < len(lines[:20]):
+            joined = f"{line} {lines[idx + 1]}".strip()
+            if 30 <= len(joined) <= 260:
+                joined_alpha_ratio = sum(char.isalpha() for char in joined) / max(len(joined), 1)
+                if joined_alpha_ratio >= 0.6:
+                    candidates.append((score + 0.03, joined))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda row: row[0], reverse=True)
+    return candidates[0][1]
+
+
+def _title_similarity(left: str, right: str) -> float:
+    left_norm = _normalize_match_text(left)
+    right_norm = _normalize_match_text(right)
+    if not left_norm or not right_norm:
+        return 0.0
+    token_overlap = len(set(left_norm.split()) & set(right_norm.split())) / max(len(set(right_norm.split())), 1)
+    seq_ratio = difflib.SequenceMatcher(a=left_norm, b=right_norm).ratio()
+    if left_norm == right_norm:
+        return 1.0
+    if left_norm in right_norm or right_norm in left_norm:
+        return max(seq_ratio, 0.92)
+    return max(token_overlap, seq_ratio)
+
+
+def _shorten_log_value(value: str | None, limit: int = 160) -> str:
+    if not value:
+        return "-"
+    compact = re.sub(r"\s+", " ", value).strip()
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[: limit - 3]}..."
+
+
 def _enqueue_acquisition_task(background_tasks: BackgroundTasks, acq_run_id: str) -> None:
     try:
         from .. import main as main_module
@@ -145,6 +269,34 @@ def create_acq_run(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_not_complete") from exc
 
     _enqueue_acquisition_task(background_tasks, run.id)
+    return AcquisitionRunCreateResponse(acq_run_id=run.id, status=run.status)
+
+
+@router.post("/v1/acquisition/runs/manual-context", response_model=AcquisitionRunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
+def create_manual_upload_context(
+    payload: AcquisitionRunCreateRequest,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> AcquisitionRunCreateResponse:
+    try:
+        run = create_acquisition_run(
+            db,
+            payload.run_id,
+            retry_failed_only=False,
+            selected_source_ids=payload.selected_source_ids,
+            internal_repository_base_url=payload.internal_repository_base_url,
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        if reason == "run_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found") from exc
+        if reason == "invalid_internal_repository_base_url":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_internal_repository_base_url") from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_not_complete") from exc
+
     return AcquisitionRunCreateResponse(acq_run_id=run.id, status=run.status)
 
 
@@ -221,7 +373,7 @@ def stop_acq_run(
 def list_acq_items(
     acq_run_id: str,
     request: Request,
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=100, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     _: str = Depends(require_api_key),
     __: None = Depends(require_rate_limit),
@@ -258,7 +410,7 @@ def list_acq_items(
 def list_manual_downloads(
     acq_run_id: str,
     request: Request,
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=100, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     _: str = Depends(require_api_key),
     __: None = Depends(require_rate_limit),
@@ -414,6 +566,10 @@ def manual_upload_batch(
     for upload in files:
         filename = upload.filename or "unknown"
         content = upload.file.read()
+        log_reason = "unknown"
+        extracted_doi = ""
+        probable_title = None
+        ai_identity = None
         checksum = hashlib.sha256(content).hexdigest() if content else ""
         existing = (
             db.scalars(select(Artifact.id).where(Artifact.acq_run_id == acq_run_id, Artifact.checksum_sha256 == checksum).limit(1)).first()
@@ -421,14 +577,32 @@ def manual_upload_batch(
             else None
         )
         if existing:
+            log_reason = "duplicate_checksum"
             items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason="duplicate_checksum"))
             unmatched += 1
+            logger.info(
+                "manual_upload_batch_item acq_run_id=%s filename=%s status=%s reason=%s extracted_doi=%s probable_title=%s ai_title=%s ai_doi=%s ai_confidence=%s",
+                acq_run_id,
+                filename,
+                "unmatched",
+                log_reason,
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+            )
             continue
 
-        preview = content[:4096].decode("latin-1", errors="ignore").lower() if content else ""
-        doi = _extract_doi(f"{filename} {preview}") or ""
-        if doi:
-            doi_hits = [row for row in candidates if row["doi"] and row["doi"] == doi]
+        extracted_text = _extract_upload_text(filename, upload.content_type, content)
+        preview = extracted_text.lower() if extracted_text else content[:4096].decode("latin-1", errors="ignore").lower()
+        extracted_doi = _extract_doi(f"{filename} {preview}") or ""
+        parser_unavailable = (
+            ((upload.content_type or "").lower() == "application/pdf" or filename.lower().endswith(".pdf"))
+            and not _pdf_text_parser_available()
+        )
+        if extracted_doi:
+            doi_hits = [row for row in candidates if row["doi"] and row["doi"] == extracted_doi]
             if len(doi_hits) == 1:
                 target = doi_hits[0]
                 try:
@@ -440,37 +614,255 @@ def manual_upload_batch(
                         content_type=upload.content_type,
                         content=content,
                     )
-                    items.append(BatchUploadMatchOut(filename=filename, status="matched", source_id=target["source_id"], score=1.0, reason="doi_exact"))
+                    log_reason = "doi_exact"
+                    items.append(BatchUploadMatchOut(filename=filename, status="matched", source_id=target["source_id"], score=1.0, reason=log_reason))
                     matched += 1
                 except ValueError as exc:
+                    log_reason = str(exc)
                     items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason=str(exc)))
                     unmatched += 1
+                logger.info(
+                    "manual_upload_batch_item acq_run_id=%s filename=%s status=%s reason=%s extracted_doi=%s probable_title=%s ai_title=%s ai_doi=%s ai_confidence=%s",
+                    acq_run_id,
+                    filename,
+                    items[-1].status,
+                    log_reason,
+                    _shorten_log_value(extracted_doi),
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                )
                 continue
             if len(doi_hits) > 1:
-                items.append(BatchUploadMatchOut(filename=filename, status="ambiguous", reason="multiple_doi_matches"))
+                log_reason = "multiple_doi_matches"
+                items.append(BatchUploadMatchOut(filename=filename, status="ambiguous", reason=log_reason))
                 ambiguous += 1
+                logger.info(
+                    "manual_upload_batch_item acq_run_id=%s filename=%s status=%s reason=%s extracted_doi=%s probable_title=%s ai_title=%s ai_doi=%s ai_confidence=%s",
+                    acq_run_id,
+                    filename,
+                    "ambiguous",
+                    log_reason,
+                    _shorten_log_value(extracted_doi),
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                )
+                continue
+
+        probable_title = _extract_probable_pdf_title(extracted_text)
+        if probable_title:
+            title_scored = [
+                (_title_similarity(probable_title, candidate["title"]), candidate)
+                for candidate in candidates
+                if candidate["title"]
+            ]
+            title_scored = [row for row in title_scored if row[0] >= 0.82]
+            title_scored.sort(key=lambda row: row[0], reverse=True)
+            if len(title_scored) == 1 or (title_scored and (len(title_scored) == 1 or title_scored[0][0] - title_scored[1][0] >= 0.08)):
+                best_score, best = title_scored[0]
+                try:
+                    register_manual_upload(
+                        db,
+                        acq_run_id=acq_run_id,
+                        source_id=best["source_id"],
+                        filename=filename,
+                        content_type=upload.content_type,
+                        content=content,
+                    )
+                    items.append(
+                        BatchUploadMatchOut(
+                            filename=filename,
+                            status="matched",
+                            source_id=best["source_id"],
+                            score=round(float(best_score), 3),
+                            reason="pdf_title_similarity",
+                        )
+                    )
+                    log_reason = "pdf_title_similarity"
+                    matched += 1
+                except ValueError as exc:
+                    log_reason = str(exc)
+                    items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason=str(exc)))
+                    unmatched += 1
+                logger.info(
+                    "manual_upload_batch_item acq_run_id=%s filename=%s status=%s reason=%s extracted_doi=%s probable_title=%s ai_title=%s ai_doi=%s ai_confidence=%s",
+                    acq_run_id,
+                    filename,
+                    items[-1].status,
+                    log_reason,
+                    _shorten_log_value(extracted_doi),
+                    _shorten_log_value(probable_title),
+                    "-",
+                    "-",
+                    "-",
+                )
+                continue
+            if len(title_scored) > 1 and abs(title_scored[0][0] - title_scored[1][0]) < 0.08:
+                log_reason = "pdf_title_conflict"
+                items.append(BatchUploadMatchOut(filename=filename, status="ambiguous", reason=log_reason))
+                ambiguous += 1
+                logger.info(
+                    "manual_upload_batch_item acq_run_id=%s filename=%s status=%s reason=%s extracted_doi=%s probable_title=%s ai_title=%s ai_doi=%s ai_confidence=%s",
+                    acq_run_id,
+                    filename,
+                    "ambiguous",
+                    log_reason,
+                    _shorten_log_value(extracted_doi),
+                    _shorten_log_value(probable_title),
+                    "-",
+                    "-",
+                    "-",
+                )
+                continue
+
+        if extracted_text:
+            try:
+                ai_identity = extract_document_identity(filename=filename, first_page_text=extracted_text)
+            except Exception:
+                ai_identity = None
+        if ai_identity and ai_identity.doi:
+            doi_hits = [row for row in candidates if row["doi"] and row["doi"] == ai_identity.doi]
+            if len(doi_hits) == 1 and ai_identity.confidence >= 0.7:
+                target = doi_hits[0]
+                try:
+                    register_manual_upload(
+                        db,
+                        acq_run_id=acq_run_id,
+                        source_id=target["source_id"],
+                        filename=filename,
+                        content_type=upload.content_type,
+                        content=content,
+                    )
+                    items.append(
+                        BatchUploadMatchOut(
+                            filename=filename,
+                            status="matched",
+                            source_id=target["source_id"],
+                            score=round(float(ai_identity.confidence), 3),
+                            reason="ai_doi_exact",
+                        )
+                    )
+                    log_reason = "ai_doi_exact"
+                    matched += 1
+                except ValueError as exc:
+                    log_reason = str(exc)
+                    items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason=str(exc)))
+                    unmatched += 1
+                logger.info(
+                    "manual_upload_batch_item acq_run_id=%s filename=%s status=%s reason=%s extracted_doi=%s probable_title=%s ai_title=%s ai_doi=%s ai_confidence=%s",
+                    acq_run_id,
+                    filename,
+                    items[-1].status,
+                    log_reason,
+                    _shorten_log_value(extracted_doi),
+                    _shorten_log_value(probable_title),
+                    _shorten_log_value(ai_identity.title),
+                    _shorten_log_value(ai_identity.doi),
+                    ai_identity.confidence,
+                )
+                continue
+        if ai_identity and ai_identity.title and ai_identity.confidence >= 0.7:
+            ai_title_scored = [
+                (_title_similarity(ai_identity.title, candidate["title"]), candidate)
+                for candidate in candidates
+                if candidate["title"]
+            ]
+            ai_title_scored = [row for row in ai_title_scored if row[0] >= 0.8]
+            ai_title_scored.sort(key=lambda row: row[0], reverse=True)
+            if len(ai_title_scored) == 1 or (ai_title_scored and (len(ai_title_scored) == 1 or ai_title_scored[0][0] - ai_title_scored[1][0] >= 0.08)):
+                best_score, best = ai_title_scored[0]
+                try:
+                    register_manual_upload(
+                        db,
+                        acq_run_id=acq_run_id,
+                        source_id=best["source_id"],
+                        filename=filename,
+                        content_type=upload.content_type,
+                        content=content,
+                    )
+                    items.append(
+                        BatchUploadMatchOut(
+                            filename=filename,
+                            status="matched",
+                            source_id=best["source_id"],
+                            score=round(float(max(best_score, ai_identity.confidence)), 3),
+                            reason="ai_title_similarity",
+                        )
+                    )
+                    log_reason = "ai_title_similarity"
+                    matched += 1
+                except ValueError as exc:
+                    log_reason = str(exc)
+                    items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason=str(exc)))
+                    unmatched += 1
+                logger.info(
+                    "manual_upload_batch_item acq_run_id=%s filename=%s status=%s reason=%s extracted_doi=%s probable_title=%s ai_title=%s ai_doi=%s ai_confidence=%s",
+                    acq_run_id,
+                    filename,
+                    items[-1].status,
+                    log_reason,
+                    _shorten_log_value(extracted_doi),
+                    _shorten_log_value(probable_title),
+                    _shorten_log_value(ai_identity.title),
+                    _shorten_log_value(ai_identity.doi),
+                    ai_identity.confidence,
+                )
                 continue
 
         file_tokens = _title_tokens(Path(filename).stem)
+        text_tokens = _title_tokens(extracted_text)
         scored: list[tuple[float, dict]] = []
         for candidate in candidates:
-            if not file_tokens or not candidate["tokens"]:
+            if not candidate["tokens"]:
                 continue
-            overlap = len(file_tokens & candidate["tokens"])
-            if overlap == 0:
+            score = _candidate_title_score(file_tokens, text_tokens, candidate["tokens"])
+            if score == 0:
                 continue
-            denom = max(len(file_tokens), len(candidate["tokens"]))
-            score = overlap / denom
-            if score >= 0.5:
+            if score >= 0.6:
                 scored.append((score, candidate))
         scored.sort(key=lambda row: row[0], reverse=True)
         if not scored:
-            items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason="no_match"))
+            log_reason = "pdf_parser_unavailable" if parser_unavailable else "no_match"
+            items.append(
+                BatchUploadMatchOut(
+                    filename=filename,
+                    status="unmatched",
+                    reason=log_reason,
+                )
+            )
             unmatched += 1
+            logger.info(
+                "manual_upload_batch_item acq_run_id=%s filename=%s status=%s reason=%s extracted_doi=%s probable_title=%s ai_title=%s ai_doi=%s ai_confidence=%s",
+                acq_run_id,
+                filename,
+                "unmatched",
+                log_reason,
+                _shorten_log_value(extracted_doi),
+                _shorten_log_value(probable_title),
+                _shorten_log_value(ai_identity.title if ai_identity else None),
+                _shorten_log_value(ai_identity.doi if ai_identity else None),
+                ai_identity.confidence if ai_identity else "-",
+            )
             continue
         if len(scored) > 1 and abs(scored[0][0] - scored[1][0]) < 0.1:
-            items.append(BatchUploadMatchOut(filename=filename, status="ambiguous", reason="title_match_conflict"))
+            log_reason = "title_match_conflict"
+            items.append(BatchUploadMatchOut(filename=filename, status="ambiguous", reason=log_reason))
             ambiguous += 1
+            logger.info(
+                "manual_upload_batch_item acq_run_id=%s filename=%s status=%s reason=%s extracted_doi=%s probable_title=%s ai_title=%s ai_doi=%s ai_confidence=%s",
+                acq_run_id,
+                filename,
+                "ambiguous",
+                log_reason,
+                _shorten_log_value(extracted_doi),
+                _shorten_log_value(probable_title),
+                _shorten_log_value(ai_identity.title if ai_identity else None),
+                _shorten_log_value(ai_identity.doi if ai_identity else None),
+                ai_identity.confidence if ai_identity else "-",
+            )
             continue
 
         best_score, best = scored[0]
@@ -492,11 +884,33 @@ def manual_upload_batch(
                     reason="title_similarity",
                 )
             )
+            log_reason = "title_similarity"
             matched += 1
         except ValueError as exc:
+            log_reason = str(exc)
             items.append(BatchUploadMatchOut(filename=filename, status="unmatched", reason=str(exc)))
             unmatched += 1
+        logger.info(
+            "manual_upload_batch_item acq_run_id=%s filename=%s status=%s reason=%s extracted_doi=%s probable_title=%s ai_title=%s ai_doi=%s ai_confidence=%s",
+            acq_run_id,
+            filename,
+            items[-1].status,
+            log_reason,
+            _shorten_log_value(extracted_doi),
+            _shorten_log_value(probable_title),
+            _shorten_log_value(ai_identity.title if ai_identity else None),
+            _shorten_log_value(ai_identity.doi if ai_identity else None),
+            ai_identity.confidence if ai_identity else "-",
+        )
 
+    logger.info(
+        "manual_upload_batch_summary acq_run_id=%s files=%s matched=%s unmatched=%s ambiguous=%s",
+        acq_run_id,
+        len(files),
+        matched,
+        unmatched,
+        ambiguous,
+    )
     return BatchUploadResponse(acq_run_id=acq_run_id, matched=matched, unmatched=unmatched, ambiguous=ambiguous, items=items)
 
 

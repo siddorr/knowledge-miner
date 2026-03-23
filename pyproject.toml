@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledge-miner"
-version = "0.1.0"
-description = "UPW literature discovery engine"
+version = "0.11.0"
+description = "UPW literature discovery engine - 0.11 beta release"
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+  "Development Status :: 4 - Beta",
+]
 dependencies = [
   "fastapi>=0.115.0",
   "python-multipart>=0.0.9",

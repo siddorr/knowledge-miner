@@ -377,6 +377,53 @@ def test_execute_acquisition_run_mixed_success_and_failure(monkeypatch, tmp_path
         object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
 
 
+def test_execute_acquisition_run_persists_item_progress_mid_run(monkeypatch, tmp_path):
+    run_id, source_ids = _seed_completed_run_with_two_sources()
+    original_artifacts_dir = settings.artifacts_dir
+    observed = {"first_item_committed": False, "run_totals_committed": False}
+    try:
+        object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+        with SessionLocal() as db:
+            acq_run = acquisition.create_acquisition_run(db, run_id, retry_failed_only=False)
+
+        def fake_acquire(source: Source, *, internal_repository_base_url: str | None = None):  # noqa: ANN001
+            del internal_repository_base_url
+            if source.id == source_ids[1]:
+                with SessionLocal() as verify_db:
+                    first_item = verify_db.scalars(
+                        select(AcquisitionItem)
+                        .where(AcquisitionItem.acq_run_id == acq_run.id)
+                        .where(AcquisitionItem.source_id == source_ids[0])
+                    ).first()
+                    verify_run = verify_db.get(AcquisitionRun, acq_run.id)
+                    assert first_item is not None
+                    assert verify_run is not None
+                    observed["first_item_committed"] = first_item.status == "downloaded"
+                    observed["run_totals_committed"] = verify_run.downloaded_total == 1
+            return acquisition.AcquisitionOutcome(
+                kind="pdf",
+                mime_type="application/pdf",
+                content=b"%PDF-1.4 progress",
+                url=source.url,
+                selected_url_source="publisher",
+                resolution_attempts=[],
+                attempts=1,
+                error=None,
+                reason_code=None,
+            )
+
+        monkeypatch.setattr(acquisition, "_acquire_source_content", fake_acquire)
+        with SessionLocal() as db:
+            run = db.get(AcquisitionRun, acq_run.id)
+            assert run is not None
+            acquisition.execute_acquisition_run(db, run)
+
+        assert observed["first_item_committed"] is True
+        assert observed["run_totals_committed"] is True
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
 def test_reason_code_mapping_for_http_errors():
     assert acquisition._reason_code_from_error("http_403") == "paywalled"  # noqa: SLF001
     assert acquisition._reason_code_from_error("http_429") == "rate_limited"  # noqa: SLF001

@@ -1,5 +1,7 @@
 # UPW Knowledge Miner
 
+Release status: `0.11 beta`
+
 Knowledge Miner is an end-to-end literature workflow for Ultrapure Water (UPW) in semiconductor manufacturing.
 
 Current product includes:
@@ -14,6 +16,7 @@ Current product includes:
 9. Direct Review -> Documents transition (no manual "send to documents" step).
 10. Run-context controls are kept in Advanced; task pages run on active session context.
 11. UI design authority now follows GUI Design Specification v1.1 through the in-repo `UI_SPEC.md`.
+12. Discover requires per-session research context; AI ranking uses this context and stores snapshots per run/query.
 
 ## Quick Start
 
@@ -27,10 +30,11 @@ uvicorn knowledge_miner.main:app --reload
 
 Open:
 1. API docs: `http://127.0.0.1:8000/docs`
-2. HMI: `http://127.0.0.1:8000/hmi`
+2. HMI2: `http://127.0.0.1:8000/hmi2`
+3. Legacy `/hmi` route redirects to `/hmi2`
 
 Static asset cache strategy:
-1. `/hmi` injects a version query param (`?v=<build stamp>`) for `hmi.js` and `hmi.css`.
+1. `/hmi2` injects a version query param (`?v=<build stamp>`) for `gui.js` and `gui.css`.
 2. After restart/deploy, browsers fetch the updated frontend bundle automatically.
 
 ## LAN Access (Another PC on Same Network)
@@ -54,13 +58,13 @@ hostname -I
 From remote browser (replace `192.168.1.50` with host IP):
 1. `http://192.168.1.50:8000/healthz`
 2. `http://192.168.1.50:8000/docs`
-3. `http://192.168.1.50:8000/hmi`
+3. `http://192.168.1.50:8000/hmi2`
 
 Connectivity tests from remote terminal:
 
 ```bash
 curl -i http://192.168.1.50:8000/healthz
-curl -I http://192.168.1.50:8000/hmi
+curl -I http://192.168.1.50:8000/hmi2
 ```
 
 Port conflict fix (`address already in use`):
@@ -68,7 +72,7 @@ Port conflict fix (`address already in use`):
 ```bash
 uvicorn knowledge_miner.main:app --host 0.0.0.0 --port 8010 --reload
 ```
-2. Then open `http://192.168.1.50:8010/hmi`.
+2. Then open `http://192.168.1.50:8010/hmi2`.
 
 Firewall checklist (Linux `ufw`):
 

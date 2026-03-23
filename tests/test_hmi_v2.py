@@ -20,9 +20,13 @@ def test_hmi2_shell_route_and_navigation():
     assert response.status_code == 200
     body = response.text
     assert "Knowledge Miner" in body
+    assert "File" in body
     assert "New Session" in body
     assert 'id="discoverSessionName"' in body
+    assert 'id="fileMenuBtn"' in body
+    assert 'id="fileMenuPanel"' in body
     assert "Stop Running Task" in body
+    assert "Save" in body
     assert "Library Export" in body
     assert "Bookmarks" in body
     assert 'id="reviewHeading"' in body
@@ -54,6 +58,10 @@ def test_hmi2_shell_route_and_navigation():
     assert 'data-review-sort="relevance_score"' in body
     assert "Browse pending, reviewed, and latest auto-decided papers" in body
     assert "No document selected." in body
+    assert 'id="documentsPageState"' in body
+    assert 'id="documentsPrevBtn"' in body
+    assert 'id="documentsNextBtn"' in body
+    assert 'class="scroll-table-wrap documents-table-wrap"' in body
     assert "Internal PDF Repository URL" in body
     assert "Save Repository URL" in body
     assert "<th>DOI</th>" in body
@@ -76,6 +84,9 @@ def test_hmi2_shell_route_and_navigation():
     assert 'id="openBookmarksBtn"' in body
     assert 'id="bookmarksRows"' in body
     assert "Advanced" in body
+    assert "ChatGPT model" in body
+    assert 'id="aiModelSelect"' in body
+    assert "Save AI Settings" in body
     assert "Operational Events" in body
     assert "Autoscroll: On" in body
     assert "<h2>Discover</h2>" not in body

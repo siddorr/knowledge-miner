@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -14,7 +14,7 @@ class Base(DeclarativeBase):
 
 engine = create_engine(settings.database_url, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, class_=Session)
-REQUIRED_TABLES = ("runs", "sources", "acquisition_runs", "parse_runs")
+REQUIRED_TABLES = ("runs", "sources", "acquisition_runs", "parse_runs", "session_profiles")
 
 
 def get_db():
@@ -71,3 +71,26 @@ def database_readiness() -> dict:
         "sqlite_file_inode": file_meta["inode"],
         "sqlite_file_mtime": file_meta["mtime"],
     }
+
+
+def ensure_sqlite_schema_compatibility() -> None:
+    """Apply lightweight additive SQLite migrations for local/dev continuity."""
+    if not settings.database_url.lower().startswith("sqlite:///"):
+        return
+    with engine.begin() as conn:
+        table_names = set(inspect(conn).get_table_names())
+
+        if "runs" in table_names:
+            run_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(runs)").fetchall()}
+            if "session_id" not in run_columns:
+                conn.exec_driver_sql("ALTER TABLE runs ADD COLUMN session_id VARCHAR")
+            if "session_context" not in run_columns:
+                conn.exec_driver_sql("ALTER TABLE runs ADD COLUMN session_context TEXT")
+
+        if "discovery_run_queries" in table_names:
+            query_columns = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(discovery_run_queries)").fetchall()
+            }
+            if "query_metadata" not in query_columns:
+                conn.exec_driver_sql("ALTER TABLE discovery_run_queries ADD COLUMN query_metadata JSON")
+                conn.execute(text("UPDATE discovery_run_queries SET query_metadata = '{}' WHERE query_metadata IS NULL"))

@@ -95,6 +95,7 @@ table {
 
 .controls-row {
   margin-top: 8px;
+  position: relative;
 }
 
 .nav-row {
@@ -131,6 +132,7 @@ table {
 
 .page {
   padding: 0 0 16px;
+  min-height: calc(100vh - 240px);
 }
 
 .card,
@@ -175,6 +177,61 @@ textarea {
   display: grid;
   grid-template-columns: 1.15fr 0.85fr;
   gap: 12px;
+}
+
+.two-pane-fill {
+  align-items: start;
+}
+
+.scroll-pane {
+  min-height: 0;
+  max-height: calc(100vh - 330px);
+  overflow: auto;
+}
+
+.scroll-table-wrap {
+  max-height: calc(100vh - 360px);
+  overflow: auto;
+}
+
+.scroll-table-wrap thead th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+
+.documents-table-wrap {
+  margin-bottom: 12px;
+}
+
+.pager-row {
+  margin-bottom: 12px;
+}
+
+.file-menu-wrap {
+  position: relative;
+}
+
+.file-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 8px 20px rgba(30, 26, 21, 0.12);
+  z-index: 25;
+}
+
+.file-menu-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 table {
@@ -394,5 +451,10 @@ progress {
 
   .discover-top-grid {
     grid-template-columns: 1fr;
+  }
+
+  .scroll-pane,
+  .scroll-table-wrap {
+    max-height: calc(100vh - 280px);
   }
 }

@@ -231,6 +231,39 @@ def test_dedup_merge_preserves_provenance_history():
         assert source.provenance_history[1]["parent_source_id"] == "parent-1"
 
 
+def test_ingest_candidates_nulls_out_of_range_historical_year():
+    with SessionLocal() as db:
+        run = create_run(db, ["upw"], max_iterations=1)
+        candidates = [
+            {
+                "title": "V. On Stokes's current function",
+                "year": 1891,
+                "url": "https://doi.org/10.1098/rspl.1890.0064",
+                "doi": "10.1098/rspl.1890.0064",
+                "abstract": "Historical citation candidate.",
+                "journal": "Proceedings of the Royal Society of London",
+                "authors": ["Ralph Allen Sampson"],
+                "citation_count": 2,
+                "source": "openalex",
+                "source_native_id": "https://openalex.org/W2991042217",
+                "openalex_id": "https://openalex.org/W2991042217",
+                "semantic_scholar_id": None,
+                "patent_office": None,
+                "patent_number": None,
+                "type": "academic",
+                "discovery_method": "backward_citation",
+                "parent_source_id": "doi:10.1063/1.4962304",
+            }
+        ]
+
+        _ingest_candidates(db, run.id, 1, candidates)
+        source = db.scalars(select(Source).where(Source.run_id == run.id)).first()
+
+        assert source is not None
+        assert source.year is None
+        assert source.doi == "10.1098/rspl.1890.0064"
+
+
 def test_ingest_recovers_when_initial_id_check_is_stale(monkeypatch):
     with SessionLocal() as db:
         run_a = create_run(db, ["upw"], max_iterations=1)

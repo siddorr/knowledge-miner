@@ -44,6 +44,7 @@ Knowledge Miner runs as a single Python service with database-backed state, back
 5. Parse runs process artifacts into document/chunk records.
 6. Search queries retrieve scored snippets from parsed corpus.
 7. HMI exposes session-driven task operations for discovery, review, document recovery, and export/search workflows.
+8. Session profile persistence stores AI ranking context; run creation snapshots context into run/query metadata.
 
 ## 3. Pipeline Stages and Ownership
 

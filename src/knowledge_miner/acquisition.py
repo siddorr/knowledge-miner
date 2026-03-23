@@ -175,11 +175,22 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         partial_total = 0
         failed_total = 0
         skipped_total = 0
+
+        def persist_progress() -> None:
+            run.downloaded_total = downloaded_total
+            run.partial_total = partial_total
+            run.failed_total = failed_total
+            run.skipped_total = skipped_total
+            run.updated_at = datetime.now(UTC)
+            db.commit()
+
         for item in items:
             _assert_acquisition_not_stopped(run.id)
             if run.retry_failed_only and item.status in {"downloaded", "partial", "skipped"}:
                 skipped_total += 1
                 observability.inc("skipped")
+                item.updated_at = datetime.now(UTC)
+                persist_progress()
                 continue
 
             source = db.get(Source, item.source_id)
@@ -189,6 +200,8 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
                 item.reason_code = "source_error"
                 failed_total += 1
                 observability.inc("failed")
+                item.updated_at = datetime.now(UTC)
+                persist_progress()
                 continue
 
             started = time.perf_counter()
@@ -281,6 +294,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
                     error=outcome.error,
                 )
             item.updated_at = datetime.now(UTC)
+            persist_progress()
 
         run.downloaded_total = downloaded_total
         run.partial_total = partial_total

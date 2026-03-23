@@ -328,6 +328,61 @@ def test_session_sources_accumulate_accepted_results_across_runs():
     assert body["total"] == 2
     ids = {item["id"] for item in body["items"]}
     assert ids == {"src_old_unique", "src_new_unique"}
+    by_id = {item["id"]: item for item in body["items"]}
+    assert by_id["src_old_unique"]["run_number"] == 1
+    assert by_id["src_old_unique"]["run_source_number"] == 1
+    assert by_id["src_new_unique"]["run_number"] == 2
+    assert by_id["src_new_unique"]["run_source_number"] == 1
+
+
+def test_session_sources_support_limit_above_1000():
+    with SessionLocal() as db:
+        run = Run(
+            id="run_large_session",
+            session_id="session_large",
+            status="completed",
+            seed_queries=["large"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1001,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        db.add(run)
+        for index in range(1001):
+            db.add(
+                Source(
+                    id=f"src_large_{index}",
+                    run_id=run.id,
+                    title=f"Accepted large paper {index}",
+                    year=2024,
+                    url=f"https://example.org/large/{index}",
+                    doi=f"10.1000/large{index}",
+                    abstract="large",
+                    type="academic",
+                    source="openalex",
+                    source_native_id=f"large-{index}",
+                    patent_office=None,
+                    patent_number=None,
+                    iteration=1,
+                    discovery_method="seed_search",
+                    relevance_score=float(1001 - index),
+                    accepted=True,
+                    review_status="auto_accept",
+                    provenance_history=[],
+                )
+            )
+        db.commit()
+
+    client = TestClient(app)
+    response = client.get("/v1/sessions/session_large/sources?status=accepted&limit=5000", headers=_auth_headers())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1001
+    assert body["limit"] == 5000
+    assert len(body["items"]) == 1001
 
 
 def test_session_discovery_queries_accumulate_across_runs():

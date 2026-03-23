@@ -131,6 +131,7 @@ Required visible elements:
 3. `Run discovery` action.
 4. Iteration indicator.
 5. One-row summary of discovery state.
+6. Right-side `Session context` panel used by AI ranking.
 
 Discover summary row must stay in one line and include:
 1. `Discovered`
@@ -142,6 +143,8 @@ Discover summary row must stay in one line and include:
 Session rules:
 1. User-facing wording is `Session`, not `Topic`.
 2. Session creation and switching are part of the primary flow.
+3. `Session context` is required before `Run discovery`.
+4. Session context persists per session and reloads on session switch/load.
 
 ## 9. Review Screen
 

@@ -4,8 +4,11 @@ const ACTIVE_SESSION_KEY = "km_hmi2_active_session";
 const INTERNAL_REPO_URL_KEY = "km_hmi2_internal_repo_url";
 const SESSION_CONTEXT_MAX = 4096;
 const DEFAULT_PROVIDER_LIMITS = Object.freeze({ openalex: 25, semantic_scholar: 25, brave: 20 });
+const AI_MODEL_PRESETS = Object.freeze(["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"]);
 const OFFLINE_HEALTH_POLL_MS = 4000;
 const OFFLINE_FAILURE_THRESHOLD = 2;
+const API_FETCH_PAGE_SIZE = 500;
+const DOCUMENTS_PAGE_SIZE = 50;
 const REVIEW_STATUS_TO_API = {
   pending: "needs_review",
   accepted: "accepted",
@@ -23,9 +26,11 @@ const state = {
   activeSessionId: localStorage.getItem(ACTIVE_SESSION_KEY) || "",
   pendingSessionId: "",
   activePage: window.__KM_HMI2_LAUNCH_SECTION__ || "discover",
+  fileMenuOpen: false,
   reviewQueue: "pending",
   reviewSort: { key: "run_number", dir: "desc" },
   documentsSort: { key: "rank", dir: "asc" },
+  documentsPage: 0,
   librarySort: { key: "rank", dir: "asc" },
   latest: { discovery: "", acquisition: "", parse: "" },
   reviewItems: [],
@@ -45,6 +50,7 @@ const state = {
   currentAcquisitionStatus: null,
   liveRefreshTimer: null,
   internalRepositoryBaseUrl: localStorage.getItem(INTERNAL_REPO_URL_KEY) || "",
+  aiSettings: null,
   advancedEventsPaused: false,
   advancedEventsAutoscroll: true,
   advancedEventRows: [],
@@ -104,7 +110,7 @@ async function copyTextToClipboard(text) {
 function readDom() {
   const ids = [
     "activityLine", "activityIndicator", "authStatus", "aiStatus", "dbStatus", "headerProgress", "headerProgressLabel",
-    "newSessionBtn", "saveSessionBtn", "loadSessionBtn", "deleteSessionBtn", "stopRunningBtn", "sessionSelect", "sessionState",
+    "fileMenuBtn", "fileMenuPanel", "newSessionBtn", "saveSessionBtn", "loadSessionBtn", "deleteSessionBtn", "stopRunningBtn", "sessionSelect", "sessionState",
     "discoverSessionName", "discoverQueryInput", "addQueryBtn", "generateQuerySuggestionsBtn", "runDiscoveryBtn", "runNextCitationBtn", "resumeCitationBtn", "discoverIterationLine",
     "discoverQueryList", "discoverSuggestedQueryList", "discoverSuggestionsState", "discoverSelectedCount", "discoverRunQueries", "discoverRunQueriesState", "discoverCitationHint",
     "discoverOpenalexLimitInput", "discoverSemanticScholarLimitInput", "discoverBraveLimitInput", "discoverProviderLimitsState",
@@ -112,14 +118,14 @@ function readDom() {
     "sessionContextInput", "saveSessionContextBtn", "sessionContextCounter", "sessionContextState", "sessionContextUpdated",
     "reviewHeading", "reviewRows", "reviewTitle", "reviewAbstract", "reviewMetadata", "reviewSignals",
     "reviewAcceptBtn", "reviewRejectBtn", "reviewLaterBtn", "reviewBookmarkBtn", "reviewState", "reviewBadge", "reviewQueueHelp", "reviewFilterChips",
-    "documentsDownloaded", "documentsFailed", "documentsManual", "documentsPending", "documentsRows",
+    "documentsDownloaded", "documentsFailed", "documentsManual", "documentsPending", "documentsRows", "documentsPrevBtn", "documentsNextBtn", "documentsPageState",
     "downloadMissingBtn", "retryFailedBtn", "documentsExportCsvBtn", "batchUploadForm", "batchUploadFiles",
     "batchUploadResults", "documentsState", "documentsBadge", "documentsDetailTitle", "documentsDetailSummary",
     "documentsDetailMetadata", "documentsRowActionBtn", "documentsBookmarkBtn", "internalRepoUrlInput", "saveInternalRepoUrlBtn", "internalRepoUrlState",
     "libraryMatches", "libraryHighest", "libraryLowest", "libraryQuery", "libraryExportSize", "libraryRows",
     "libraryTitle", "libraryAbstract", "libraryMetadata", "libraryAddBtn", "libraryRemoveBtn", "libraryBookmarkBtn", "libraryZipBtn",
     "libraryMetadataBtn", "libraryState",
-    "apiKeyInput", "saveApiKeyBtn", "apiKeyState", "latestDiscoveryId", "latestAcquisitionId", "latestParseId",
+    "apiKeyInput", "saveApiKeyBtn", "apiKeyState", "aiModelSelect", "saveAiSettingsBtn", "aiSettingsState", "latestDiscoveryId", "latestAcquisitionId", "latestParseId",
     "openalexLimitInput", "braveCountInput", "braveAllowlistCheckbox", "saveProviderSettingsBtn", "providerSettingsState",
     "globalSearchInput", "globalSearchBtn", "globalSearchResults", "runLookupInput", "runLookupBtn", "runLookupResult",
     "advancedEventsPauseBtn", "advancedEventsAutoscrollBtn", "advancedEventsState", "advancedEventCounters", "advancedEventsLog",
@@ -343,6 +349,12 @@ async function fetchAllPages(fetchPage, pageSize = 1000) {
   return items;
 }
 
+function pagedRows(rows, page, pageSize) {
+  const safePage = Math.max(page, 0);
+  const start = safePage * pageSize;
+  return rows.slice(start, start + pageSize);
+}
+
 function errorDetail(error) {
   if (!(error instanceof Error)) {
     return String(error || "");
@@ -489,6 +501,12 @@ function renderShell() {
     node.hidden = page !== state.activePage;
   });
   els.apiKeyInput.value = state.token;
+  if (els.fileMenuPanel) {
+    els.fileMenuPanel.hidden = !state.fileMenuOpen;
+  }
+  if (els.fileMenuBtn) {
+    els.fileMenuBtn.setAttribute("aria-expanded", state.fileMenuOpen ? "true" : "false");
+  }
   if (els.internalRepoUrlInput) {
     els.internalRepoUrlInput.value = state.internalRepositoryBaseUrl;
   }
@@ -526,6 +544,7 @@ function applyOfflineActionState() {
     "libraryBookmarkBtn",
     "libraryZipBtn",
     "libraryMetadataBtn",
+    "saveAiSettingsBtn",
     "stopRunningBtn",
     "saveProviderSettingsBtn",
     "globalSearchBtn",
@@ -630,6 +649,22 @@ function renderDocumentsSortButtons() {
     const suffix = active ? (state.documentsSort.dir === "asc" ? " ▲" : " ▼") : "";
     button.textContent = `${labels[key] || "Sort"}${suffix}`;
   });
+}
+
+function renderDocumentsPager(totalRows) {
+  if (!els.documentsPageState) {
+    return;
+  }
+  const total = totalRows;
+  const start = total === 0 ? 0 : state.documentsPage * DOCUMENTS_PAGE_SIZE + 1;
+  const end = Math.min((state.documentsPage + 1) * DOCUMENTS_PAGE_SIZE, total);
+  els.documentsPageState.textContent = `${start}-${end} of ${total}`;
+  if (els.documentsPrevBtn) {
+    els.documentsPrevBtn.disabled = state.documentsPage <= 0;
+  }
+  if (els.documentsNextBtn) {
+    els.documentsNextBtn.disabled = end >= total;
+  }
 }
 
 function renderLibrarySortButtons() {
@@ -1287,12 +1322,23 @@ async function loadDiscover(recoverOnNotFound = true) {
   let rejectedResult;
   let queryResult;
   try {
-    [runResult, allResult, pendingResult, rejectedResult, queryResult] = await Promise.all([
+    [runResult, queryResult] = await Promise.all([
       api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}`),
-      api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=all&limit=1000`),
-      api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=needs_review&limit=1000`),
-      api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=rejected&limit=1000`),
       api(`/v1/sessions/${encodeURIComponent(session.id)}/queries`),
+    ]);
+    [allResult, pendingResult, rejectedResult] = await Promise.all([
+      fetchAllPages(async (offset, limit) => {
+        const response = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=all&limit=${limit}&offset=${offset}`);
+        return response.data || {};
+      }, API_FETCH_PAGE_SIZE),
+      fetchAllPages(async (offset, limit) => {
+        const response = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=needs_review&limit=${limit}&offset=${offset}`);
+        return response.data || {};
+      }, API_FETCH_PAGE_SIZE),
+      fetchAllPages(async (offset, limit) => {
+        const response = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=rejected&limit=${limit}&offset=${offset}`);
+        return response.data || {};
+      }, API_FETCH_PAGE_SIZE),
     ]);
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
@@ -1312,9 +1358,9 @@ async function loadDiscover(recoverOnNotFound = true) {
     (item) => item.query === "citation expansion" && item.checkpoint_state === "resumable",
   );
   els.resumeCitationBtn.disabled = !hasResumableCitation;
-  const allItems = allResult.data.items || [];
-  const pendingItems = pendingResult.data.items || [];
-  const rejectedItems = rejectedResult.data.items || [];
+  const allItems = allResult || [];
+  const pendingItems = pendingResult || [];
+  const rejectedItems = rejectedResult || [];
   const approvedCount = allItems.filter((item) => item.accepted).length;
   const reviewedCount = allItems.length - pendingItems.length;
   els.discoverIterationLine.textContent = `Iteration: ${run.current_iteration} / ${run.total}`;
@@ -1551,7 +1597,12 @@ function renderDocumentsDetail() {
 function renderDocuments() {
   renderDocumentsSortButtons();
   els.documentsRows.innerHTML = "";
-  sortedDocumentRows().forEach((row) => {
+  const sortedRows = sortedDocumentRows();
+  const maxPage = Math.max(Math.ceil(sortedRows.length / DOCUMENTS_PAGE_SIZE) - 1, 0);
+  if (state.documentsPage > maxPage) {
+    state.documentsPage = maxPage;
+  }
+  pagedRows(sortedRows, state.documentsPage, DOCUMENTS_PAGE_SIZE).forEach((row) => {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", row.source.id === state.selectedDocumentSourceId);
     const doiCell = row.source.doi_url
@@ -1569,6 +1620,7 @@ function renderDocuments() {
     });
     els.documentsRows.appendChild(tr);
   });
+  renderDocumentsPager(sortedRows.length);
   renderDocumentsDetail();
 }
 
@@ -1592,7 +1644,7 @@ async function loadDocuments(recoverOnNotFound = true) {
     const acceptedItems = await fetchAllPages(async (offset, limit) => {
       const response = await api(sessionSourcesPath(session.id, "accepted", limit, offset));
       return response.data || {};
-    });
+    }, API_FETCH_PAGE_SIZE);
     acceptedResult = { data: { items: acceptedItems } };
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
@@ -1614,7 +1666,7 @@ async function loadDocuments(recoverOnNotFound = true) {
           `/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}/items?limit=${limit}&offset=${offset}`,
         );
         return response.data || {};
-      });
+      }, API_FETCH_PAGE_SIZE);
     } catch {
       session.acquisitionRunId = "";
       persistSessions();
@@ -1623,6 +1675,7 @@ async function loadDocuments(recoverOnNotFound = true) {
   state.currentAcquisitionStatus = statusData;
   const itemMap = new Map(items.map((item) => [item.source_id, item]));
   state.documentRows = normalizeDocumentRows(accepted, itemMap);
+  state.documentsPage = 0;
   if (!state.documentRows.some((row) => row.source.id === state.selectedDocumentSourceId)) {
     state.selectedDocumentSourceId = state.documentRows[0]?.source.id || "";
   }
@@ -1752,7 +1805,7 @@ async function loadLibrary(recoverOnNotFound = true) {
     const acceptedItems = await fetchAllPages(async (offset, limit) => {
       const response = await api(sessionSourcesPath(session.id, "accepted", limit, offset));
       return response.data || {};
-    });
+    }, API_FETCH_PAGE_SIZE);
     result = { data: { items: acceptedItems } };
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
@@ -2052,8 +2105,17 @@ async function exportDocumentsCsv() {
   }
   beginBusy("Preparing export");
   try {
+    const allRows = state.documentRows.length
+      ? state.documentRows
+      : normalizeDocumentRows(
+          await fetchAllPages(async (offset, limit) => {
+            const response = await api(sessionSourcesPath(session.id, "accepted", limit, offset));
+            return response.data || {};
+          }, API_FETCH_PAGE_SIZE),
+          new Map(),
+        );
     const params = new URLSearchParams();
-    for (const id of state.documentRows.map((row) => row.source.id)) {
+    for (const id of allRows.map((row) => row.source.id)) {
       params.append("source_id", id);
     }
     const result = await api(`/v1/library-export/runs/${encodeURIComponent(runId)}/metadata.csv?${params.toString()}`);
@@ -2175,6 +2237,44 @@ async function saveProviderSettings() {
     els.providerSettingsState.textContent = "Provider settings saved.";
   } catch (error) {
     els.providerSettingsState.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    endBusy();
+  }
+}
+
+async function loadAiSettings() {
+  try {
+    const result = await api("/v1/settings/ai-filter");
+    const data = result.data || {};
+    state.aiSettings = data;
+    if (els.aiModelSelect) {
+      const model = AI_MODEL_PRESETS.includes(data.ai_model) ? data.ai_model : AI_MODEL_PRESETS[0];
+      els.aiModelSelect.value = model;
+      if (data.ai_model && !AI_MODEL_PRESETS.includes(data.ai_model)) {
+        els.aiSettingsState.textContent = `Current model '${data.ai_model}' is custom. Choose a supported preset to replace it.`;
+      } else {
+        els.aiSettingsState.textContent = `AI settings loaded. Current model: ${data.ai_model || model}.`;
+      }
+    }
+  } catch {
+    if (els.aiSettingsState) {
+      els.aiSettingsState.textContent = "Unable to load AI settings.";
+    }
+  }
+}
+
+async function saveAiSettings() {
+  const model = els.aiModelSelect?.value || AI_MODEL_PRESETS[0];
+  beginBusy("Saving AI settings");
+  try {
+    const result = await api("/v1/settings/ai-filter", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ai_model: model }),
+    });
+    state.aiSettings = result.data || null;
+    els.aiSettingsState.textContent = `AI model saved: ${result.data?.ai_model || model}.`;
+    await loadSystemStatus();
   } finally {
     endBusy();
   }
@@ -2308,6 +2408,7 @@ async function refreshAll() {
       // Keep refresh best-effort; pane loaders will surface actionable state.
     }
     await loadSystemStatus();
+    await loadAiSettings();
     await loadProviderSettings();
     try {
       await loadDiscover();
@@ -2338,6 +2439,11 @@ async function refreshAll() {
 }
 
 function handleKeyboard(event) {
+  if (state.fileMenuOpen && event.key === "Escape") {
+    state.fileMenuOpen = false;
+    renderShell();
+    return;
+  }
   if (state.activePage !== "review") {
     return;
   }
@@ -2379,6 +2485,10 @@ function wireEvents() {
     });
   });
 
+  els.fileMenuBtn?.addEventListener("click", () => {
+    state.fileMenuOpen = !state.fileMenuOpen;
+    renderShell();
+  });
   els.newSessionBtn.addEventListener("click", () => {
     const session = createBlankSession();
     state.sessions.push(session);
@@ -2391,6 +2501,8 @@ function wireEvents() {
     resetSessionBoundPaneState();
     els.sessionContextState.textContent = "No context saved for this session yet.";
     els.sessionState.textContent = `Created new session: ${session.name}`;
+    state.fileMenuOpen = false;
+    renderShell();
   });
   els.openBookmarksBtn?.addEventListener("click", async () => {
     state.bookmarksOpen = true;
@@ -2421,6 +2533,8 @@ function wireEvents() {
     resetSessionBoundPaneState();
     await refreshAll();
     els.sessionState.textContent = `Loaded session: ${activeSession().name}`;
+    state.fileMenuOpen = false;
+    renderShell();
   });
   els.deleteSessionBtn.addEventListener("click", async () => {
     if (state.sessions.length === 1) {
@@ -2435,6 +2549,8 @@ function wireEvents() {
     resetSessionBoundPaneState();
     await refreshAll();
     els.sessionState.textContent = `Deleted session. Active: ${activeSession().name}`;
+    state.fileMenuOpen = false;
+    renderShell();
   });
   els.stopRunningBtn.addEventListener("click", stopRunningTask);
   els.sessionSelect.addEventListener("change", () => {
@@ -2443,6 +2559,17 @@ function wireEvents() {
     if (pending) {
       els.sessionState.textContent = `Selected session: ${pending.name}. Press Load to open it.`;
     }
+  });
+  els.documentsPrevBtn?.addEventListener("click", () => {
+    if (state.documentsPage <= 0) {
+      return;
+    }
+    state.documentsPage -= 1;
+    renderDocuments();
+  });
+  els.documentsNextBtn?.addEventListener("click", () => {
+    state.documentsPage += 1;
+    renderDocuments();
   });
   els.discoverSessionName.addEventListener("change", () => {
     const session = activeSession();
@@ -2622,6 +2749,7 @@ function wireEvents() {
     connectLiveUpdates();
     refreshAll();
   });
+  els.saveAiSettingsBtn?.addEventListener("click", saveAiSettings);
   els.saveProviderSettingsBtn.addEventListener("click", saveProviderSettings);
   els.advancedEventsPauseBtn.addEventListener("click", async () => {
     state.advancedEventsPaused = !state.advancedEventsPaused;
@@ -2636,6 +2764,17 @@ function wireEvents() {
   });
   els.globalSearchBtn.addEventListener("click", globalSearch);
   els.runLookupBtn.addEventListener("click", lookupRun);
+  document.addEventListener("click", (event) => {
+    if (!state.fileMenuOpen || !els.fileMenuPanel || !els.fileMenuBtn) {
+      return;
+    }
+    const target = event.target;
+    if (target instanceof Node && (els.fileMenuPanel.contains(target) || els.fileMenuBtn.contains(target))) {
+      return;
+    }
+    state.fileMenuOpen = false;
+    renderShell();
+  });
   document.addEventListener("keydown", handleKeyboard);
 }
 

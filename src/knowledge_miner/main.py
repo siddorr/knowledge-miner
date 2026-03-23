@@ -78,7 +78,7 @@ from .schemas import (
     SourcesListResponse,
 )
 
-app = FastAPI(title="UPW Literature Discovery Engine (0.1 Stable)", version="0.1.0")
+app = FastAPI(title="UPW Literature Discovery Engine (0.11 Beta)", version="0.11.0")
 logger = logging.getLogger("knowledge_miner")
 HMI_V2_DIR = Path(__file__).resolve().parent / "hmi_v2"
 HOT_READ_LIMIT_WINDOW_SECONDS = 10.0
@@ -713,7 +713,7 @@ def get_run_status(
 def list_sources(
     run_id: str,
     request: Request,
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=100, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     type: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -779,7 +779,7 @@ def list_sources(
 def list_session_sources(
     session_id: str,
     request: Request,
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=100, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     type: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),

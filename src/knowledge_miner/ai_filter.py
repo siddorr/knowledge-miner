@@ -34,6 +34,13 @@ class AIRelevanceResult:
     reason: str | None = None
 
 
+@dataclass
+class AIDocumentIdentityResult:
+    title: str | None
+    doi: str | None
+    confidence: float
+
+
 def describe_ai_filter_runtime(*, use_ai_filter: bool, api_key: str | None) -> tuple[bool, str | None]:
     if not use_ai_filter:
         return False, "AI filter disabled (USE_AI_FILTER=false); heuristic filtering only."
@@ -69,6 +76,7 @@ class AIRelevanceFilter:
         base_score: float,
         base_decision: str,
         session_queries: list[str] | None = None,
+        session_context: str | None = None,
     ) -> AIRelevanceResult | None:
         self._last_error_category = None
         if self._runtime_disabled_reason is not None:
@@ -82,6 +90,7 @@ class AIRelevanceFilter:
             base_score=base_score,
             base_decision=base_decision,
             session_queries=session_queries or [],
+            session_context=session_context or "",
         )
         try:
             content = self._chat(payload)
@@ -139,6 +148,7 @@ class AIRelevanceFilter:
         base_score: float,
         base_decision: str,
         session_queries: list[str],
+        session_context: str,
     ) -> dict:
         system = (
             "You classify paper relevance for UPW in semiconductor manufacturing. "
@@ -156,6 +166,7 @@ class AIRelevanceFilter:
                 "heuristic_score": base_score,
                 "heuristic_decision": base_decision,
                 "session_queries": session_queries,
+                "session_context": session_context,
             },
             "required_output": {
                 "decision": "auto_accept|needs_review|auto_reject",
@@ -183,3 +194,170 @@ class AIRelevanceFilter:
             raise ValueError("invalid_ai_confidence")
         reason = data.get("reason")
         return AIRelevanceResult(decision=decision, confidence=confidence, reason=reason if isinstance(reason, str) else None)
+
+
+def generate_query_suggestions(
+    *,
+    session_context: str,
+    existing_queries: list[str] | None = None,
+    max_suggestions: int = 8,
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float | None = None,
+) -> list[str]:
+    resolved_api_key = settings.ai_api_key if api_key is None else api_key
+    if not resolved_api_key:
+      raise AIAuthError("ai_query_suggestions_missing_api_key")
+    resolved_model = settings.ai_model if model is None else model
+    resolved_base_url = settings.ai_base_url if base_url is None else base_url
+    resolved_timeout = settings.ai_timeout_seconds if timeout_seconds is None else timeout_seconds
+    url = f"{resolved_base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": resolved_model,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Generate concise academic search queries for literature discovery. "
+                    "Return strict JSON only."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "Generate search queries for the research session.",
+                        "rules": {
+                            "count": max_suggestions,
+                            "avoid_duplicates": True,
+                            "prefer_academic_search_phrasing": True,
+                            "do_not_number_results": True,
+                        },
+                        "input": {
+                            "session_context": session_context,
+                            "existing_queries": existing_queries or [],
+                        },
+                        "required_output": {
+                            "suggestions": ["query 1", "query 2"],
+                        },
+                    }
+                ),
+            },
+        ],
+    }
+    try:
+        with httpx.Client(timeout=resolved_timeout) as client:
+            response = client.post(url, headers=headers, json=payload)
+            if response.status_code in {401, 403}:
+                raise AIAuthError(f"ai_query_suggestions_http_{response.status_code}")
+            if response.status_code == 429:
+                raise AIRateLimitError("ai_query_suggestions_http_429")
+            if response.status_code >= 400:
+                raise AIProviderError(f"ai_query_suggestions_http_{response.status_code}")
+            body = response.json()
+    except httpx.TimeoutException as exc:
+        raise AITimeoutError("ai_query_suggestions_timeout") from exc
+
+    content = body["choices"][0]["message"]["content"]
+    parsed = json.loads(content)
+    raw = parsed.get("suggestions", [])
+    if not isinstance(raw, list):
+        raise ValueError("invalid_query_suggestions_payload")
+    suggestions: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = str(item or "").strip()
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        suggestions.append(text)
+        if len(suggestions) >= max_suggestions:
+            break
+    return suggestions
+
+
+def extract_document_identity(
+    *,
+    filename: str,
+    first_page_text: str,
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float | None = None,
+) -> AIDocumentIdentityResult | None:
+    resolved_api_key = settings.ai_api_key if api_key is None else api_key
+    if not resolved_api_key:
+        return None
+    resolved_model = settings.ai_model if model is None else model
+    resolved_base_url = settings.ai_base_url if base_url is None else base_url
+    resolved_timeout = settings.ai_timeout_seconds if timeout_seconds is None else timeout_seconds
+    url = f"{resolved_base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": resolved_model,
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Extract academic paper identity from first-page PDF text. "
+                    "Return strict JSON only."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "Extract the most likely academic paper title and DOI from first-page PDF text.",
+                        "rules": {
+                            "do_not_invent": True,
+                            "prefer_verbatim_title": True,
+                            "doi_format": "10.xxxx/.... or null",
+                        },
+                        "input": {
+                            "filename": filename,
+                            "first_page_text": first_page_text[:4000],
+                        },
+                        "required_output": {
+                            "title": "string or null",
+                            "doi": "string or null",
+                            "confidence": "0.0-1.0",
+                        },
+                    }
+                ),
+            },
+        ],
+    }
+    try:
+        with httpx.Client(timeout=resolved_timeout) as client:
+            response = client.post(url, headers=headers, json=payload)
+            if response.status_code in {401, 403}:
+                raise AIAuthError(f"ai_document_identity_http_{response.status_code}")
+            if response.status_code == 429:
+                raise AIRateLimitError("ai_document_identity_http_429")
+            if response.status_code >= 400:
+                raise AIProviderError(f"ai_document_identity_http_{response.status_code}")
+            body = response.json()
+    except httpx.TimeoutException as exc:
+        raise AITimeoutError("ai_document_identity_timeout") from exc
+    content = body["choices"][0]["message"]["content"]
+    parsed = json.loads(content)
+    title = parsed.get("title")
+    doi = parsed.get("doi")
+    try:
+        confidence = float(parsed.get("confidence", 0.0))
+    except Exception as exc:
+        raise ValueError("invalid_ai_document_identity_confidence") from exc
+    if confidence < 0.0 or confidence > 1.0:
+        raise ValueError("invalid_ai_document_identity_confidence")
+    return AIDocumentIdentityResult(
+        title=title.strip() if isinstance(title, str) and title.strip() else None,
+        doi=doi.strip().lower() if isinstance(doi, str) and doi.strip() else None,
+        confidence=confidence,
+    )

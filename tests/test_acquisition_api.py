@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+import sys
+import types
 
 from fastapi.testclient import TestClient
 
@@ -188,6 +190,30 @@ def test_create_acquisition_run_happy_path(monkeypatch):
     assert body["status"] in {"queued", "running", "completed"}
 
 
+def test_create_manual_upload_context_does_not_enqueue(monkeypatch):
+    called = {"n": 0}
+
+    def fake_enqueue(_acq_run_id: str):
+        called["n"] += 1
+
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", fake_enqueue)
+    run_id, source_id = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/acquisition/runs/manual-context",
+        json={"run_id": run_id, "selected_source_ids": [source_id]},
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["acq_run_id"].startswith("acq_")
+    assert called["n"] == 0
+    items = client.get(f"/v1/acquisition/runs/{body['acq_run_id']}/items", headers=_auth_headers())
+    assert items.status_code == 200
+    assert len(items.json()["items"]) == 1
+    assert items.json()["items"][0]["source_id"] == source_id
+
+
 def test_create_acquisition_run_supports_selected_source_ids(monkeypatch):
     monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
     run_id, source_a, source_b = _seed_discovery_run_with_two_sources()
@@ -222,6 +248,44 @@ def test_create_acquisition_run_supports_selected_source_ids_across_session_runs
     ids = [row["source_id"] for row in items.json()["items"]]
     assert source_cross in ids
     assert source_a not in ids
+
+
+def test_acquisition_items_support_limit_above_1000():
+    run_id, source_id = _seed_discovery_run(completed=True)
+    with SessionLocal() as db:
+        acq_run = AcquisitionRun(
+            id="acq_large_limit",
+            discovery_run_id=run_id,
+            retry_failed_only=False,
+            status="completed",
+            total_sources=1001,
+            downloaded_total=1001,
+            partial_total=0,
+            failed_total=0,
+            skipped_total=0,
+        )
+        db.add(acq_run)
+        for index in range(1001):
+            db.add(
+                AcquisitionItem(
+                    id=f"acq_item_large_{index}",
+                    acq_run_id=acq_run.id,
+                    source_id=source_id if index == 0 else f"src_large_acq_{index}",
+                    status="downloaded",
+                    attempt_count=1,
+                    selected_url=f"https://example.org/file/{index}.pdf",
+                    last_error=None,
+                )
+            )
+        db.commit()
+
+    client = TestClient(app)
+    response = client.get("/v1/acquisition/runs/acq_large_limit/items?limit=5000", headers=_auth_headers())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1001
+    assert body["limit"] == 5000
+    assert len(body["items"]) == 1001
 
 
 def test_create_acquisition_run_persists_internal_repository_url(monkeypatch):
@@ -531,5 +595,78 @@ def test_manual_upload_batch_auto_matches_by_doi(tmp_path: Path):
         assert body["unmatched"] == 1
         assert body["ambiguous"] == 0
         assert any(row["source_id"] == source_id and row["status"] == "matched" for row in body["items"])
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
+def test_manual_upload_batch_auto_matches_by_pdf_text_title(monkeypatch, tmp_path: Path):
+    acq_run_id, source_id = _seed_manual_recovery_case()
+    original_artifacts_dir = settings.artifacts_dir
+    object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+    try:
+        class _FakePage:
+            def extract_text(self):
+                return "UPW control in semiconductor lines"
+
+        class _FakeReader:
+            def __init__(self, _stream):
+                self.pages = [_FakePage()]
+
+        monkeypatch.setitem(sys.modules, "pypdf", types.SimpleNamespace(PdfReader=_FakeReader))
+
+        client = TestClient(app)
+        files = [
+            ("files", ("scan_001.pdf", b"%PDF-1.4 not-using-filename", "application/pdf")),
+        ]
+        resp = client.post(
+            f"/v1/acquisition/runs/{acq_run_id}/manual-upload-batch",
+            files=files,
+            headers=_auth_headers(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["matched"] == 1
+        assert body["unmatched"] == 0
+        assert body["ambiguous"] == 0
+        assert body["items"][0]["source_id"] == source_id
+        assert body["items"][0]["reason"] == "pdf_title_similarity"
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
+def test_manual_upload_batch_auto_matches_by_ai_extracted_title(monkeypatch, tmp_path: Path):
+    acq_run_id, source_id = _seed_manual_recovery_case()
+    original_artifacts_dir = settings.artifacts_dir
+    object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+    try:
+        import knowledge_miner.routes.acquisition as acquisition_route
+        from knowledge_miner.ai_filter import AIDocumentIdentityResult
+
+        monkeypatch.setattr(acquisition_route, "_extract_upload_text", lambda *_args, **_kwargs: "scanned paper")
+        monkeypatch.setattr(acquisition_route, "_extract_probable_pdf_title", lambda _text: None)
+        monkeypatch.setattr(
+            acquisition_route,
+            "extract_document_identity",
+            lambda **_kwargs: AIDocumentIdentityResult(
+                title="UPW control in semiconductor lines",
+                doi=None,
+                confidence=0.93,
+            ),
+        )
+
+        client = TestClient(app)
+        files = [
+            ("files", ("scan_002.pdf", b"%PDF-1.4 image-like", "application/pdf")),
+        ]
+        resp = client.post(
+            f"/v1/acquisition/runs/{acq_run_id}/manual-upload-batch",
+            files=files,
+            headers=_auth_headers(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["matched"] == 1
+        assert body["items"][0]["source_id"] == source_id
+        assert body["items"][0]["reason"] == "ai_title_similarity"
     finally:
         object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)

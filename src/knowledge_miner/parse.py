@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import hashlib
 import html
 import json
+import logging
 from pathlib import Path
 import re
 import threading
@@ -20,6 +21,9 @@ from .models import AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDoc
 from .observability import ParseObservability
 from .runtime_state import acquire_run_lock, is_primary_instance, release_run_lock
 from .scoring import decision_from_score, score_text
+
+logger = logging.getLogger("knowledge_miner")
+_PYPDF_MISSING_LOGGED = False
 
 
 def create_parse_run(db: Session, acq_run_id: str, *, retry_failed_only: bool) -> ParseRun:
@@ -285,9 +289,13 @@ def _extract_pdf_text(path: Path) -> tuple[str, str]:
 
 
 def _extract_pdf_text_pypdf(path: Path) -> str | None:
+    global _PYPDF_MISSING_LOGGED
     try:
         from pypdf import PdfReader  # type: ignore
     except Exception:
+        if not _PYPDF_MISSING_LOGGED:
+            logger.warning("pdf_text_extraction_unavailable parser=pypdf reason=module_not_installed")
+            _PYPDF_MISSING_LOGGED = True
         return None
     try:
         reader = PdfReader(str(path))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,14 +22,36 @@ def _optional_env(name: str) -> str | None:
 
 def _default_database_url() -> str:
     # Keep local development friction low while aligning production default with spec.
+    project_root = Path(__file__).resolve().parents[2]
+    default_sqlite_url = f"sqlite:///{(project_root / 'knowledge_miner.db').resolve()}"
+
+    def _pytest_runtime() -> bool:
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return True
+        argv = " ".join(sys.argv).lower()
+        return "pytest" in argv
+
+    def _sqlite_path_from_url(url: str) -> Path | None:
+        raw = url.strip()
+        if not raw.lower().startswith("sqlite:///") or raw.startswith("sqlite:///:memory:"):
+            return None
+        return Path(raw[len("sqlite:///") :]).resolve()
+
     explicit = os.getenv("DATABASE_URL")
     if explicit:
-        return _normalize_database_url(explicit)
+        normalized = _normalize_database_url(explicit)
+        # Safety rail: never let pytest operate on the main local app database.
+        if _pytest_runtime():
+            sqlite_path = _sqlite_path_from_url(normalized)
+            if sqlite_path is not None and sqlite_path.name == "knowledge_miner.db":
+                return f"sqlite:///{(project_root / 'test_knowledge_miner.db').resolve()}"
+        return normalized
     app_env = os.getenv("APP_ENV", "development").lower()
     if app_env in {"production", "prod"}:
         return "postgresql+psycopg://knowledge_miner:knowledge_miner@localhost:5432/knowledge_miner"
-    project_root = Path(__file__).resolve().parents[2]
-    return f"sqlite:///{(project_root / 'knowledge_miner.db').resolve()}"
+    if _pytest_runtime():
+        return f"sqlite:///{(project_root / 'test_knowledge_miner.db').resolve()}"
+    return default_sqlite_url
 
 
 def _normalize_database_url(database_url: str) -> str:
