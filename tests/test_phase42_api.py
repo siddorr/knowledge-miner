@@ -155,6 +155,8 @@ def test_system_status_endpoint_returns_operator_summary():
     assert "auth_enabled" in body
     assert "auth_mode" in body
     assert "ai_filter_active" in body
+    assert "query_suggestions_available" in body
+    assert "query_suggestions_reason" in body
     assert "provider_readiness" in body
     assert "db_ready" in body
     assert "db_missing_tables" in body

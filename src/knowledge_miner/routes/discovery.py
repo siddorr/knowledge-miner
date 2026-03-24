@@ -144,9 +144,12 @@ def suggest_discovery_queries(
     except AIAuthError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except AIRateLimitError as exc:
+        logger.warning("query_suggestions_failed reason=%s", str(exc))
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
     except (AITimeoutError, AIProviderError, ValueError) as exc:
+        logger.warning("query_suggestions_failed reason=%s", str(exc))
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    logger.info("query_suggestions_completed count=%s", len(suggestions))
     if not suggestions:
         return QuerySuggestionsResponse(suggestions=[], source="ai", warning="No suggestions returned.")
     return QuerySuggestionsResponse(suggestions=suggestions, source="ai", warning=None)

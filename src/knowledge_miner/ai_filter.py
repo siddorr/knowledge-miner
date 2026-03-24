@@ -54,6 +54,14 @@ def describe_ai_filter_runtime(*, use_ai_filter: bool, api_key: str | None) -> t
     return True, None
 
 
+def describe_query_suggestions_runtime(*, api_key: str | None, base_url: str | None) -> tuple[bool, str | None]:
+    if not api_key:
+        return False, "ai_api_key_missing"
+    if not str(base_url or "").strip():
+        return False, "ai_base_url_missing"
+    return True, None
+
+
 class AIRelevanceFilter:
     def __init__(
         self,
@@ -205,7 +213,7 @@ def generate_query_suggestions(
     *,
     session_context: str,
     existing_queries: list[str] | None = None,
-    max_suggestions: int = 8,
+    max_suggestions: int = 10,
     api_key: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
@@ -213,9 +221,11 @@ def generate_query_suggestions(
 ) -> list[str]:
     resolved_api_key = settings.ai_api_key if api_key is None else api_key
     if not resolved_api_key:
-      raise AIAuthError("ai_query_suggestions_missing_api_key")
+        raise AIAuthError("ai_query_suggestions_missing_api_key")
     resolved_model = settings.ai_model if model is None else model
     resolved_base_url = settings.ai_base_url if base_url is None else base_url
+    if not str(resolved_base_url or "").strip():
+        raise AIProviderError("ai_query_suggestions_base_url_missing")
     resolved_timeout = settings.ai_timeout_seconds if timeout_seconds is None else timeout_seconds
     url = f"{resolved_base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
@@ -227,7 +237,7 @@ def generate_query_suggestions(
             {
                 "role": "system",
                 "content": (
-                    "Generate concise academic search queries for literature discovery. "
+                    "Generate concise Google Scholar style academic search queries for literature discovery. "
                     "Return strict JSON only."
                 ),
             },
@@ -235,12 +245,18 @@ def generate_query_suggestions(
                 "role": "user",
                 "content": json.dumps(
                     {
-                        "task": "Generate search queries for the research session.",
+                        "task": "Generate Google Scholar style search queries for the research session.",
                         "rules": {
                             "count": max_suggestions,
                             "avoid_duplicates": True,
                             "prefer_academic_search_phrasing": True,
+                            "target_engine": "Google Scholar",
+                            "mix_broad_and_narrow": True,
+                            "include_synonym_or_process_variants": True,
                             "do_not_number_results": True,
+                            "avoid_trivial_rephrasings_of_existing_queries": True,
+                            "avoid_explanations": True,
+                            "avoid_quotes_unless_essential": True,
                         },
                         "input": {
                             "session_context": session_context,

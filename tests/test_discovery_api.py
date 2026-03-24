@@ -505,6 +505,60 @@ def test_query_suggestions_endpoint_returns_ai_suggestions(monkeypatch):
     ]
 
 
+def test_query_suggestions_generation_uses_scholar_style_prompt(monkeypatch):
+    captured: dict = {}
+
+    class DummyResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "{\"suggestions\": [\"query a\", \"query b\"]}",
+                        }
+                    }
+                ]
+            }
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["payload"] = json
+            return DummyResponse()
+
+    monkeypatch.setattr("knowledge_miner.ai_filter.httpx.Client", DummyClient)
+    monkeypatch.setattr("knowledge_miner.ai_filter.settings.ai_api_key", "test-key")
+    monkeypatch.setattr("knowledge_miner.ai_filter.settings.ai_base_url", "https://api.example.test/v1")
+    monkeypatch.setattr("knowledge_miner.ai_filter.settings.ai_model", "gpt-test")
+
+    from knowledge_miner.ai_filter import generate_query_suggestions
+
+    suggestions = generate_query_suggestions(
+        session_context="Semiconductor wastewater treatment and UPW recycling context.",
+        existing_queries=["upw plant design"],
+        max_suggestions=10,
+    )
+
+    assert suggestions == ["query a", "query b"]
+    payload = captured["payload"]
+    assert payload["model"] == "gpt-test"
+    user_content = payload["messages"][1]["content"]
+    assert "Google Scholar style" in user_content
+    assert "\"count\": 10" in user_content
+    assert "\"target_engine\": \"Google Scholar\"" in user_content
+
+
 def test_citation_iteration_runs_only_when_explicitly_requested(monkeypatch):
     monkeypatch.setattr(main_module, "enqueue_run", lambda run_id: None)
     monkeypatch.setattr(main_module, "enqueue_citation_iteration_run", lambda run_id, source_run_id: None)

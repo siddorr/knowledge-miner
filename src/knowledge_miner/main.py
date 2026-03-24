@@ -30,7 +30,7 @@ from .acquisition import (
     mark_manual_complete,
     register_manual_upload,
 )
-from .ai_filter import describe_ai_filter_runtime
+from .ai_filter import describe_ai_filter_runtime, describe_query_suggestions_runtime
 from .auth import require_api_key
 from .config import is_sqlite_url, settings
 from .db import Base, SessionLocal, database_readiness, engine, ensure_sqlite_schema_compatibility, get_db
@@ -564,6 +564,10 @@ def get_system_status(
         use_ai_filter=settings.use_ai_filter,
         api_key=settings.ai_api_key,
     )
+    query_suggestions_available, query_suggestions_reason = describe_query_suggestions_runtime(
+        api_key=settings.ai_api_key,
+        base_url=settings.ai_base_url,
+    )
     provider_readiness = {
         "openalex": {"configured": bool(settings.openalex_base_url)},
         "semantic_scholar": {
@@ -586,6 +590,8 @@ def get_system_status(
         auth_mode="enabled" if settings.auth_enabled else "disabled",
         ai_filter_active=ai_filter_active,
         ai_filter_warning=ai_filter_warning,
+        query_suggestions_available=query_suggestions_available,
+        query_suggestions_reason=query_suggestions_reason,
         provider_readiness=provider_readiness,
         db_ready=bool(db_meta["ready"]),
         db_missing_tables=list(db_meta["missing_tables"]),

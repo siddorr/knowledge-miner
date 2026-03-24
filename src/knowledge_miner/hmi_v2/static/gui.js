@@ -62,6 +62,7 @@ const state = {
   healthFailureCount: 0,
   serverOffline: false,
   offlineMessage: "",
+  systemStatus: null,
   bookmarks: [],
   selectedBookmarkId: "",
   paperAnnotations: {},
@@ -70,6 +71,7 @@ const state = {
   summaryPollTimer: null,
   newSessionDraftName: "",
   newSessionDraftContext: "",
+  suggestionStateSticky: false,
 };
 
 const els = {};
@@ -305,6 +307,61 @@ function defaultSessionContextState(session = activeSession()) {
     return "Context has unsaved local changes. Press Save Context to persist it.";
   }
   return "Session context saved.";
+}
+
+function querySuggestionsUnavailableText(reason) {
+  if (reason === "ai_api_key_missing") {
+    return "AI query suggestions are unavailable: AI API key is not configured.";
+  }
+  if (reason === "ai_base_url_missing") {
+    return "AI query suggestions are unavailable: AI base URL is not configured.";
+  }
+  return "AI query suggestions are unavailable in current settings.";
+}
+
+function querySuggestionErrorText(error) {
+  const detail = errorDetail(error);
+  if (detail.includes("ai_query_suggestions_missing_api_key")) {
+    return "AI query suggestions are unavailable: AI API key is not configured.";
+  }
+  if (detail.includes("ai_query_suggestions_http_429")) {
+    return "AI query suggestions are temporarily rate limited. Retry shortly.";
+  }
+  if (detail.includes("ai_query_suggestions_timeout")) {
+    return "AI query suggestion request timed out. Retry.";
+  }
+  if (detail.includes("invalid_query_suggestions_payload")) {
+    return "AI query suggestion response was invalid. Retry.";
+  }
+  if (detail.includes("ai_query_suggestions_http_") || detail.includes("ai_query_suggestions_base_url_missing")) {
+    return "AI query suggestion provider returned an error.";
+  }
+  return `Unable to generate suggestions: ${detail}`;
+}
+
+function updateSuggestionAvailability() {
+  if (!els.generateQuerySuggestionsBtn || !els.discoverSuggestionsState) {
+    return;
+  }
+  const context = normalizeSessionContext(activeSession()?.sessionContext || els.sessionContextInput?.value || "");
+  const systemStatus = state.systemStatus || {};
+  const available = Boolean(systemStatus.query_suggestions_available);
+  let disabled = false;
+  let message = "";
+  if (!context) {
+    disabled = true;
+    message = "Session context is required before generating suggestions.";
+  } else if (!available) {
+    disabled = true;
+    message = querySuggestionsUnavailableText(systemStatus.query_suggestions_reason);
+  }
+  if (state.serverOffline) {
+    disabled = true;
+  }
+  els.generateQuerySuggestionsBtn.disabled = disabled;
+  if (!state.suggestionStateSticky) {
+    els.discoverSuggestionsState.textContent = message || (state.suggestedQueries.length ? "" : "No suggestions generated yet.");
+  }
 }
 
 function activeSession() {
@@ -682,6 +739,7 @@ function renderShell() {
   renderReviewSortButtons();
   renderStopButton();
   applyOfflineActionState();
+  updateSuggestionAvailability();
   renderAdvancedOperationalEvents();
   renderActivity();
 }
@@ -1042,8 +1100,10 @@ function renderSuggestedQueries() {
         session.queries.push({ id: `query_${Math.random().toString(36).slice(2, 10)}`, text, selected: true });
         persistSessions();
         renderSessions();
+        state.suggestionStateSticky = true;
         els.discoverSuggestionsState.textContent = `Added suggested query: ${text}`;
       } else {
+        state.suggestionStateSticky = true;
         els.discoverSuggestionsState.textContent = `Query already selected: ${text}`;
       }
     });
@@ -1051,7 +1111,9 @@ function renderSuggestedQueries() {
     els.discoverSuggestedQueryList.appendChild(li);
   });
   if (!state.suggestedQueries.length) {
-    els.discoverSuggestionsState.textContent = "No suggestions generated yet.";
+    if (!state.suggestionStateSticky) {
+      els.discoverSuggestionsState.textContent = "No suggestions generated yet.";
+    }
   }
 }
 
@@ -1406,7 +1468,9 @@ async function generateQuerySuggestions() {
   const session = activeSession();
   const context = normalizeSessionContext(session.sessionContext || els.sessionContextInput.value);
   if (!context) {
-    els.discoverSuggestionsState.textContent = "Save session context before generating suggestions.";
+    state.suggestionStateSticky = false;
+    els.discoverSuggestionsState.textContent = "Session context is required before generating suggestions.";
+    updateSuggestionAvailability();
     return;
   }
   beginBusy("Generating query suggestions");
@@ -1417,16 +1481,18 @@ async function generateQuerySuggestions() {
       body: JSON.stringify({
         session_context: context,
         existing_queries: session.queries.map((query) => query.text),
-        max_suggestions: 8,
+        max_suggestions: 10,
       }),
     });
     state.suggestedQueries = Array.isArray(result.data?.suggestions) ? result.data.suggestions : [];
+    state.suggestionStateSticky = true;
     renderSuggestedQueries();
     els.discoverSuggestionsState.textContent = state.suggestedQueries.length
       ? `Generated ${state.suggestedQueries.length} suggestion(s). Click one to add it to the selected query list.`
-      : (result.data?.warning || "No suggestions returned.");
+      : "No new suggestions returned for this context.";
   } catch (error) {
-    els.discoverSuggestionsState.textContent = `Unable to generate suggestions: ${errorDetail(error)}`;
+    state.suggestionStateSticky = true;
+    els.discoverSuggestionsState.textContent = querySuggestionErrorText(error);
   } finally {
     endBusy();
   }
@@ -1457,6 +1523,7 @@ async function loadSystemStatus() {
   try {
     const result = await api("/v1/system/status");
     const data = result.data;
+    state.systemStatus = data;
     els.authStatus.textContent = `Auth: ${data.auth_mode}`;
     els.aiStatus.textContent = `AI: ${data.ai_filter_active ? "ready" : "inactive"}`;
     els.dbStatus.textContent = `DB: ${data.db_ready ? "ready" : "not ready"}`;
@@ -1464,9 +1531,12 @@ async function loadSystemStatus() {
     els.footerAi.textContent = `AI: ${data.ai_filter_active ? "ready" : "inactive"}`;
     els.footerDb.textContent = `DB: ${data.db_ready ? "ready" : "not ready"}`;
     els.footerUpdated.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+    updateSuggestionAvailability();
   } catch {
+    state.systemStatus = null;
     els.footerSystem.textContent = "System: error";
     els.footerUpdated.textContent = "Last update: error";
+    updateSuggestionAvailability();
   }
 }
 
@@ -2284,6 +2354,7 @@ function resetSessionBoundPaneState() {
   state.currentAcquisitionStatus = null;
   state.discoverRunQueries = [];
   state.suggestedQueries = [];
+  state.suggestionStateSticky = false;
   state.reviewItems = [];
   state.reviewIndex = -1;
   state.documentRows = [];
@@ -3160,10 +3231,12 @@ function wireEvents() {
   els.sessionContextInput.addEventListener("input", () => {
     const session = activeSession();
     session.sessionContext = els.sessionContextInput.value;
+    state.suggestionStateSticky = false;
     els.sessionContextCounter.textContent = `${normalizeSessionContext(session.sessionContext).length} / ${SESSION_CONTEXT_MAX}`;
     persistSessions();
     updateQuerySelectionState();
     els.sessionContextState.textContent = defaultSessionContextState(session);
+    updateSuggestionAvailability();
   });
   els.newSessionNameInput?.addEventListener("input", () => {
     state.newSessionDraftName = els.newSessionNameInput.value;

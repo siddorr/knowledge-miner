@@ -425,6 +425,8 @@ class SystemStatusResponse(BaseModel):
     auth_mode: str
     ai_filter_active: bool
     ai_filter_warning: str | None
+    query_suggestions_available: bool
+    query_suggestions_reason: str | None
     provider_readiness: dict
     db_ready: bool
     db_missing_tables: list[str]
