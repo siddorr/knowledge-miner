@@ -35,7 +35,7 @@ from .auth import require_api_key
 from .config import is_sqlite_url, settings
 from .db import Base, SessionLocal, database_readiness, engine, ensure_sqlite_schema_compatibility, get_db
 from .discovery import enqueue_bookmark_seed_run, enqueue_citation_iteration_run, enqueue_run  # compatibility export for tests/patching
-from .models import AcquisitionItem, AcquisitionRun, Artifact, DiscoveryRunQuery, DocumentChunk, ParseRun, ParsedDocument, Run, Source
+from .models import AcquisitionItem, AcquisitionRun, Artifact, CitationExpansionParent, DiscoveryRunQuery, DocumentChunk, ParseRun, ParsedDocument, Run, Source
 from .parse import create_parse_run, enqueue_parse_run
 from .rate_limit import require_rate_limit
 from .logging_setup import configure_logging
@@ -672,6 +672,17 @@ def get_run_status(
     pending_review = db.scalar(
         select(func.count()).select_from(Source).where(Source.run_id == run_id, Source.review_status == "needs_review")
     ) or 0
+    citation_unexpanded_parent_count = db.scalar(
+        select(func.count())
+        .select_from(Source)
+        .where(
+            Source.run_id == run_id,
+            Source.accepted.is_(True),
+            ~Source.id.in_(
+                select(CitationExpansionParent.parent_source_id).where(CitationExpansionParent.run_id == run_id)
+            ),
+        )
+    ) or 0
     query_rows = db.scalars(
         select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run_id).order_by(DiscoveryRunQuery.position.asc())
     ).all()
@@ -704,6 +715,8 @@ def get_run_status(
         seed_queries=run.seed_queries,
         current_iteration=run.current_iteration,
         accepted_total=run.accepted_total,
+        citation_unexpanded_parent_count=int(citation_unexpanded_parent_count),
+        citation_expansion_available=bool(citation_unexpanded_parent_count > 0),
         expanded_candidates_total=run.expanded_candidates_total,
         citation_edges_total=run.citation_edges_total,
         ai_filter_active=run.ai_filter_active,

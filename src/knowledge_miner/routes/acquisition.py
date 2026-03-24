@@ -27,7 +27,7 @@ from ..acquisition import (
 from ..ai_filter import extract_document_identity
 from ..auth import require_api_key
 from ..db import get_db
-from ..models import AcquisitionItem, AcquisitionRun, Artifact, Source
+from ..models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
 from ..rate_limit import require_rate_limit
 from ..runtime_state import request_run_stop
 from ..schemas import (
@@ -401,6 +401,54 @@ def list_acq_items(
             for i in page
         ],
         total=len(rows),
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/v1/sessions/{session_id}/acquisition-items/latest", response_model=AcquisitionItemsListResponse)
+def list_session_latest_acq_items(
+    session_id: str,
+    request: Request,
+    limit: int = Query(default=5000, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> AcquisitionItemsListResponse:
+    _guard_hot_read(request, "session_acquisition_items_latest")
+    rows = db.execute(
+        select(AcquisitionItem, AcquisitionRun, Source, Run)
+        .join(Source, Source.id == AcquisitionItem.source_id)
+        .join(Run, Run.id == Source.run_id)
+        .join(AcquisitionRun, AcquisitionRun.id == AcquisitionItem.acq_run_id)
+        .where(Run.session_id == session_id)
+        .order_by(
+            AcquisitionItem.source_id.asc(),
+            AcquisitionItem.updated_at.desc(),
+            AcquisitionItem.id.desc(),
+            AcquisitionRun.created_at.desc(),
+            AcquisitionRun.id.desc(),
+        )
+    ).all()
+    latest_by_source: dict[str, AcquisitionItem] = {}
+    for item, _acq_run, _source, _run in rows:
+        latest_by_source.setdefault(item.source_id, item)
+    items = list(latest_by_source.values())
+    page = items[offset : offset + limit]
+    return AcquisitionItemsListResponse(
+        items=[
+            AcquisitionItemOut(
+                item_id=item.id,
+                source_id=item.source_id,
+                status=item.status,
+                attempt_count=item.attempt_count,
+                selected_url=item.selected_url,
+                last_error=item.last_error,
+            )
+            for item in page
+        ],
+        total=len(items),
         limit=limit,
         offset=offset,
     )

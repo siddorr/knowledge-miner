@@ -59,6 +59,24 @@ def create_acquisition_run(
             )
             .order_by(Source.id.asc())
         ).all()
+    latest_status_by_source: dict[str, str] = {}
+    if selected_sources:
+        latest_items = db.execute(
+            select(AcquisitionItem, AcquisitionRun)
+            .join(AcquisitionRun, AcquisitionRun.id == AcquisitionItem.acq_run_id)
+            .where(AcquisitionItem.source_id.in_([source.id for source in selected_sources]))
+            .order_by(
+                AcquisitionItem.source_id.asc(),
+                AcquisitionItem.updated_at.desc(),
+                AcquisitionItem.id.desc(),
+                AcquisitionRun.created_at.desc(),
+                AcquisitionRun.id.desc(),
+            )
+        ).all()
+        for item, _run in latest_items:
+            latest_status_by_source.setdefault(item.source_id, item.status)
+        if not retry_failed_only:
+            selected_sources = [source for source in selected_sources if latest_status_by_source.get(source.id) != "downloaded"]
     if retry_failed_only:
         prev_run = db.scalars(
             select(AcquisitionRun)

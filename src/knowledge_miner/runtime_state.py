@@ -45,6 +45,22 @@ def cleanup_runtime_state(*, base_dir: str | Path, enabled: bool) -> CleanupResu
     return CleanupResult(enabled=True, removed_paths=tuple(removed))
 
 
+def _read_proc_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+
+
+def _is_reload_worker_process() -> bool:
+    current_cmd = _read_proc_cmdline(os.getpid())
+    if "--multiprocessing-fork" not in current_cmd:
+        return False
+    parent_cmd = _read_proc_cmdline(os.getppid())
+    return "uvicorn" in parent_cmd and "--reload" in parent_cmd
+
+
 def acquire_instance_lock(*, base_dir: str | Path) -> bool:
     global _instance_lock_fd, _is_primary_instance
     lock_file = Path(base_dir) / "instance.lock"
@@ -54,6 +70,10 @@ def acquire_instance_lock(*, base_dir: str | Path) -> bool:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         os.close(fd)
+        if _is_reload_worker_process():
+            _is_primary_instance = True
+            _log.warning("Reload worker process detected; enabling background run workers in this process.")
+            return True
         _is_primary_instance = False
         return False
     _instance_lock_fd = fd

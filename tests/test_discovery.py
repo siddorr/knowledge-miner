@@ -739,3 +739,76 @@ def test_cross_run_canonical_id_collision_does_not_fail():
         assert len(rows) == 2
         assert rows[0].run_id != rows[1].run_id
         assert rows[0].id != rows[1].id
+
+
+def test_ingest_candidates_updates_query_counts_incrementally():
+    class StepwiseAIFilter:
+        def __init__(self):
+            self.calls = 0
+
+        def evaluate(self, *, title, abstract, base_score, base_decision):  # noqa: ANN001
+            self.calls += 1
+            if self.calls == 5:
+                with SessionLocal() as other_db:
+                    query = other_db.scalars(select(DiscoveryRunQuery).where(DiscoveryRunQuery.id == "query_live")).first()
+                    assert query is not None
+                    assert query.accepted_count + query.rejected_count + query.pending_count > 0
+                    assert query.processing_count < 6
+            return AIRelevanceResult(decision="needs_review", confidence=0.8, reason="progress")
+
+    with SessionLocal() as db:
+        run = create_run(db, ["upw"], max_iterations=1)
+        query = DiscoveryRunQuery(
+            id="query_live",
+            run_id=run.id,
+            query_text="citation expansion",
+            query_metadata={},
+            position=99,
+            status="ranking_relevance",
+            discovered_count=6,
+            openalex_count=6,
+            brave_count=0,
+            semantic_scholar_count=0,
+            accepted_count=0,
+            rejected_count=0,
+            pending_count=0,
+            processing_count=6,
+        )
+        db.add(query)
+        db.commit()
+
+        candidates = []
+        for idx in range(6):
+            candidates.append(
+                {
+                    "title": f"UPW process candidate {idx}",
+                    "year": 2021,
+                    "url": f"https://example.org/live-progress/{idx}",
+                    "doi": None,
+                    "abstract": "ultrapure water semiconductor",
+                    "source": "openalex",
+                    "source_native_id": f"oa_live_{idx}",
+                    "openalex_id": f"oa_live_{idx}",
+                    "semantic_scholar_id": None,
+                    "patent_office": None,
+                    "patent_number": None,
+                    "type": "academic",
+                    "discovery_method": "forward_citation",
+                    "parent_source_id": "parent-1",
+                }
+            )
+
+        _ingest_candidates(
+            db,
+            run.id,
+            1,
+            candidates,
+            ai_filter=StepwiseAIFilter(),
+            query_id="query_live",
+            query_text="citation expansion",
+        )
+
+        refreshed = db.scalars(select(DiscoveryRunQuery).where(DiscoveryRunQuery.id == "query_live")).first()
+        assert refreshed is not None
+        assert refreshed.pending_count == 6
+        assert refreshed.processing_count == 0

@@ -12,7 +12,7 @@ from ..ai_filter import AIAuthError, AIProviderError, AIRateLimitError, AITimeou
 from ..config import settings
 from ..db import get_db
 from ..discovery import create_run, enqueue_bookmark_seed_run, enqueue_citation_iteration_run, enqueue_run, export_sources_raw, review_source
-from ..models import DiscoveryCitationSeed, DiscoveryRunQuery, Run, Source
+from ..models import CitationExpansionParent, DiscoveryCitationSeed, DiscoveryRunQuery, Run, Source
 from ..rate_limit import require_rate_limit
 from ..runtime_state import request_run_stop
 from ..schemas import (
@@ -30,6 +30,23 @@ from ..schemas import (
 
 router = APIRouter(tags=["discovery"])
 logger = logging.getLogger("knowledge_miner")
+
+
+def _unexpanded_accepted_parent_count(db: Session, run_id: str) -> int:
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(Source)
+            .where(
+                Source.run_id == run_id,
+                Source.accepted.is_(True),
+                ~Source.id.in_(
+                    select(CitationExpansionParent.parent_source_id).where(CitationExpansionParent.run_id == run_id)
+                ),
+            )
+        )
+        or 0
+    )
 
 
 def _not_found_diagnostics(db: Session, *, run_id: str | None = None, source_id: str | None = None) -> dict:
@@ -157,6 +174,12 @@ def create_citation_iteration_run(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Need at least 1 accepted paper before running citation expansion.",
+        )
+    remaining_parent_count = _unexpanded_accepted_parent_count(db, run_id)
+    if remaining_parent_count <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No new accepted papers are available for citation expansion.",
         )
     _enqueue_citation_task(background_tasks, previous.id, previous.id)
     return RunCreateResponse(run_id=previous.id, status=previous.status)

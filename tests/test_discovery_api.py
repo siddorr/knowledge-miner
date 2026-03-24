@@ -272,6 +272,9 @@ def test_session_sources_accumulate_accepted_results_across_runs():
                     patent_number=None,
                     iteration=1,
                     discovery_method="seed_search",
+                    query_id="rq_old",
+                    query_step_number=1,
+                    query_source_number=1,
                     relevance_score=4.0,
                     accepted=True,
                     review_status="human_accept",
@@ -292,6 +295,9 @@ def test_session_sources_accumulate_accepted_results_across_runs():
                     patent_number=None,
                     iteration=2,
                     discovery_method="forward_citation",
+                    query_id="rq_new",
+                    query_step_number=2,
+                    query_source_number=1,
                     relevance_score=6.0,
                     accepted=True,
                     review_status="auto_accept",
@@ -331,8 +337,10 @@ def test_session_sources_accumulate_accepted_results_across_runs():
     by_id = {item["id"]: item for item in body["items"]}
     assert by_id["src_old_unique"]["run_number"] == 1
     assert by_id["src_old_unique"]["run_source_number"] == 1
+    assert by_id["src_old_unique"]["lineage_number"] == "1.1.1"
     assert by_id["src_new_unique"]["run_number"] == 2
     assert by_id["src_new_unique"]["run_source_number"] == 1
+    assert by_id["src_new_unique"]["lineage_number"] == "2.2.1"
 
 
 def test_session_sources_support_limit_above_1000():

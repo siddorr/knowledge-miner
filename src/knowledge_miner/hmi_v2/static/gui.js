@@ -1405,12 +1405,16 @@ function renderDiscoverRunQueries() {
   });
 }
 
-function updateCitationAvailability(acceptedCount) {
-  const disabled = acceptedCount <= 0;
+function updateCitationAvailability(acceptedCount, remainingParentCount = 0) {
+  const disabled = acceptedCount <= 0 || remainingParentCount <= 0;
   els.runNextCitationBtn.disabled = disabled;
+  if (acceptedCount <= 0) {
+    els.discoverCitationHint.textContent = "Need at least 1 accepted paper before running citation expansion.";
+    return;
+  }
   els.discoverCitationHint.textContent = disabled
-    ? "Need at least 1 accepted paper before running citation expansion."
-    : "Citation expansion is available for the current session.";
+    ? "No new accepted papers are available for citation expansion."
+    : `Citation expansion is available for ${remainingParentCount} accepted paper${remainingParentCount === 1 ? "" : "s"}.`;
 }
 
 async function loadDiscover(recoverOnNotFound = true) {
@@ -1424,7 +1428,7 @@ async function loadDiscover(recoverOnNotFound = true) {
       els[id].textContent = "0";
     });
     renderDiscoverRunQueries();
-    updateCitationAvailability(0);
+    updateCitationAvailability(0, 0);
     els.resumeCitationBtn.disabled = true;
     return;
   }
@@ -1507,7 +1511,7 @@ async function loadDiscover(recoverOnNotFound = true) {
   } else {
     stopDiscoverPolling();
   }
-  updateCitationAvailability(approvedCount);
+  updateCitationAvailability(approvedCount, Number(run.citation_unexpanded_parent_count ?? 0));
   renderActivity();
 }
 
@@ -1786,6 +1790,7 @@ async function loadDocuments(recoverOnNotFound = true) {
     throw error;
   }
   const accepted = acceptedResult.data.items || [];
+  let latestItems = [];
   let statusData = null;
   let items = [];
   if (session.acquisitionRunId) {
@@ -1802,19 +1807,29 @@ async function loadDocuments(recoverOnNotFound = true) {
       persistSessions();
     }
   }
+  try {
+    latestItems = await fetchAllPages(async (offset, limit) => {
+      const response = await api(
+        `/v1/sessions/${encodeURIComponent(session.id)}/acquisition-items/latest?limit=${limit}&offset=${offset}`,
+      );
+      return response.data || {};
+    }, API_FETCH_PAGE_SIZE);
+  } catch {
+    latestItems = items;
+  }
   state.currentAcquisitionStatus = statusData;
-  const itemMap = new Map(items.map((item) => [item.source_id, item]));
+  const itemMap = new Map(latestItems.map((item) => [item.source_id, item]));
   state.documentRows = normalizeDocumentRows(accepted, itemMap);
   state.documentsPage = 0;
   if (!state.documentRows.some((row) => row.source.id === state.selectedDocumentSourceId)) {
     state.selectedDocumentSourceId = state.documentRows[0]?.source.id || "";
   }
   renderDocuments();
-  els.documentsDownloaded.textContent = String(statusData?.downloaded_total || items.filter((item) => item.status === "downloaded").length);
-  els.documentsFailed.textContent = String(statusData?.failed_total || items.filter((item) => item.status === "failed").length);
-  els.documentsManual.textContent = String(items.filter((item) => item.status === "partial" || item.status === "skipped").length);
-  els.documentsPending.textContent = String(Math.max(accepted.length - items.filter((item) => item.status !== "pending").length, 0));
-  els.documentsBadge.textContent = String(items.filter((item) => item.status === "failed" || item.status === "partial").length);
+  els.documentsDownloaded.textContent = String(state.documentRows.filter((row) => row.status === "downloaded").length);
+  els.documentsFailed.textContent = String(state.documentRows.filter((row) => row.status === "failed").length);
+  els.documentsManual.textContent = String(state.documentRows.filter((row) => row.status === "partial" || row.status === "skipped").length);
+  els.documentsPending.textContent = String(state.documentRows.filter((row) => row.status === "pending").length);
+  els.documentsBadge.textContent = String(state.documentRows.filter((row) => row.status === "failed" || row.status === "partial").length);
   els.documentsState.textContent = statusData ? statusData.message : `${accepted.length} accepted source(s) ready for acquisition.`;
   renderActivity();
 }
@@ -1901,7 +1916,7 @@ function resetSessionBoundPaneState() {
   });
   renderDiscoverRunQueries();
   renderSuggestedQueries();
-  updateCitationAvailability(0);
+  updateCitationAvailability(0, 0);
   els.resumeCitationBtn.disabled = true;
   els.discoverState.textContent = "No discovery run attached to the active session.";
 

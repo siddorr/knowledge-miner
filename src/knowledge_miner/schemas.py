@@ -49,6 +49,8 @@ class RunStatusResponse(BaseModel):
     seed_queries: list[str]
     current_iteration: int
     accepted_total: int
+    citation_unexpanded_parent_count: int = 0
+    citation_expansion_available: bool = False
     expanded_candidates_total: int
     citation_edges_total: int
     ai_filter_active: bool

@@ -358,7 +358,7 @@ Status:
     - `status`
     - `source_link`
 
-21. [ ] P1 - Constrain scrollable lists to viewport-sized panels with local scrolling
+21. [x] P1 - Constrain scrollable lists to viewport-sized panels with local scrolling
 - Goal:
   - keep large lists usable without forcing full-page scrolling through dense work areas.
 - Scope:
@@ -371,8 +371,10 @@ Status:
   - list content scrolls inside its own pane
   - the whole page does not need to scroll just to navigate long result lists
   - headers/action rows remain accessible while list panes are scrolled
+- Resolution:
+  - `hmi2` now uses viewport-bounded local scroll panes for Review, Documents, and Library Export list-heavy regions, with sticky table headers where needed.
 
-22. [ ] P1 - Group session/file actions under a single `File` menu in the top bar
+22. [x] P1 - Group session/file actions under a single `File` menu in the top bar
 - Goal:
   - reduce top-row button clutter by moving infrequent file/session actions behind one clear entry point.
 - Scope:
@@ -389,6 +391,8 @@ Status:
   - `File` menu exposes all required actions
   - action behavior remains unchanged after relocation
   - menu works on desktop and compact screen widths
+- Resolution:
+  - `New Session`, `Load`, `Delete`, and `History` were moved under a `File` menu in `hmi2`; `Save` remains visible as the primary top-level persistence action.
 
 21. [x] P0 - Add Library Export contract tests
 - Goal:
@@ -918,7 +922,7 @@ Status:
   - each filter shows only papers auto-decided in the active session/current run context
   - switching between these filters and the existing queue views updates the Review list correctly
 
-59. [ ] P1 - Remove redundant screen titles when the active page is already identified in the navigation
+59. [x] P1 - Remove redundant screen titles when the active page is already identified in the navigation
 - Goal:
   - reduce visual duplication and free vertical space in the main workflow pages.
 - Problem:
@@ -932,8 +936,10 @@ Status:
   - no large unused vertical gap remains in place of removed/reduced title blocks
   - navigation remains the primary active-screen indicator
   - layout gains vertical space without losing orientation/context
+- Resolution:
+  - main workflow pages in `hmi2` no longer repeat large page-name titles; only contextual status text remains where it adds operational value (for example, Review pending count).
 
-60. [ ] P0 - Remove 1000-item cap in Discover/Documents data loading/export flows
+60. [x] P0 - Remove 1000-item cap in Discover/Documents data loading/export flows
 - Goal:
   - ensure Discover/Documents workflows handle corpora larger than 1000 sources/items.
 - Problem:
@@ -948,6 +954,8 @@ Status:
   - runs with >1000 sources are fully represented in Discover and Documents metrics/labels
   - no silent truncation at 1000 rows in normal Discover/Documents workflows
   - export includes complete intended set, not only first 1000
+- Resolution:
+  - Discover summary loading and Documents acquisition/export flows now use paginated full retrieval instead of fixed `limit=1000`; relevant list endpoints accept larger chunk sizes and regression tests cover `>1000` rows.
 
 61. [x] P1 - Remove predefined default query `ultrapure water semiconductor`
 - Goal:
@@ -964,7 +972,7 @@ Status:
   - no auto-inserted `ultrapure water semiconductor` query
   - discovery run remains blocked until user selects at least one query
 
-62. [ ] P1 - Add ability to change ChatGPT model from UI
+62. [x] P1 - Add ability to change ChatGPT model from UI
 - Goal:
   - allow operator to switch the AI model without editing environment/config files manually.
 - Problem:
@@ -978,13 +986,15 @@ Status:
   - operator can view and change active ChatGPT model from UI
   - saved model is returned by `/v1/settings/ai-filter`
   - new discovery/review AI calls use updated model value
+- Resolution:
+  - `Advanced` now exposes a preset-based ChatGPT model selector wired to the existing AI settings API.
 
 ## GUI Spec Review Checklist
 
 - [x] Global shell is `header/status -> controls -> navigation -> workspace -> footer`
-- [x] Controls row shows `New Session | Save | Load | Delete`
+- [x] Controls row exposes session/file actions via `File` plus visible `Save`
 - [x] Navigation shows `Discover | Review | Documents | Library Export | Advanced`
-- [ ] Main workflow pages do not repeat redundant page titles already identified by the active navigation
+- [x] Main workflow pages do not repeat redundant page titles already identified by the active navigation
 - [x] Discover is one screen, not split into competing `build` and `discover` operator workflows
 - [x] Discover shows one single-row summary for discovered/approved/rejected/reviewed/pending
 - [x] Discover shows separate AI-generated suggested queries and explicit selected queries

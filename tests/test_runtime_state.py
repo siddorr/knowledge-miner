@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
+from knowledge_miner import runtime_state
 from knowledge_miner.runtime_state import cleanup_runtime_state
 
 
@@ -36,3 +38,16 @@ def test_cleanup_runtime_state_disabled(tmp_path):
     assert result.enabled is False
     assert result.removed_count == 0
     assert stale.exists()
+
+
+def test_acquire_instance_lock_allows_reload_worker_when_parent_holds_lock(tmp_path, monkeypatch):
+    def fake_flock(fd, flags):
+        raise OSError(errno.EWOULDBLOCK, "locked")
+
+    monkeypatch.setattr(runtime_state.fcntl, "flock", fake_flock)
+    monkeypatch.setattr(runtime_state, "_read_proc_cmdline", lambda pid: "python -m uvicorn app --reload" if pid == 100 else "python -c ... --multiprocessing-fork")
+    monkeypatch.setattr(runtime_state.os, "getpid", lambda: 200)
+    monkeypatch.setattr(runtime_state.os, "getppid", lambda: 100)
+
+    assert runtime_state.acquire_instance_lock(base_dir=tmp_path / "runtime") is True
+    assert runtime_state.is_primary_instance() is True
