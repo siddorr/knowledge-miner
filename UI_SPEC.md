@@ -23,7 +23,8 @@ Canonical workflow:
 2. `Review`
 3. `Documents`
 4. `Library Export`
-5. `Advanced`
+5. `Bookmarks`
+6. `Advanced`
 
 Primary operator-facing concept:
 1. `Session`
@@ -62,16 +63,24 @@ Rules:
 The controls row is separate from the navigation row.
 
 Canonical controls:
+1. `File`
+2. Active session indicator
+3. `Stop Running Task`
+
+`File` menu contains:
 1. `New Session`
-2. `Save`
-3. `Load`
-4. `Delete`
+2. `Delete`
+3. `History` selector
+4. Inline new-session form
 
 Rules:
 1. Controls are always visible.
 2. Controls belong in one dedicated row above navigation.
-3. Session operations must not be hidden inside `Advanced` as the primary path.
-4. Technical session/history details may still exist in `Advanced`, but the primary operator actions must live here.
+3. Active session name is read-only in the controls row.
+4. Session switching happens from the `History` selector with confirmation.
+5. Session naming happens in the `New Session` form, not as an always-editable header field.
+6. `Save Context` in `Discover` is the explicit persistence action for session context.
+7. Technical session/history details may still exist in `Advanced`, but the primary operator actions must live here.
 
 ## 5. Navigation Row
 
@@ -80,7 +89,8 @@ Canonical top navigation:
 2. `Review`
 3. `Documents`
 4. `Library Export`
-5. `Advanced`
+5. `Bookmarks`
+6. `Advanced`
 
 Rules:
 1. Navigation is always visible.
@@ -126,10 +136,10 @@ Purpose:
 1. Control literature discovery and query iteration.
 
 Required visible elements:
-1. Active session field.
+1. Active session indicator.
 2. Query list.
 3. `Run discovery` action.
-4. Iteration indicator.
+4. Run indicator.
 5. One-row summary of discovery state.
 6. Right-side `Session context` panel used by AI ranking.
 
@@ -144,7 +154,8 @@ Session rules:
 1. User-facing wording is `Session`, not `Topic`.
 2. Session creation and switching are part of the primary flow.
 3. `Session context` is required before `Run discovery`.
-4. Session context persists per session and reloads on session switch/load.
+4. Session context persists per session and reloads on session switch.
+5. Unsaved local context changes must be distinguishable from backend-saved context.
 
 ## 9. Review Screen
 
@@ -170,6 +181,8 @@ Required details pane content:
    - `Accept`
    - `Reject`
    - `Later`
+   - `Bookmark`
+6. Small copy control for abstract text
 
 Keyboard requirements:
 1. `A = Accept`
@@ -201,12 +214,14 @@ Documents summary row must include:
 4. `Pending`
 
 Required table columns:
-1. `Rank`
-2. `Score`
-3. `Year`
-4. `Cit`
-5. `Title`
-6. `Status`
+1. `#`
+2. `Rank`
+3. `Score`
+4. `Year`
+5. `Cit`
+6. `Title`
+7. `DOI`
+8. `Status`
 
 Primary actions:
 1. `Download missing`
@@ -240,26 +255,59 @@ Required layout:
 3. Ranked results pane
 4. Details pane
 5. Export controls
+6. Tag and summary controls in the details pane
 
 Required ranked row format:
-1. `Rank`
-2. `AI Score`
-3. `Year`
-4. `Citations`
-5. `Title`
+1. `#`
+2. `Rank`
+3. `AI Score`
+4. `Year`
+5. `Citations`
+6. `Title`
 
 Required export controls:
 1. Export size choices
 2. `Export ZIP with PDFs`
 3. `Export Metadata CSV`
+4. `Generate Summaries for Visible`
 
 Manual controls may include:
 1. `Remove from export list`
 2. `Add to export list`
 
+Library annotation contract:
+1. Freeform tags are session-scoped.
+2. Approved tags are session-scoped.
+3. AI summary is session-scoped.
+4. Summary generation uses parsed full text.
+5. Search matches title, abstract, and tags.
+
 This screen is export-oriented, not a generic library browser contract.
 
-## 12. Advanced Screen
+## 12. Bookmarks Screen
+
+Purpose:
+1. Hold globally bookmarked papers and branch new sessions from them.
+
+Required layout:
+1. Left list of bookmarks
+2. Right detail pane
+3. Per-bookmark `Create Session`
+4. Per-bookmark `Remove Bookmark`
+
+Required bookmark detail content:
+1. Title
+2. Abstract
+3. Source session
+4. Year
+5. DOI/source link
+
+Workflow rules:
+1. Bookmarks are global, not session-local.
+2. Creating a session from a bookmark starts a fresh session.
+3. The bookmarked parent paper is used as citation seed context for the new session.
+
+## 13. Advanced Screen
 
 Purpose:
 1. Diagnostics and system inspection only.

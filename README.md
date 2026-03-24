@@ -10,13 +10,17 @@ Current product includes:
 3. Document acquisition (PDF-first, HTML fallback) with manual recovery tools.
 4. Batch PDF upload with auto-match to pending acquisition items.
 5. Full-text parse/chunk processing and search.
-6. Operator-driven discovery iterations (`Run One Iteration`, explicit citation iteration, keyword search on demand).
-7. Task-first HMI workflow for operators with live updates (SSE), visible progress/freshness state, explicit auth badges, conditional pagination controls, and auto-loading Review queue.
-8. Save/Load Session workflow with history and optional auto-restore on app start.
-9. Direct Review -> Documents transition (no manual "send to documents" step).
-10. Run-context controls are kept in Advanced; task pages run on active session context.
-11. UI design authority now follows GUI Design Specification v1.1 through the in-repo `UI_SPEC.md`.
-12. Discover requires per-session research context; AI ranking uses this context and stores snapshots per run/query.
+6. Operator-driven discovery runs with explicit citation expansion and live run progress in `Discover`.
+7. Session-based HMI workflow with live updates, active-session switching, inline new-session creation, and per-session context persistence.
+8. Direct Review -> Documents transition (no manual "send to documents" step).
+9. Global bookmarks workspace with bookmark-to-session branching.
+10. Session-scoped paper annotations in `Library Export`:
+   - freeform tags
+   - approved tags
+   - AI paper summaries from parsed full text
+11. Run-context controls are kept in Advanced; task pages run on active session context.
+12. UI design authority now follows the in-repo `UI_SPEC.md`.
+13. Discover requires per-session research context; AI ranking and summaries use this context and store snapshots per session/run where applicable.
 
 ## Quick Start
 
@@ -93,7 +97,7 @@ Source of truth docs:
 1. `README.md` - entry point
 2. `CURRENT_SCOPE.md` - what exists now, scope boundaries, near-term direction
 3. `ARCHITECTURE.md` - system components, data flow, runtime boundaries
-4. `UI_SPEC.md` - canonical user workflow and HMI behavior contract (Discover/Review/Documents/Library Export/Advanced), rewritten to align with GUI Design Specification v1.1
+4. `UI_SPEC.md` - canonical user workflow and HMI behavior contract (`Discover`/`Review`/`Documents`/`Library Export`/`Bookmarks`/`Advanced`)
 5. `PIPELINE_RULES.md` - discovery/decision/iteration rules
 6. `DATA_SCHEMA.md` - data model and constraints
 7. `BACKLOG.md` - active implementation tasks

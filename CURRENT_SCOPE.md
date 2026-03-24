@@ -1,6 +1,6 @@
 # Current Scope
 
-Status date: 2026-03-13
+Status date: 2026-03-24
 
 ## Product State (Now)
 
@@ -10,10 +10,12 @@ Knowledge Miner is an end-to-end UPW literature workflow for semiconductor manuf
 3. AI-first relevance decisions with human review override.
 4. Document acquisition (PDF-first, HTML fallback) with legal-source resolution and manual recovery.
 5. Full-text parsing/chunking and searchable corpus.
-6. HMI-driven workflow covering `Discover`, `Review`, `Documents`, `Library`, and `Advanced`.
-7. Session persistence with Save/Load, history, and auto-restore support.
+6. HMI-driven workflow covering `Discover`, `Review`, `Documents`, `Library Export`, `Bookmarks`, and `Advanced`.
+7. Session persistence with active-session switching, inline new-session creation, and per-session backend profile loading.
 8. Event-driven refresh model with SSE plus bounded fallback refresh.
 9. Advanced diagnostics, logs, and technical controls isolated in `Advanced`.
+10. Global bookmarks with bookmark-based research session branching.
+11. Session-scoped paper annotations with freeform tags, approved tags, and AI summaries generated from parsed full text.
 
 ## Approved Target UI Contract
 
@@ -30,16 +32,15 @@ Target HMI direction:
 ## Current vs Target UI
 
 Current implementation still reflects parts of the older design:
-1. Some shell structure and layout contracts still follow the previous HMI model.
-2. `Library` is still present in implementation where target docs now require `Library Export`.
-3. Some user-facing wording and controls remain transitional.
+1. Some status and diagnostics wording still reflects older "iteration" terminology in logs and lower-level APIs.
+2. Test harness stability is behind product behavior; some `TestClient` flows still hang during startup in local dev.
+3. Some lower-level docs and archived plans still reference the previous Save/Load session model.
 
 Target implementation must migrate toward:
-1. Separate controls row above navigation.
-2. Consistent `Session` wording in primary UX.
-3. Rayyan-style Review.
-4. `Library Export` as the final stage label.
-5. `Advanced` as diagnostics-only.
+1. Consistent `Session` wording in primary UX and docs.
+2. Stable live-refresh behavior across all run states.
+3. Further UI polish for operator feedback around upload/acquisition/summary jobs.
+4. `Advanced` as diagnostics-only.
 
 Current implementation is not the design source of truth; the rewritten `UI_SPEC.md` is.
 
@@ -71,6 +72,8 @@ Current implementation is not the design source of truth; the rewritten `UI_SPEC
 - structured logging and run-level observability
 - global and per-action busy/progress indicators
 - batch manual-upload recovery with auto DOI/title matching
+- bookmark workspace and bookmark-to-session branching
+- per-session library annotations and summary generation
 
 ## Out of Scope
 
@@ -86,7 +89,8 @@ Current implementation is not the design source of truth; the rewritten `UI_SPEC
 2. Review candidates in `Review`.
 3. Process approved sources and resolve retrieval failures in `Documents`.
 4. Export curated knowledge packages from `Library Export`.
-5. Use `Advanced` only for diagnostics, IDs, and low-level controls.
+5. Branch new research from `Bookmarks` when needed.
+6. Use `Advanced` only for diagnostics, IDs, and low-level controls.
 
 ## MVP Boundary
 
@@ -101,8 +105,8 @@ This product boundary is implemented, while UI design replacement remains an act
 
 ## Near-Term Roadmap Summary
 
-1. Replace remaining old-design HMI behavior with the new design contract.
-2. Production hardening and deployment reliability.
-3. UX polish and operator efficiency improvements.
-4. Search quality and retrieval accuracy improvements.
+1. Production hardening and deployment reliability.
+2. UX polish and operator efficiency improvements.
+3. Search quality and retrieval accuracy improvements.
+4. Test-harness stabilization for API/UI contract coverage.
 5. Backlog-driven enhancements tracked only in `BACKLOG.md`.
