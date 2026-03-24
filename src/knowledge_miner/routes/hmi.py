@@ -177,9 +177,7 @@ def upsert_session_profile(
     session_key = session_id.strip()
     if not session_key:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="session_id_required")
-    context = payload.session_context.strip()
-    if not context:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="session_context_required")
+    context = (payload.session_context or "").strip()
     profile = db.get(SessionProfile, session_key)
     if profile is None:
         profile = SessionProfile(session_id=session_key)

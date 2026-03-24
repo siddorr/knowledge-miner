@@ -3141,7 +3141,7 @@ function wireEvents() {
     renderShell();
     els.newSessionNameInput?.focus();
   });
-  els.createSessionConfirmBtn?.addEventListener("click", () => {
+  els.createSessionConfirmBtn?.addEventListener("click", async () => {
     const name = String(els.newSessionNameInput?.value || "").trim();
     const context = String(els.newSessionContextInput?.value || "");
     if (!name) {
@@ -3159,20 +3159,42 @@ function wireEvents() {
       savedSessionContext: "",
       savedSessionContextUpdatedAt: "",
     });
-    state.sessions.push(session);
-    state.activeSessionId = session.id;
-    state.pendingSessionId = session.id;
-    resetReviewSort();
-    persistSessions();
-    renderSessions();
-    renderShell();
-    resetSessionBoundPaneState();
-    els.sessionContextState.textContent = defaultSessionContextState(session);
-    els.sessionState.textContent = `Created new session: ${session.name}`;
-    state.fileMenuOpen = false;
-    state.showNewSessionForm = false;
-    resetNewSessionDraft();
-    renderShell();
+    els.newSessionFormState.textContent = "Creating session...";
+    try {
+      const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          session_context: context,
+        }),
+      });
+      const profile = result.data || {};
+      session.name = typeof profile.name === "string" && profile.name.trim() ? profile.name.trim() : name;
+      session.sessionContext = String(profile.session_context || "");
+      session.sessionContextUpdatedAt = String(profile.updated_at || "");
+      session.savedSessionContext = session.sessionContext;
+      session.savedSessionContextUpdatedAt = session.sessionContextUpdatedAt;
+      state.sessions.push(session);
+      state.activeSessionId = session.id;
+      state.pendingSessionId = session.id;
+      resetReviewSort();
+      persistSessions();
+      renderSessions();
+      renderShell();
+      resetSessionBoundPaneState();
+      els.sessionContextState.textContent = defaultSessionContextState(session);
+      els.sessionState.textContent = `Created new session: ${session.name}`;
+      state.fileMenuOpen = false;
+      state.showNewSessionForm = false;
+      resetNewSessionDraft();
+      if (els.newSessionFormState) {
+        els.newSessionFormState.textContent = "";
+      }
+      renderShell();
+    } catch (error) {
+      els.newSessionFormState.textContent = `Unable to create session: ${errorDetail(error)}`;
+    }
   });
   els.cancelNewSessionBtn?.addEventListener("click", () => {
     state.showNewSessionForm = false;

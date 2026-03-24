@@ -493,7 +493,7 @@ class HMIEventsIngestResponse(BaseModel):
 
 class SessionProfileUpsertRequest(BaseModel):
     name: str | None = Field(default=None, max_length=200)
-    session_context: str = Field(min_length=1, max_length=4096)
+    session_context: str | None = Field(default=None, max_length=4096)
 
 
 class SessionProfileResponse(BaseModel):
