@@ -149,7 +149,7 @@ function readDom() {
     "discoverOpenalexLimitInput", "discoverSemanticScholarLimitInput", "discoverBraveLimitInput", "discoverProviderLimitsState",
     "discoverSummaryDiscovered", "discoverSummaryApproved", "discoverSummaryRejected", "discoverSummaryReviewed", "discoverSummaryPending", "discoverState",
     "sessionContextInput", "saveSessionContextBtn", "sessionContextCounter", "sessionContextState", "sessionContextUpdated",
-    "reviewHeading", "reviewRows", "reviewTitle", "reviewAbstract", "reviewMetadata", "reviewSignals",
+    "reviewHeading", "reviewRows", "reviewTitle", "reviewAbstract", "reviewCopyAbstractBtn", "reviewMetadata", "reviewSignals",
     "reviewAcceptBtn", "reviewRejectBtn", "reviewLaterBtn", "reviewBookmarkBtn", "reviewState", "reviewBadge", "reviewQueueHelp", "reviewFilterChips",
     "documentsDownloaded", "documentsFailed", "documentsManual", "documentsPending", "documentsRows", "documentsPrevBtn", "documentsNextBtn", "documentsPageState",
     "downloadMissingBtn", "retryFailedBtn", "documentsExportCsvBtn", "batchUploadForm", "batchUploadFiles",
@@ -1705,6 +1705,9 @@ function renderReviewDetail() {
     els.reviewAbstract.textContent = "Select a paper to review.";
     els.reviewMetadata.innerHTML = "Year: - | Journal: - | Citations: - | Authors: - | Link: -";
     els.reviewSignals.textContent = "No AI signals available.";
+    if (els.reviewCopyAbstractBtn) {
+      els.reviewCopyAbstractBtn.disabled = true;
+    }
     if (els.reviewBookmarkBtn) {
       els.reviewBookmarkBtn.textContent = "Bookmark";
       els.reviewBookmarkBtn.disabled = true;
@@ -1715,6 +1718,9 @@ function renderReviewDetail() {
   els.reviewAbstract.textContent = item.abstract || "No abstract available.";
   els.reviewMetadata.innerHTML = buildMetadataHtml(item);
   els.reviewSignals.textContent = reviewSignalText(item);
+  if (els.reviewCopyAbstractBtn) {
+    els.reviewCopyAbstractBtn.disabled = !String(item.abstract || "").trim();
+  }
   if (els.reviewBookmarkBtn) {
     els.reviewBookmarkBtn.textContent = isBookmarked(item.id) ? "Remove Bookmark" : "Bookmark";
     els.reviewBookmarkBtn.disabled = false;
@@ -3203,6 +3209,16 @@ function wireEvents() {
     renderReviewRows();
     renderDocuments();
     renderLibraryRows();
+  });
+  els.reviewCopyAbstractBtn?.addEventListener("click", async () => {
+    const item = state.reviewItems[state.reviewIndex];
+    const text = String(item?.abstract || "").trim();
+    if (!text) {
+      els.reviewState.textContent = "No abstract available to copy.";
+      return;
+    }
+    const ok = await copyTextToClipboard(text);
+    els.reviewState.textContent = ok ? `Copied abstract: ${item.title}` : "Unable to copy abstract.";
   });
   els.reviewFilterButtons.forEach((button) => {
     button.addEventListener("click", () => {

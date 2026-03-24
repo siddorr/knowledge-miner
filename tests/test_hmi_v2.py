@@ -38,6 +38,7 @@ def test_hmi2_shell_route_and_navigation():
     assert 'data-page="bookmarks"' in body
     assert 'id="page-bookmarks"' in body
     assert 'id="reviewHeading"' in body
+    assert 'id="reviewCopyAbstractBtn"' in body
     assert "Download missing" in body
     assert "Run Citation Expansion" in body
     assert "Resume Citation Expansion" in body
