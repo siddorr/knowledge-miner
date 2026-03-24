@@ -28,19 +28,29 @@
       <button id="fileMenuBtn" type="button" aria-haspopup="true" aria-expanded="false">File</button>
       <div id="fileMenuPanel" class="file-menu-panel" hidden>
         <button id="newSessionBtn" type="button">New Session</button>
-        <button id="loadSessionBtn" type="button">Load</button>
         <button id="deleteSessionBtn" type="button">Delete</button>
         <label>
           History
           <select id="sessionSelect"></select>
         </label>
+        <div id="newSessionForm" class="file-menu-form" hidden>
+          <label>
+            Session name
+            <input id="newSessionNameInput" type="text" placeholder="UPW session">
+          </label>
+          <label>
+            Session context
+            <textarea id="newSessionContextInput" rows="5" placeholder="Optional session context for the new session."></textarea>
+          </label>
+          <div class="row">
+            <button id="createSessionConfirmBtn" type="button">Create</button>
+            <button id="cancelNewSessionBtn" type="button">Cancel</button>
+          </div>
+          <p id="newSessionFormState" class="muted"></p>
+        </div>
       </div>
     </div>
-    <label>
-      Session Name
-      <input id="discoverSessionName" type="text" placeholder="UPW session">
-    </label>
-    <button id="saveSessionBtn" type="button">Save</button>
+    <span id="activeSessionLabel" class="session-active-label">Active: -</span>
     <button id="stopRunningBtn" type="button">Stop Running Task</button>
     <span id="sessionState">No saved sessions.</span>
   </section>
@@ -263,7 +273,31 @@
             <option value="100">100</option>
           </select>
         </label>
+        <button id="libraryGenerateVisibleSummariesBtn" type="button">Generate Summaries for Visible</button>
+        <button id="libraryPromptToggleBtn" type="button">Summary Prompt</button>
+        <button id="libraryApprovedTagsToggleBtn" type="button">Approved Tags</button>
       </div>
+      <div id="librarySummaryPromptPanel" class="card" hidden>
+        <label>
+          Session Summary Prompt
+          <textarea id="librarySummaryPromptInput" rows="6" placeholder="Describe what the AI summary should focus on for this session."></textarea>
+        </label>
+        <div class="row">
+          <button id="librarySaveSummaryPromptBtn" type="button">Save Prompt</button>
+        </div>
+        <p id="librarySummaryPromptState" class="muted">Using the default summary prompt.</p>
+      </div>
+      <div id="libraryApprovedTagsPanel" class="card" hidden>
+        <label>
+          Approved Tags
+          <textarea id="libraryApprovedTagsInput" rows="4" placeholder="One approved tag per line"></textarea>
+        </label>
+        <div class="row">
+          <button id="librarySaveApprovedTagsBtn" type="button">Save Approved Tags</button>
+        </div>
+        <p id="libraryApprovedTagsState" class="muted">No approved tags configured for this session.</p>
+      </div>
+      <p id="libraryFilterHelp" class="muted">Search matches title, abstract, and tags.</p>
       <div class="two-pane two-pane-fill">
         <section class="pane scroll-pane">
           <div class="scroll-table-wrap">
@@ -281,6 +315,27 @@
             <button id="libraryAddBtn" type="button">Add to export list</button>
             <button id="libraryRemoveBtn" type="button">Remove from export list</button>
             <button id="libraryBookmarkBtn" type="button">Bookmark</button>
+          </div>
+          <h4>Freeform Tags</h4>
+          <div id="libraryFreeformTags" class="tag-chip-list"></div>
+          <div class="row">
+            <input id="libraryFreeformTagInput" type="text" placeholder="Add freeform tag">
+            <button id="libraryAddFreeformTagBtn" type="button">Add Tag</button>
+          </div>
+          <h4>Approved Tags</h4>
+          <div id="libraryApprovedTags" class="tag-chip-list"></div>
+          <div class="row">
+            <select id="libraryApprovedTagSelect">
+              <option value="">Select approved tag</option>
+            </select>
+            <button id="libraryAddApprovedTagBtn" type="button">Add Approved Tag</button>
+          </div>
+          <h4>Research Summary</h4>
+          <p id="librarySummaryStatus" class="muted">No summary generated.</p>
+          <pre id="librarySummaryText" class="detail-text">Select a paper to inspect tags and summary.</pre>
+          <div class="row">
+            <button id="libraryGenerateSummaryBtn" type="button">Generate Summary</button>
+            <button id="libraryRegenerateSummaryBtn" type="button">Regenerate Summary</button>
           </div>
         </section>
       </div>

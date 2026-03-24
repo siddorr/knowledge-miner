@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.main import app
-from knowledge_miner.models import AcquisitionRun, Artifact, Run, Source
+from knowledge_miner.models import AcquisitionRun, Artifact, PaperAnnotation, Run, Source
 
 
 def setup_function():
@@ -176,6 +176,19 @@ def _seed_cross_run_exportable_source(tmp_path: Path) -> tuple[str, str]:
 
 def test_library_export_metadata_csv(tmp_path: Path):
     run_id, source_id = _seed_exportable_run(tmp_path)
+    with SessionLocal() as db:
+        db.add(
+            PaperAnnotation(
+                id="annot_export_1",
+                session_id="session_export_1",
+                source_id=source_id,
+                freeform_tags_json=["pilot scale", "AOP"],
+                approved_tags_json=["RO"],
+                ai_summary="Short research summary.",
+                summary_status="completed",
+            )
+        )
+        db.commit()
     client = TestClient(app)
     response = client.get(
         f"/v1/library-export/runs/{run_id}/metadata.csv",
@@ -189,6 +202,9 @@ def test_library_export_metadata_csv(tmp_path: Path):
     assert "Journal of Ultrapure Water" in response.text
     assert "A. Expert, B. Builder" in response.text
     assert "33" in response.text
+    assert "pilot scale; AOP" in response.text
+    assert "RO" in response.text
+    assert "Short research summary." in response.text
 
 
 def test_library_export_pdfs_zip(tmp_path: Path):

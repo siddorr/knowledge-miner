@@ -41,6 +41,7 @@ from .rate_limit import require_rate_limit
 from .logging_setup import configure_logging
 from .runtime_state import acquire_instance_lock, cleanup_runtime_state, log_cleanup_result
 from .routes.discovery import router as discovery_router
+from .routes.annotations import router as annotations_router
 from .routes.bookmarks import router as bookmarks_router
 from .routes.hmi import router as hmi_router
 from .routes.library_export import router as library_export_router
@@ -102,6 +103,7 @@ _LOG_LINE_RE = re.compile(r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) 
 # Create tables on module load for v1 local/dev simplicity.
 app.mount("/hmi2/static", StaticFiles(directory=HMI_V2_DIR / "static"), name="hmi2_static")
 app.include_router(discovery_router)
+app.include_router(annotations_router)
 app.include_router(bookmarks_router)
 app.include_router(hmi_router)
 app.include_router(library_export_router)
@@ -711,6 +713,7 @@ def get_run_status(
     ai_filter_effective_enabled = bool(run.ai_filter_active and settings.ai_api_key)
     return RunStatusResponse(
         run_id=run.id,
+        session_id=run.session_id,
         status=run.status,
         seed_queries=run.seed_queries,
         current_iteration=run.current_iteration,

@@ -27,12 +27,13 @@ const state = {
   pendingSessionId: "",
   activePage: window.__KM_HMI2_LAUNCH_SECTION__ || "discover",
   fileMenuOpen: false,
+  showNewSessionForm: false,
   reviewQueue: "pending",
   reviewSort: { key: "lineage", dir: "desc" },
   documentsSort: { key: "rank", dir: "asc" },
   documentsPage: 0,
   librarySort: { key: "rank", dir: "asc" },
-  latest: { discovery: "", acquisition: "", parse: "" },
+  latest: { discovery: "", discoverySession: "", acquisition: "", parse: "" },
   reviewItems: [],
   reviewIndex: -1,
   documentRows: [],
@@ -63,6 +64,12 @@ const state = {
   offlineMessage: "",
   bookmarks: [],
   selectedBookmarkId: "",
+  paperAnnotations: {},
+  sessionApprovedTags: [],
+  sessionSummaryPrompt: "",
+  summaryPollTimer: null,
+  newSessionDraftName: "",
+  newSessionDraftContext: "",
 };
 
 const els = {};
@@ -135,8 +142,9 @@ async function copyTextToClipboard(text) {
 function readDom() {
   const ids = [
     "activityLine", "activityIndicator", "authStatus", "aiStatus", "dbStatus", "headerProgress", "headerProgressLabel",
-    "fileMenuBtn", "fileMenuPanel", "newSessionBtn", "saveSessionBtn", "loadSessionBtn", "deleteSessionBtn", "stopRunningBtn", "sessionSelect", "sessionState",
-    "discoverSessionName", "discoverQueryInput", "addQueryBtn", "generateQuerySuggestionsBtn", "runDiscoveryBtn", "runNextCitationBtn", "resumeCitationBtn", "discoverIterationLine",
+    "fileMenuBtn", "fileMenuPanel", "newSessionBtn", "deleteSessionBtn", "stopRunningBtn", "sessionSelect", "sessionState", "activeSessionLabel",
+    "newSessionForm", "newSessionNameInput", "newSessionContextInput", "createSessionConfirmBtn", "cancelNewSessionBtn", "newSessionFormState",
+    "discoverQueryInput", "addQueryBtn", "generateQuerySuggestionsBtn", "runDiscoveryBtn", "runNextCitationBtn", "resumeCitationBtn", "discoverIterationLine",
     "discoverQueryList", "discoverSuggestedQueryList", "discoverSuggestionsState", "discoverSelectedCount", "discoverRunQueries", "discoverRunQueriesState", "discoverCitationHint",
     "discoverOpenalexLimitInput", "discoverSemanticScholarLimitInput", "discoverBraveLimitInput", "discoverProviderLimitsState",
     "discoverSummaryDiscovered", "discoverSummaryApproved", "discoverSummaryRejected", "discoverSummaryReviewed", "discoverSummaryPending", "discoverState",
@@ -149,7 +157,12 @@ function readDom() {
     "documentsDetailMetadata", "documentsRowActionBtn", "documentsBookmarkBtn", "internalRepoUrlInput", "saveInternalRepoUrlBtn", "internalRepoUrlState",
     "libraryMatches", "libraryHighest", "libraryLowest", "libraryQuery", "libraryExportSize", "libraryRows",
     "libraryTitle", "libraryAbstract", "libraryMetadata", "libraryAddBtn", "libraryRemoveBtn", "libraryBookmarkBtn", "libraryZipBtn",
-    "libraryMetadataBtn", "libraryState",
+    "libraryMetadataBtn", "libraryState", "libraryGenerateVisibleSummariesBtn", "libraryPromptToggleBtn", "libraryApprovedTagsToggleBtn",
+    "librarySummaryPromptPanel", "librarySummaryPromptInput", "librarySaveSummaryPromptBtn", "librarySummaryPromptState",
+    "libraryApprovedTagsPanel", "libraryApprovedTagsInput", "librarySaveApprovedTagsBtn", "libraryApprovedTagsState",
+    "libraryFilterHelp", "libraryFreeformTags", "libraryFreeformTagInput", "libraryAddFreeformTagBtn",
+    "libraryApprovedTags", "libraryApprovedTagSelect", "libraryAddApprovedTagBtn",
+    "librarySummaryStatus", "librarySummaryText", "libraryGenerateSummaryBtn", "libraryRegenerateSummaryBtn",
     "apiKeyInput", "saveApiKeyBtn", "apiKeyState", "aiModelSelect", "saveAiSettingsBtn", "aiSettingsState", "latestDiscoveryId", "latestAcquisitionId", "latestParseId",
     "openalexLimitInput", "braveCountInput", "braveAllowlistCheckbox", "saveProviderSettingsBtn", "providerSettingsState",
     "globalSearchInput", "globalSearchBtn", "globalSearchResults", "runLookupInput", "runLookupBtn", "runLookupResult",
@@ -193,6 +206,8 @@ function normalizeSession(raw) {
       };
     })
     .filter(Boolean);
+  const sessionContext = typeof raw?.sessionContext === "string" ? raw.sessionContext : "";
+  const sessionContextUpdatedAt = typeof raw?.sessionContextUpdatedAt === "string" ? raw.sessionContextUpdatedAt : "";
   return {
     id: raw?.id || `session_${Math.random().toString(36).slice(2, 10)}`,
     name: raw?.name || "New Session",
@@ -201,8 +216,12 @@ function normalizeSession(raw) {
     resultsRunId: raw?.resultsRunId || raw?.discoveryRunId || "",
     acquisitionRunId: raw?.acquisitionRunId || "",
     exportSourceIds: Array.isArray(raw?.exportSourceIds) ? raw.exportSourceIds : [],
-    sessionContext: typeof raw?.sessionContext === "string" ? raw.sessionContext : "",
-    sessionContextUpdatedAt: typeof raw?.sessionContextUpdatedAt === "string" ? raw.sessionContextUpdatedAt : "",
+    sessionContext,
+    sessionContextUpdatedAt,
+    savedSessionContext: typeof raw?.savedSessionContext === "string" ? raw.savedSessionContext : sessionContext,
+    savedSessionContextUpdatedAt: typeof raw?.savedSessionContextUpdatedAt === "string"
+      ? raw.savedSessionContextUpdatedAt
+      : sessionContextUpdatedAt,
     providerLimits: normalizeProviderLimits(raw?.providerLimits),
   };
 }
@@ -229,9 +248,63 @@ function loadSessions() {
   persistSessions();
 }
 
+async function syncSessionsFromServer() {
+  try {
+    const result = await api("/v1/sessions");
+    const items = Array.isArray(result.data?.items) ? result.data.items : [];
+    const merged = new Map(state.sessions.map((session) => [session.id, normalizeSession(session)]));
+    items.forEach((item) => {
+      const existing = merged.get(item.session_id);
+      const normalized = normalizeSession({
+        ...(existing || {}),
+        id: item.session_id,
+        name: item.name || existing?.name || "New Session",
+        sessionContext: item.session_context || existing?.sessionContext || "",
+        savedSessionContext: item.session_context || existing?.savedSessionContext || existing?.sessionContext || "",
+      });
+      merged.set(item.session_id, normalized);
+    });
+    state.sessions = Array.from(merged.values());
+    if (!state.sessions.length) {
+      const session = createBlankSession();
+      state.sessions = [session];
+      state.activeSessionId = session.id;
+    } else if (!state.sessions.some((session) => session.id === state.activeSessionId)) {
+      state.activeSessionId = state.sessions[0].id;
+    }
+    state.pendingSessionId = state.activeSessionId;
+    persistSessions();
+    renderSessions();
+  } catch (error) {
+    if (els.sessionState) {
+      els.sessionState.textContent = `Unable to sync sessions from server: ${errorDetail(error)}`;
+    }
+  }
+}
+
 function persistSessions() {
   localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(state.sessions));
   localStorage.setItem(ACTIVE_SESSION_KEY, state.activeSessionId);
+}
+
+function resetNewSessionDraft() {
+  state.newSessionDraftName = "";
+  state.newSessionDraftContext = "";
+}
+
+function hasUnsavedSessionContext(session = activeSession()) {
+  return normalizeSessionContext(session?.sessionContext || "") !== normalizeSessionContext(session?.savedSessionContext || "");
+}
+
+function defaultSessionContextState(session = activeSession()) {
+  const context = normalizeSessionContext(session?.sessionContext || "");
+  if (!context) {
+    return "Session context is required before running discovery.";
+  }
+  if (hasUnsavedSessionContext(session)) {
+    return "Context has unsaved local changes. Press Save Context to persist it.";
+  }
+  return "Session context saved.";
 }
 
 function activeSession() {
@@ -248,6 +321,26 @@ function bookmarkForSource(sourceId) {
 
 function isBookmarked(sourceId) {
   return Boolean(bookmarkForSource(sourceId));
+}
+
+function annotationForSource(sourceId) {
+  return state.paperAnnotations[sourceId] || {
+    session_id: activeSession().id,
+    source_id: sourceId,
+    freeform_tags: [],
+    approved_tags: [],
+    ai_summary: null,
+    summary_status: "none",
+    summary_generated_at: null,
+    summary_error: null,
+    can_generate_summary: false,
+    summary_block_reason: "parsed_text_required",
+  };
+}
+
+function tagSearchBlob(sourceId) {
+  const annotation = annotationForSource(sourceId);
+  return `${(annotation.freeform_tags || []).join(" ")} ${(annotation.approved_tags || []).join(" ")}`.toLowerCase();
 }
 
 function discoverRunId(session = activeSession()) {
@@ -405,6 +498,7 @@ async function rebindSessionToLatestRun(reasonText) {
     }
   }
   const latestRunId = state.latest.discovery || "";
+  const latestSessionId = (state.latest.discoverySession || "").trim();
   if (!latestRunId) {
     els.sessionState.textContent = "No discovery runs found yet. Start discovery.";
     if (els.discoverState) {
@@ -413,6 +507,11 @@ async function rebindSessionToLatestRun(reasonText) {
     return false;
   }
   const previous = session.discoveryRunId || "";
+  if (latestSessionId) {
+    session.id = latestSessionId;
+    state.activeSessionId = latestSessionId;
+    state.pendingSessionId = latestSessionId;
+  }
   session.discoveryRunId = latestRunId;
   session.resultsRunId = latestRunId;
   persistSessions();
@@ -425,6 +524,41 @@ async function rebindSessionToLatestRun(reasonText) {
       els.discoverState.textContent = `Recovered session binding to latest run: ${latestRunId}.`;
     }
   }
+  return true;
+}
+
+function backendSessionIdForRun(runPayload) {
+  return String(runPayload?.session_id || "").trim();
+}
+
+async function recoverMissingActiveSession(reasonText) {
+  const session = activeSession();
+  if (!session) {
+    return false;
+  }
+  const runId = discoverRunId(session) || state.latest.discovery || "";
+  if (!runId) {
+    return rebindSessionToLatestRun(reasonText);
+  }
+  let backendSessionId = "";
+  try {
+    const result = await api(`/v1/discovery/runs/${encodeURIComponent(runId)}`);
+    backendSessionId = backendSessionIdForRun(result.data);
+  } catch {
+    // Fall back to the latest binding if the run status call is unavailable.
+  }
+  backendSessionId = backendSessionId || (state.latest.discoverySession || "").trim();
+  if (!backendSessionId) {
+    return rebindSessionToLatestRun(reasonText);
+  }
+  session.id = backendSessionId;
+  state.activeSessionId = backendSessionId;
+  state.pendingSessionId = backendSessionId;
+  session.discoveryRunId = runId;
+  session.resultsRunId = runId;
+  persistSessions();
+  renderSessions();
+  els.sessionState.textContent = `${reasonText} Reattached to backend session: ${backendSessionId}.`;
   return true;
 }
 
@@ -531,6 +665,15 @@ function renderShell() {
   }
   if (els.fileMenuBtn) {
     els.fileMenuBtn.setAttribute("aria-expanded", state.fileMenuOpen ? "true" : "false");
+  }
+  if (els.newSessionForm) {
+    els.newSessionForm.hidden = !state.showNewSessionForm;
+  }
+  if (els.newSessionNameInput) {
+    els.newSessionNameInput.value = state.newSessionDraftName;
+  }
+  if (els.newSessionContextInput) {
+    els.newSessionContextInput.value = state.newSessionDraftContext;
   }
   if (els.internalRepoUrlInput) {
     els.internalRepoUrlInput.value = state.internalRepositoryBaseUrl;
@@ -837,7 +980,9 @@ function renderSessions() {
     els.sessionSelect.appendChild(option);
   });
   els.sessionState.textContent = `Active: ${current.name} | ${state.sessions.length} saved session(s).`;
-  els.discoverSessionName.value = current.name;
+  if (els.activeSessionLabel) {
+    els.activeSessionLabel.textContent = `Active: ${current.name}`;
+  }
   els.discoverQueryInput.value = "";
   els.sessionContextInput.value = current.sessionContext || "";
   if (els.discoverOpenalexLimitInput) {
@@ -848,6 +993,7 @@ function renderSessions() {
   }
   els.sessionContextCounter.textContent = `${normalizeSessionContext(current.sessionContext).length} / ${SESSION_CONTEXT_MAX}`;
   els.sessionContextUpdated.textContent = `Updated: ${formatIsoTime(current.sessionContextUpdatedAt)}`;
+  els.sessionContextState.textContent = defaultSessionContextState(current);
   renderSessionQueries();
   renderSuggestedQueries();
 }
@@ -1162,26 +1308,32 @@ async function loadSessionProfile(sessionId) {
     const profile = result.data || {};
     session.sessionContext = String(profile.session_context || "");
     session.sessionContextUpdatedAt = String(profile.updated_at || "");
+    session.savedSessionContext = session.sessionContext;
+    session.savedSessionContextUpdatedAt = session.sessionContextUpdatedAt;
     if (typeof profile.name === "string" && profile.name.trim()) {
       session.name = profile.name.trim();
     }
     persistSessions();
     if (state.activeSessionId === sessionId) {
       renderSessions();
-      els.sessionContextState.textContent = session.sessionContext
-        ? "Session context loaded."
-        : "Session context is required before running discovery.";
+      els.sessionContextState.textContent = defaultSessionContextState(session);
     }
   } catch (error) {
     const detail = errorDetail(error);
     if (detail.includes("session_not_found")) {
       session.sessionContext = "";
       session.sessionContextUpdatedAt = "";
-      persistSessions();
+      session.savedSessionContext = "";
+      session.savedSessionContextUpdatedAt = "";
       if (state.activeSessionId === sessionId) {
+        const recovered = await recoverMissingActiveSession("Saved session was not found.");
+        if (recovered) {
+          return loadSessionProfile(activeSession()?.id || "");
+        }
         renderSessions();
         els.sessionContextState.textContent = "No context saved for this session yet.";
       }
+      persistSessions();
       return;
     }
     if (state.activeSessionId === sessionId) {
@@ -1215,6 +1367,8 @@ async function saveSessionContext() {
     const profile = result.data || {};
     session.sessionContext = String(profile.session_context || context);
     session.sessionContextUpdatedAt = String(profile.updated_at || new Date().toISOString());
+    session.savedSessionContext = session.sessionContext;
+    session.savedSessionContextUpdatedAt = session.sessionContextUpdatedAt;
     if (typeof profile.name === "string" && profile.name.trim()) {
       session.name = profile.name.trim();
     }
@@ -1227,6 +1381,25 @@ async function saveSessionContext() {
     els.sessionContextState.textContent = `Unable to save context: ${errorDetail(error)}`;
     return false;
   }
+}
+
+async function switchActiveSession(nextId) {
+  if (!nextId || nextId === state.activeSessionId) {
+    state.pendingSessionId = state.activeSessionId;
+    renderSessions();
+    return;
+  }
+  state.pendingSessionId = nextId;
+  state.activeSessionId = nextId;
+  resetReviewSort();
+  persistSessions();
+  renderSessions();
+  resetSessionBoundPaneState();
+  await refreshAll();
+  els.sessionState.textContent = `Loaded session: ${activeSession().name}`;
+  state.fileMenuOpen = false;
+  state.showNewSessionForm = false;
+  renderShell();
 }
 
 async function generateQuerySuggestions() {
@@ -1270,6 +1443,7 @@ function bindLatestIdsToSession() {
 async function loadLatestIds() {
   const result = await api("/v1/runs/latest");
   state.latest.discovery = result.data.discovery_run_id || "";
+  state.latest.discoverySession = result.data.discovery_session_id || "";
   state.latest.acquisition = result.data.acquisition_run_id || "";
   state.latest.parse = result.data.parse_run_id || "";
   els.latestDiscoveryId.textContent = state.latest.discovery || "-";
@@ -1843,6 +2017,164 @@ function selectedLibraryIds() {
   return state.libraryFilteredRows.slice(0, limit).map((row) => row.id);
 }
 
+async function loadLibraryAnnotations(sessionId, sourceIds) {
+  const params = new URLSearchParams();
+  params.set("limit", String(Math.max(sourceIds.length, 1)));
+  sourceIds.forEach((sourceId) => params.append("source_id", sourceId));
+  const result = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/annotations?${params.toString()}`);
+  const items = Array.isArray(result.data?.items) ? result.data.items : [];
+  state.paperAnnotations = Object.fromEntries(items.map((item) => [item.source_id, item]));
+}
+
+async function loadLibraryTagCatalog(sessionId) {
+  const result = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/tag-catalog`);
+  state.sessionApprovedTags = Array.isArray(result.data?.tags) ? result.data.tags : [];
+  if (els.libraryApprovedTagsInput) {
+    els.libraryApprovedTagsInput.value = state.sessionApprovedTags.join("\n");
+  }
+  if (els.libraryApprovedTagsState) {
+    els.libraryApprovedTagsState.textContent = state.sessionApprovedTags.length
+      ? `${state.sessionApprovedTags.length} approved tag${state.sessionApprovedTags.length === 1 ? "" : "s"} configured for this session.`
+      : "No approved tags configured for this session.";
+  }
+}
+
+async function loadLibrarySummarySettings(sessionId) {
+  const result = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/summary-settings`);
+  state.sessionSummaryPrompt = String(result.data?.prompt_template || "");
+  if (els.librarySummaryPromptInput) {
+    els.librarySummaryPromptInput.value = state.sessionSummaryPrompt;
+  }
+  if (els.librarySummaryPromptState) {
+    els.librarySummaryPromptState.textContent = state.sessionSummaryPrompt
+      ? "Session summary prompt loaded."
+      : "Using the default summary prompt.";
+  }
+}
+
+function renderTagList(container, tags, kind, onRemove) {
+  if (!container) {
+    return;
+  }
+  container.innerHTML = "";
+  if (!tags.length) {
+    container.innerHTML = `<span class="muted">No ${kind} tags.</span>`;
+    return;
+  }
+  tags.forEach((tag) => {
+    const chip = document.createElement("span");
+    chip.className = `tag-chip${kind === "approved" ? " approved" : ""}`;
+    chip.innerHTML = `<span>${escapeHtml(tag)}</span><button type="button" aria-label="Remove ${escapeHtml(tag)}">&times;</button>`;
+    chip.querySelector("button")?.addEventListener("click", async () => onRemove(tag));
+    container.appendChild(chip);
+  });
+}
+
+function refreshApprovedTagSelect(selectedTag = "") {
+  if (!els.libraryApprovedTagSelect) {
+    return;
+  }
+  const options = ['<option value="">Select approved tag</option>']
+    .concat(state.sessionApprovedTags.map((tag) => `<option value="${escapeHtml(tag)}">${escapeHtml(tag)}</option>`));
+  els.libraryApprovedTagSelect.innerHTML = options.join("");
+  if (selectedTag && state.sessionApprovedTags.includes(selectedTag)) {
+    els.libraryApprovedTagSelect.value = selectedTag;
+  }
+}
+
+async function saveAnnotation(sourceId, payload) {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/annotations/${encodeURIComponent(sourceId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  state.paperAnnotations[sourceId] = result.data;
+  renderLibraryRows();
+}
+
+async function saveSummaryPrompt() {
+  const session = activeSession();
+  const promptTemplate = String(els.librarySummaryPromptInput?.value || "").trim();
+  if (!promptTemplate) {
+    els.librarySummaryPromptState.textContent = "Summary prompt cannot be empty.";
+    return;
+  }
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/summary-settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt_template: promptTemplate }),
+  });
+  state.sessionSummaryPrompt = result.data?.prompt_template || promptTemplate;
+  els.librarySummaryPromptState.textContent = "Summary prompt saved.";
+}
+
+async function saveApprovedTags() {
+  const session = activeSession();
+  const tags = String(els.libraryApprovedTagsInput?.value || "")
+    .split("\n")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/tag-catalog`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tags }),
+  });
+  state.sessionApprovedTags = Array.isArray(result.data?.tags) ? result.data.tags : [];
+  refreshApprovedTagSelect();
+  els.libraryApprovedTagsState.textContent = state.sessionApprovedTags.length
+    ? `${state.sessionApprovedTags.length} approved tag${state.sessionApprovedTags.length === 1 ? "" : "s"} saved.`
+    : "No approved tags configured for this session.";
+  renderLibraryRows();
+}
+
+function startSummaryPoll() {
+  stopSummaryPoll();
+  if (!state.activeSessionId) {
+    return;
+  }
+  state.summaryPollTimer = window.setInterval(async () => {
+    if (!Object.values(state.paperAnnotations).some((item) => item.summary_status === "queued" || item.summary_status === "running")) {
+      stopSummaryPoll();
+      return;
+    }
+    try {
+      await loadLibraryAnnotations(activeSession().id, state.libraryRows.map((item) => item.id));
+      renderLibraryRows();
+    } catch {
+      // Best effort.
+    }
+  }, 3000);
+}
+
+function stopSummaryPoll() {
+  if (state.summaryPollTimer) {
+    clearInterval(state.summaryPollTimer);
+    state.summaryPollTimer = null;
+  }
+}
+
+async function queueSummaryGeneration(sourceIds, forceRegenerate = false) {
+  const session = activeSession();
+  if (!sourceIds.length) {
+    els.libraryState.textContent = "No papers selected for summary generation.";
+    return;
+  }
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/summaries/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_ids: sourceIds, force_regenerate: forceRegenerate }),
+  });
+  const data = result.data || {};
+  const blocked = Array.isArray(data.blocked) ? data.blocked : [];
+  els.libraryState.textContent = `Summary generation queued: ${data.queued_count || 0}. Blocked: ${blocked.length}.`;
+  await loadLibraryAnnotations(session.id, state.libraryRows.map((item) => item.id));
+  renderLibraryRows();
+  if ((data.queued_count || 0) > 0) {
+    startSummaryPoll();
+  }
+}
+
 function renderLibraryDetail(item) {
   if (!item) {
     els.libraryTitle.textContent = "No paper selected.";
@@ -1852,8 +2184,24 @@ function renderLibraryDetail(item) {
       els.libraryBookmarkBtn.textContent = "Bookmark";
       els.libraryBookmarkBtn.disabled = true;
     }
+    if (els.librarySummaryStatus) {
+      els.librarySummaryStatus.textContent = "No summary generated.";
+    }
+    if (els.librarySummaryText) {
+      els.librarySummaryText.textContent = "Select a paper to inspect tags and summary.";
+    }
+    if (els.libraryGenerateSummaryBtn) {
+      els.libraryGenerateSummaryBtn.disabled = true;
+    }
+    if (els.libraryRegenerateSummaryBtn) {
+      els.libraryRegenerateSummaryBtn.disabled = true;
+    }
+    renderTagList(els.libraryFreeformTags, [], "freeform", async () => {});
+    renderTagList(els.libraryApprovedTags, [], "approved", async () => {});
+    refreshApprovedTagSelect();
     return;
   }
+  const annotation = annotationForSource(item.id);
   els.libraryTitle.textContent = `${isBookmarked(item.id) ? "[Bookmarked] " : ""}${item.title}`;
   els.libraryAbstract.textContent = item.abstract || "No abstract available.";
   els.libraryMetadata.innerHTML = buildMetadataHtml(item);
@@ -1861,20 +2209,49 @@ function renderLibraryDetail(item) {
     els.libraryBookmarkBtn.textContent = isBookmarked(item.id) ? "Remove Bookmark" : "Bookmark";
     els.libraryBookmarkBtn.disabled = false;
   }
+  renderTagList(els.libraryFreeformTags, annotation.freeform_tags || [], "freeform", async (tag) => {
+    const nextTags = (annotation.freeform_tags || []).filter((value) => value !== tag);
+    await saveAnnotation(item.id, { freeform_tags: nextTags, approved_tags: annotation.approved_tags || [] });
+    els.libraryState.textContent = `Removed tag: ${tag}`;
+  });
+  renderTagList(els.libraryApprovedTags, annotation.approved_tags || [], "approved", async (tag) => {
+    const nextTags = (annotation.approved_tags || []).filter((value) => value !== tag);
+    await saveAnnotation(item.id, { freeform_tags: annotation.freeform_tags || [], approved_tags: nextTags });
+    els.libraryState.textContent = `Removed approved tag: ${tag}`;
+  });
+  refreshApprovedTagSelect();
+  if (els.librarySummaryText) {
+    els.librarySummaryText.textContent = annotation.ai_summary || "No summary generated for this paper yet.";
+  }
+  if (els.librarySummaryStatus) {
+    const reason = annotation.summary_block_reason === "parsed_text_required"
+      ? "Summary unavailable until the paper is downloaded and parsed."
+      : "";
+    const error = annotation.summary_error ? ` Error: ${annotation.summary_error}` : "";
+    els.librarySummaryStatus.textContent = `Status: ${annotation.summary_status}.${reason ? ` ${reason}` : ""}${error}`;
+  }
+  if (els.libraryGenerateSummaryBtn) {
+    els.libraryGenerateSummaryBtn.disabled = !annotation.can_generate_summary || annotation.summary_status === "completed";
+  }
+  if (els.libraryRegenerateSummaryBtn) {
+    els.libraryRegenerateSummaryBtn.disabled = !annotation.can_generate_summary;
+  }
 }
 
 function renderLibraryRows() {
   const query = els.libraryQuery.value.trim().toLowerCase();
   const filtered = !query
     ? [...state.libraryRows]
-    : state.libraryRows.filter((item) => `${item.title} ${item.abstract || ""}`.toLowerCase().includes(query));
+    : state.libraryRows.filter((item) => `${item.title} ${item.abstract || ""} ${tagSearchBlob(item.id)}`.toLowerCase().includes(query));
   state.libraryFilteredRows = sortedLibraryRows(filtered);
   renderLibrarySortButtons();
   els.libraryRows.innerHTML = "";
   state.libraryFilteredRows.forEach((item, index) => {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", item.id === state.selectedLibrarySourceId);
-    tr.innerHTML = `<td>${escapeHtml(formatLineageNumber(item))}</td><td>${index + 1}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}<span>${escapeHtml(item.title)}</span> <button type="button" class="mini-copy-btn" title="Copy title" aria-label="Copy title">Copy</button></td>`;
+    const annotation = annotationForSource(item.id);
+    const tagMarker = (annotation.freeform_tags?.length || annotation.approved_tags?.length) ? '<span class="bookmark-chip">T</span> ' : "";
+    tr.innerHTML = `<td>${escapeHtml(formatLineageNumber(item))}</td><td>${index + 1}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${tagMarker}${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}<span>${escapeHtml(item.title)}</span> <button type="button" class="mini-copy-btn" title="Copy title" aria-label="Copy title">Copy</button></td>`;
     tr.querySelector(".mini-copy-btn")?.addEventListener("click", async (event) => {
       event.stopPropagation();
       const ok = await copyTextToClipboard(item.title);
@@ -1906,6 +2283,9 @@ function resetSessionBoundPaneState() {
   state.documentRows = [];
   state.libraryRows = [];
   state.libraryFilteredRows = [];
+  state.paperAnnotations = {};
+  state.sessionApprovedTags = [];
+  state.sessionSummaryPrompt = "";
   state.selectedDocumentSourceId = "";
   state.selectedReviewSourceId = "";
   state.selectedLibrarySourceId = "";
@@ -1933,6 +2313,7 @@ function resetSessionBoundPaneState() {
 
   renderLibraryRows();
   els.libraryState.textContent = "No discovery run attached to the active session.";
+  stopSummaryPoll();
 
   renderStopButton();
   renderActivity();
@@ -1962,8 +2343,16 @@ async function loadLibrary(recoverOnNotFound = true) {
     throw error;
   }
   state.libraryRows = result.data.items || [];
+  await loadLibraryAnnotations(session.id, state.libraryRows.map((item) => item.id));
+  await loadLibraryTagCatalog(session.id);
+  await loadLibrarySummarySettings(session.id);
   renderLibraryRows();
   els.libraryState.textContent = state.libraryRows.length ? "Library export data loaded." : "No accepted sources available.";
+  if (Object.values(state.paperAnnotations).some((item) => item.summary_status === "queued" || item.summary_status === "running")) {
+    startSummaryPoll();
+  } else {
+    stopSummaryPoll();
+  }
 }
 
 async function createDiscoveryRun() {
@@ -2612,6 +3001,7 @@ async function refreshAll() {
 function handleKeyboard(event) {
   if (state.fileMenuOpen && event.key === "Escape") {
     state.fileMenuOpen = false;
+    state.showNewSessionForm = false;
     renderShell();
     return;
   }
@@ -2661,7 +3051,37 @@ function wireEvents() {
     renderShell();
   });
   els.newSessionBtn.addEventListener("click", () => {
-    const session = createBlankSession();
+    state.showNewSessionForm = true;
+    if (!state.newSessionDraftName) {
+      state.newSessionDraftName = "";
+    }
+    if (!state.newSessionDraftContext) {
+      state.newSessionDraftContext = "";
+    }
+    if (els.newSessionFormState) {
+      els.newSessionFormState.textContent = "";
+    }
+    renderShell();
+    els.newSessionNameInput?.focus();
+  });
+  els.createSessionConfirmBtn?.addEventListener("click", () => {
+    const name = String(els.newSessionNameInput?.value || "").trim();
+    const context = String(els.newSessionContextInput?.value || "");
+    if (!name) {
+      els.newSessionFormState.textContent = "Session name is required.";
+      return;
+    }
+    if (normalizeSessionContext(context).length > SESSION_CONTEXT_MAX) {
+      els.newSessionFormState.textContent = `Session context must be <= ${SESSION_CONTEXT_MAX} characters.`;
+      return;
+    }
+    const session = normalizeSession({
+      name,
+      sessionContext: context,
+      sessionContextUpdatedAt: "",
+      savedSessionContext: "",
+      savedSessionContextUpdatedAt: "",
+    });
     state.sessions.push(session);
     state.activeSessionId = session.id;
     state.pendingSessionId = session.id;
@@ -2670,32 +3090,19 @@ function wireEvents() {
     renderSessions();
     renderShell();
     resetSessionBoundPaneState();
-    els.sessionContextState.textContent = "No context saved for this session yet.";
+    els.sessionContextState.textContent = defaultSessionContextState(session);
     els.sessionState.textContent = `Created new session: ${session.name}`;
     state.fileMenuOpen = false;
+    state.showNewSessionForm = false;
+    resetNewSessionDraft();
     renderShell();
   });
-  els.saveSessionBtn.addEventListener("click", () => {
-    const session = activeSession();
-    session.name = els.discoverSessionName.value.trim() || session.name;
-    persistSessions();
-    renderSessions();
-    els.sessionState.textContent = `Saved session: ${session.name}`;
-  });
-  els.loadSessionBtn.addEventListener("click", async () => {
-    const nextId = els.sessionSelect.value;
-    if (!nextId) {
-      return;
+  els.cancelNewSessionBtn?.addEventListener("click", () => {
+    state.showNewSessionForm = false;
+    resetNewSessionDraft();
+    if (els.newSessionFormState) {
+      els.newSessionFormState.textContent = "";
     }
-    state.pendingSessionId = nextId;
-    state.activeSessionId = nextId;
-    resetReviewSort();
-    persistSessions();
-    renderSessions();
-    resetSessionBoundPaneState();
-    await refreshAll();
-    els.sessionState.textContent = `Loaded session: ${activeSession().name}`;
-    state.fileMenuOpen = false;
     renderShell();
   });
   els.deleteSessionBtn.addEventListener("click", async () => {
@@ -2715,12 +3122,23 @@ function wireEvents() {
     renderShell();
   });
   els.stopRunningBtn.addEventListener("click", stopRunningTask);
-  els.sessionSelect.addEventListener("change", () => {
-    state.pendingSessionId = els.sessionSelect.value;
-    const pending = state.sessions.find((session) => session.id === state.pendingSessionId);
-    if (pending) {
-      els.sessionState.textContent = `Selected session: ${pending.name}. Press Load to open it.`;
+  els.sessionSelect.addEventListener("change", async () => {
+    const nextId = els.sessionSelect.value;
+    const pending = state.sessions.find((session) => session.id === nextId);
+    if (!pending || nextId === state.activeSessionId) {
+      state.pendingSessionId = state.activeSessionId;
+      renderSessions();
+      return;
     }
+    const message = hasUnsavedSessionContext()
+      ? "Current session has unsaved context changes that exist only in this browser. Switch session?"
+      : `Switch to session "${pending.name}"?`;
+    if (!window.confirm(message)) {
+      state.pendingSessionId = state.activeSessionId;
+      renderSessions();
+      return;
+    }
+    await switchActiveSession(nextId);
   });
   els.documentsPrevBtn?.addEventListener("click", () => {
     if (state.documentsPage <= 0) {
@@ -2733,23 +3151,19 @@ function wireEvents() {
     state.documentsPage += 1;
     renderDocuments();
   });
-  els.discoverSessionName.addEventListener("change", () => {
-    const session = activeSession();
-    session.name = els.discoverSessionName.value.trim() || session.name;
-    persistSessions();
-    renderSessions();
-  });
   els.sessionContextInput.addEventListener("input", () => {
     const session = activeSession();
     session.sessionContext = els.sessionContextInput.value;
     els.sessionContextCounter.textContent = `${normalizeSessionContext(session.sessionContext).length} / ${SESSION_CONTEXT_MAX}`;
     persistSessions();
     updateQuerySelectionState();
-    if (!normalizeSessionContext(session.sessionContext)) {
-      els.sessionContextState.textContent = "Session context is required before running discovery.";
-    } else {
-      els.sessionContextState.textContent = "Unsaved context changes.";
-    }
+    els.sessionContextState.textContent = defaultSessionContextState(session);
+  });
+  els.newSessionNameInput?.addEventListener("input", () => {
+    state.newSessionDraftName = els.newSessionNameInput.value;
+  });
+  els.newSessionContextInput?.addEventListener("input", () => {
+    state.newSessionDraftContext = els.newSessionContextInput.value;
   });
   ["discoverOpenalexLimitInput", "discoverSemanticScholarLimitInput", "discoverBraveLimitInput"].forEach((id) => {
     els[id].addEventListener("input", updateSessionProviderLimits);
@@ -2882,6 +3296,17 @@ function wireEvents() {
   els.documentsExportCsvBtn.addEventListener("click", exportDocumentsCsv);
   els.libraryQuery.addEventListener("input", renderLibraryRows);
   els.libraryExportSize.addEventListener("change", renderLibraryRows);
+  els.libraryGenerateVisibleSummariesBtn?.addEventListener("click", async () => {
+    await queueSummaryGeneration(state.libraryFilteredRows.map((item) => item.id), false);
+  });
+  els.libraryPromptToggleBtn?.addEventListener("click", () => {
+    els.librarySummaryPromptPanel.hidden = !els.librarySummaryPromptPanel.hidden;
+  });
+  els.libraryApprovedTagsToggleBtn?.addEventListener("click", () => {
+    els.libraryApprovedTagsPanel.hidden = !els.libraryApprovedTagsPanel.hidden;
+  });
+  els.librarySaveSummaryPromptBtn?.addEventListener("click", saveSummaryPrompt);
+  els.librarySaveApprovedTagsBtn?.addEventListener("click", saveApprovedTags);
   els.libraryAddBtn.addEventListener("click", () => {
     if (state.selectedLibrarySourceId) {
       updateSelectionMembership(state.selectedLibrarySourceId, true);
@@ -2901,6 +3326,49 @@ function wireEvents() {
     renderLibraryRows();
     renderReviewRows();
     renderDocuments();
+  });
+  els.libraryAddFreeformTagBtn?.addEventListener("click", async () => {
+    if (!state.selectedLibrarySourceId) {
+      return;
+    }
+    const nextTag = String(els.libraryFreeformTagInput?.value || "").trim();
+    if (!nextTag) {
+      return;
+    }
+    const annotation = annotationForSource(state.selectedLibrarySourceId);
+    await saveAnnotation(state.selectedLibrarySourceId, {
+      freeform_tags: (annotation.freeform_tags || []).concat([nextTag]),
+      approved_tags: annotation.approved_tags || [],
+    });
+    els.libraryFreeformTagInput.value = "";
+    els.libraryState.textContent = `Added tag: ${nextTag}`;
+  });
+  els.libraryAddApprovedTagBtn?.addEventListener("click", async () => {
+    if (!state.selectedLibrarySourceId) {
+      return;
+    }
+    const nextTag = String(els.libraryApprovedTagSelect?.value || "").trim();
+    if (!nextTag) {
+      return;
+    }
+    const annotation = annotationForSource(state.selectedLibrarySourceId);
+    await saveAnnotation(state.selectedLibrarySourceId, {
+      freeform_tags: annotation.freeform_tags || [],
+      approved_tags: (annotation.approved_tags || []).concat([nextTag]),
+    });
+    els.libraryState.textContent = `Added approved tag: ${nextTag}`;
+  });
+  els.libraryGenerateSummaryBtn?.addEventListener("click", async () => {
+    if (!state.selectedLibrarySourceId) {
+      return;
+    }
+    await queueSummaryGeneration([state.selectedLibrarySourceId], false);
+  });
+  els.libraryRegenerateSummaryBtn?.addEventListener("click", async () => {
+    if (!state.selectedLibrarySourceId) {
+      return;
+    }
+    await queueSummaryGeneration([state.selectedLibrarySourceId], true);
   });
   els.bookmarksCreateSessionBtn?.addEventListener("click", async () => {
     const bookmark = selectedBookmark();
@@ -2950,6 +3418,7 @@ function wireEvents() {
       return;
     }
     state.fileMenuOpen = false;
+    state.showNewSessionForm = false;
     renderShell();
   });
   document.addEventListener("keydown", handleKeyboard);
@@ -2961,6 +3430,7 @@ async function init() {
   renderSessions();
   renderShell();
   wireEvents();
+  await syncSessionsFromServer();
   await refreshAll();
   connectLiveUpdates();
   startAdvancedEventPolling();

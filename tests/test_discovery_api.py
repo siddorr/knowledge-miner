@@ -25,6 +25,7 @@ def _seed_run_with_sources() -> str:
             id="run_api_seed",
             status="completed",
             seed_queries=["upw", "semiconductor"],
+            session_id="session_api_seed",
             max_iterations=1,
             current_iteration=1,
             accepted_total=1,
@@ -131,6 +132,7 @@ def test_discovery_run_status_includes_seed_queries():
     assert response.status_code == 200
     body = response.json()
     assert body["run_id"] == run_id
+    assert body["session_id"] == "session_api_seed"
     assert body["seed_queries"] == ["upw", "semiconductor"]
     assert "ai_filter_effective_enabled" in body
     assert body["ai_filter_config_source"] == "run"

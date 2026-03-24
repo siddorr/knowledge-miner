@@ -18,6 +18,7 @@ from ..schemas import (
     HMIEventsIngestRequest,
     HMIEventsIngestResponse,
     SessionProfileResponse,
+    SessionProfilesListResponse,
     SessionProfileUpsertRequest,
 )
 
@@ -141,6 +142,27 @@ def get_session_profile(
         name=profile.name,
         session_context=profile.session_context,
         updated_at=profile.updated_at.isoformat() if profile.updated_at else None,
+    )
+
+
+@router.get("/v1/sessions", response_model=SessionProfilesListResponse)
+def list_session_profiles(
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> SessionProfilesListResponse:
+    rows = db.scalars(select(SessionProfile).order_by(SessionProfile.updated_at.desc(), SessionProfile.session_id.asc())).all()
+    return SessionProfilesListResponse(
+        items=[
+            SessionProfileResponse(
+                session_id=row.session_id,
+                name=row.name,
+                session_context=row.session_context,
+                updated_at=row.updated_at.isoformat() if row.updated_at else None,
+            )
+            for row in rows
+        ],
+        total=len(rows),
     )
 
 

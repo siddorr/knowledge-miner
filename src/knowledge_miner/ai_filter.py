@@ -41,6 +41,11 @@ class AIDocumentIdentityResult:
     confidence: float
 
 
+@dataclass
+class AIPaperSummaryResult:
+    summary: str
+
+
 def describe_ai_filter_runtime(*, use_ai_filter: bool, api_key: str | None) -> tuple[bool, str | None]:
     if not use_ai_filter:
         return False, "AI filter disabled (USE_AI_FILTER=false); heuristic filtering only."
@@ -361,3 +366,77 @@ def extract_document_identity(
         doi=doi.strip().lower() if isinstance(doi, str) and doi.strip() else None,
         confidence=confidence,
     )
+
+
+def generate_paper_summary(
+    *,
+    session_context: str,
+    prompt_template: str,
+    title: str,
+    body_text: str,
+    doi: str | None = None,
+    year: int | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float | None = None,
+) -> AIPaperSummaryResult:
+    resolved_api_key = settings.ai_api_key if api_key is None else api_key
+    if not resolved_api_key:
+        raise AIAuthError("paper_summary_missing_api_key")
+    resolved_model = settings.ai_model if model is None else model
+    resolved_base_url = settings.ai_base_url if base_url is None else base_url
+    resolved_timeout = settings.ai_timeout_seconds if timeout_seconds is None else timeout_seconds
+    url = f"{resolved_base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": resolved_model,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You generate concise research-context summaries for scientific papers. "
+                    "Return strict JSON only."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "Summarize the paper for the current research session.",
+                        "instructions": prompt_template,
+                        "session_context": session_context,
+                        "paper": {
+                            "title": title,
+                            "doi": doi or "",
+                            "year": year,
+                            "body_text": body_text[:30000],
+                        },
+                        "required_output": {
+                            "summary": "string",
+                        },
+                    }
+                ),
+            },
+        ],
+    }
+    try:
+        with httpx.Client(timeout=resolved_timeout) as client:
+            response = client.post(url, headers=headers, json=payload)
+            if response.status_code in {401, 403}:
+                raise AIAuthError(f"paper_summary_http_{response.status_code}")
+            if response.status_code == 429:
+                raise AIRateLimitError("paper_summary_http_429")
+            if response.status_code >= 400:
+                raise AIProviderError(f"paper_summary_http_{response.status_code}")
+            body = response.json()
+    except httpx.TimeoutException as exc:
+        raise AITimeoutError("paper_summary_timeout") from exc
+    content = body["choices"][0]["message"]["content"]
+    parsed = json.loads(content)
+    summary = str(parsed.get("summary", "")).strip()
+    if not summary:
+        raise ValueError("paper_summary_empty")
+    return AIPaperSummaryResult(summary=summary)

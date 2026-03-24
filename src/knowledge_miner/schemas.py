@@ -45,6 +45,7 @@ class RunCreateResponse(BaseModel):
 
 class RunStatusResponse(BaseModel):
     run_id: str
+    session_id: str | None = None
     status: str
     seed_queries: list[str]
     current_iteration: int
@@ -500,6 +501,11 @@ class SessionProfileResponse(BaseModel):
     updated_at: str | None
 
 
+class SessionProfilesListResponse(BaseModel):
+    items: list[SessionProfileResponse]
+    total: int
+
+
 class BookmarkCreateRequest(BaseModel):
     source_id: str = Field(min_length=1)
 
@@ -532,3 +538,63 @@ class BookmarkCreateSessionResponse(BaseModel):
     discovery_run_id: str
     status: str
     bookmarked_parent_count: int
+
+
+class PaperAnnotationOut(BaseModel):
+    session_id: str
+    source_id: str
+    freeform_tags: list[str] = Field(default_factory=list)
+    approved_tags: list[str] = Field(default_factory=list)
+    ai_summary: str | None = None
+    summary_status: str = "none"
+    summary_generated_at: str | None = None
+    summary_error: str | None = None
+    can_generate_summary: bool = False
+    summary_block_reason: str | None = None
+
+
+class PaperAnnotationsListResponse(BaseModel):
+    items: list[PaperAnnotationOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class PaperAnnotationUpdateRequest(BaseModel):
+    freeform_tags: list[str] | None = None
+    approved_tags: list[str] | None = None
+
+
+class SessionTagCatalogOut(BaseModel):
+    session_id: str
+    tags: list[str] = Field(default_factory=list)
+
+
+class SessionTagCatalogUpdateRequest(BaseModel):
+    tags: list[str] = Field(default_factory=list)
+
+
+class SessionSummarySettingsOut(BaseModel):
+    session_id: str
+    prompt_template: str
+
+
+class SessionSummarySettingsUpdateRequest(BaseModel):
+    prompt_template: str = Field(min_length=1, max_length=12000)
+
+
+class SummaryGenerationRequest(BaseModel):
+    source_ids: list[str] = Field(min_length=1)
+    force_regenerate: bool = False
+
+
+class SummaryGenerationBlockedOut(BaseModel):
+    source_id: str
+    reason: str
+
+
+class SummaryGenerationResponse(BaseModel):
+    session_id: str
+    queued_count: int
+    blocked_count: int
+    blocked: list[SummaryGenerationBlockedOut] = Field(default_factory=list)

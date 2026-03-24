@@ -26,6 +26,12 @@ select {
   font: inherit;
 }
 
+input,
+select,
+textarea {
+  max-width: 100%;
+}
+
 .shell-header,
 .controls-row,
 .nav-row,
@@ -234,6 +240,22 @@ textarea {
   gap: 4px;
 }
 
+.file-menu-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.file-menu-form[hidden] {
+  display: none;
+}
+
+.session-active-label {
+  font-weight: 700;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -341,6 +363,42 @@ tbody tr.active {
   font-size: 0.72rem;
   line-height: 1.2rem;
   text-align: center;
+}
+
+.tag-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  background: #f7f3ea;
+}
+
+.tag-chip.approved {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tag-chip button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.tag-input-row input,
+.tag-input-row select {
+  min-width: 220px;
 }
 
 .bookmark-title {

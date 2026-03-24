@@ -22,6 +22,7 @@ def _seed_phase42_records() -> None:
             id="run_q_1",
             status="completed",
             seed_queries=["upw"],
+            session_id="session_q_1",
             max_iterations=1,
             current_iteration=1,
             accepted_total=1,
@@ -199,5 +200,6 @@ def test_latest_runs_endpoint_returns_latest_ids():
     assert resp.status_code == 200
     body = resp.json()
     assert body["discovery_run_id"] == "run_q_1"
+    assert body["discovery_session_id"] == "session_q_1"
     assert body["acquisition_run_id"] == "acq_q_1"
     assert body["parse_run_id"] == "parse_q_1"

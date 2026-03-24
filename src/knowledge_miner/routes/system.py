@@ -60,11 +60,12 @@ def get_latest_runs(
     __: None = Depends(require_rate_limit),
     db: Session = Depends(get_db),
 ) -> dict:
-    discovery = db.scalars(select(Run.id).order_by(Run.created_at.desc(), Run.id.desc()).limit(1)).first()
+    latest_discovery_run = db.scalars(select(Run).order_by(Run.created_at.desc(), Run.id.desc()).limit(1)).first()
     acquisition = db.scalars(select(AcquisitionRun.id).order_by(AcquisitionRun.created_at.desc(), AcquisitionRun.id.desc()).limit(1)).first()
     parse = db.scalars(select(ParseRun.id).order_by(ParseRun.created_at.desc(), ParseRun.id.desc()).limit(1)).first()
     return {
-        "discovery_run_id": discovery,
+        "discovery_run_id": latest_discovery_run.id if latest_discovery_run is not None else None,
+        "discovery_session_id": latest_discovery_run.session_id if latest_discovery_run is not None else None,
         "acquisition_run_id": acquisition,
         "parse_run_id": parse,
     }

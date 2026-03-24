@@ -22,11 +22,17 @@ def test_hmi2_shell_route_and_navigation():
     assert "Knowledge Miner" in body
     assert "File" in body
     assert "New Session" in body
-    assert 'id="discoverSessionName"' in body
     assert 'id="fileMenuBtn"' in body
     assert 'id="fileMenuPanel"' in body
+    assert 'id="newSessionForm"' in body
+    assert 'id="newSessionNameInput"' in body
+    assert 'id="newSessionContextInput"' in body
+    assert 'id="createSessionConfirmBtn"' in body
+    assert 'id="cancelNewSessionBtn"' in body
+    assert 'id="activeSessionLabel"' in body
     assert "Stop Running Task" in body
-    assert "Save" in body
+    assert 'id="saveSessionBtn"' not in body
+    assert 'id="loadSessionBtn"' not in body
     assert "Library Export" in body
     assert "Bookmarks" in body
     assert 'data-page="bookmarks"' in body
@@ -79,6 +85,18 @@ def test_hmi2_shell_route_and_navigation():
     assert 'data-library-sort="year"' in body
     assert 'data-library-sort="citation_count"' in body
     assert 'data-library-sort="title"' in body
+    assert 'id="libraryGenerateVisibleSummariesBtn"' in body
+    assert 'id="libraryPromptToggleBtn"' in body
+    assert 'id="libraryApprovedTagsToggleBtn"' in body
+    assert 'id="librarySummaryPromptInput"' in body
+    assert 'id="libraryApprovedTagsInput"' in body
+    assert 'id="libraryFreeformTags"' in body
+    assert 'id="libraryApprovedTags"' in body
+    assert 'id="librarySummaryStatus"' in body
+    assert 'id="librarySummaryText"' in body
+    assert 'id="libraryGenerateSummaryBtn"' in body
+    assert 'id="libraryRegenerateSummaryBtn"' in body
+    assert "Search matches title, abstract, and tags." in body
     assert "Download Selected" in body
     assert "Export ZIP with PDFs" in body
     assert 'id="reviewBookmarkBtn"' in body

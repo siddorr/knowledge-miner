@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from ..auth import require_api_key
 from ..config import settings
 from ..db import get_db
-from ..models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
+from ..models import AcquisitionItem, AcquisitionRun, Artifact, PaperAnnotation, Run, Source
 from ..rate_limit import require_rate_limit
 
 router = APIRouter(tags=["library_export"])
@@ -74,6 +74,18 @@ def _artifact_file_path(path_value: str | None) -> Path:
     return Path(settings.artifacts_dir) / path
 
 
+def _annotation_by_source(db: Session, session_id: str | None, source_ids: list[str]) -> dict[str, PaperAnnotation]:
+    if not session_id or not source_ids:
+        return {}
+    rows = db.scalars(
+        select(PaperAnnotation).where(
+            PaperAnnotation.session_id == session_id,
+            PaperAnnotation.source_id.in_(source_ids),
+        )
+    ).all()
+    return {row.source_id: row for row in rows}
+
+
 @router.get("/v1/library-export/runs/{run_id}/metadata.csv")
 def export_library_metadata_csv(
     run_id: str,
@@ -84,11 +96,13 @@ def export_library_metadata_csv(
 ) -> Response:
     _load_export_run(db, run_id)
     sources = _accepted_sources(db, run_id, source_id)
+    run = _load_export_run(db, run_id)
     latest_acq = _latest_acquisition_run(db, run_id)
     item_status_by_source: dict[str, str] = {}
     if latest_acq is not None:
         items = db.scalars(select(AcquisitionItem).where(AcquisitionItem.acq_run_id == latest_acq.id)).all()
         item_status_by_source = {item.source_id: item.status for item in items}
+    annotation_by_source = _annotation_by_source(db, run.session_id, [source.id for source in sources])
 
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -101,6 +115,9 @@ def export_library_metadata_csv(
             "citations",
             "ai_score",
             "status",
+            "freeform_tags",
+            "approved_tags",
+            "ai_summary",
             "source_link",
         ],
     )
@@ -115,6 +132,9 @@ def export_library_metadata_csv(
                 "citations": source.citation_count if source.citation_count is not None else "",
                 "ai_score": f"{float(source.relevance_score):.2f}",
                 "status": item_status_by_source.get(source.id, "pending"),
+                "freeform_tags": "; ".join((annotation_by_source.get(source.id).freeform_tags_json if annotation_by_source.get(source.id) else []) or []),
+                "approved_tags": "; ".join((annotation_by_source.get(source.id).approved_tags_json if annotation_by_source.get(source.id) else []) or []),
+                "ai_summary": (annotation_by_source.get(source.id).ai_summary if annotation_by_source.get(source.id) else "") or "",
                 "source_link": _source_link(source),
             }
         )

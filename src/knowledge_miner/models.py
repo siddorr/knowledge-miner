@@ -173,6 +173,54 @@ class SessionProfile(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
 
+class SessionTagCatalog(Base):
+    __tablename__ = "session_tag_catalog"
+    __table_args__ = (
+        Index("ix_session_tag_catalog_session_id_tag", "session_id", "tag", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    tag: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class SessionSummarySettings(Base):
+    __tablename__ = "session_summary_settings"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    prompt_template: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class PaperAnnotation(Base):
+    __tablename__ = "paper_annotations"
+    __table_args__ = (
+        CheckConstraint(
+            "summary_status IN ('none','queued','running','completed','failed')",
+            name="ck_paper_annotations_summary_status_values",
+        ),
+        Index("ix_paper_annotations_session_id_updated_at", "session_id", "updated_at"),
+        Index("ix_paper_annotations_session_id_source_id", "session_id", "source_id", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(String, ForeignKey("sources.id"), nullable=False, index=True)
+    freeform_tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    approved_tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_status: Mapped[str] = mapped_column(String, nullable=False, default="none")
+    summary_prompt_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    summary_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class Bookmark(Base):
     __tablename__ = "bookmarks"
     __table_args__ = (
