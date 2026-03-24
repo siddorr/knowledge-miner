@@ -50,8 +50,8 @@
     <button data-page="review" class="nav-btn">Review <span id="reviewBadge" class="badge">0</span></button>
     <button data-page="documents" class="nav-btn">Documents <span id="documentsBadge" class="badge">0</span></button>
     <button data-page="library" class="nav-btn">Library Export</button>
+    <button data-page="bookmarks" class="nav-btn">Bookmarks</button>
     <button data-page="advanced" class="nav-btn">Advanced</button>
-    <button id="openBookmarksBtn" type="button" class="nav-btn nav-action-btn">Bookmarks</button>
   </nav>
 
   <main class="workspace">
@@ -292,6 +292,39 @@
       <p id="libraryState" class="muted"></p>
     </section>
 
+    <section id="page-bookmarks" class="page" hidden>
+      <p class="page-status">Bookmarks</p>
+      <div class="two-pane two-pane-fill">
+        <section class="pane scroll-pane">
+          <div class="scroll-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Title</th>
+                  <th>Source Session</th>
+                  <th>Year</th>
+                  <th>DOI</th>
+                </tr>
+              </thead>
+              <tbody id="bookmarksRows"></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="pane detail-pane scroll-pane">
+          <h3 id="bookmarksTitle">No bookmark selected.</h3>
+          <h4>Abstract</h4>
+          <p id="bookmarksAbstract" class="detail-text">Select a bookmark to inspect its context and create a new session.</p>
+          <h4>Metadata</h4>
+          <div id="bookmarksMetadata">Source session: - | Year: - | DOI: - | Link: -</div>
+          <div class="row">
+            <button id="bookmarksCreateSessionBtn" type="button">Create Session</button>
+            <button id="bookmarksRemoveBtn" type="button">Remove Bookmark</button>
+          </div>
+        </section>
+      </div>
+      <p id="bookmarksState" class="muted">No bookmarks loaded yet.</p>
+    </section>
+
     <section id="page-advanced" class="page" hidden>
       <div class="card">
         <label>
@@ -383,29 +416,6 @@
       </div>
     </section>
   </main>
-
-  <section id="bookmarksModal" class="modal-shell" hidden aria-label="Bookmarks">
-    <div class="modal-card">
-      <div class="row">
-        <strong>Bookmarks</strong>
-        <button id="closeBookmarksBtn" type="button">Close</button>
-      </div>
-      <p id="bookmarksState" class="muted">No bookmarks loaded yet.</p>
-      <table>
-        <thead>
-          <tr>
-            <th>Title</th>
-            <th>Source Session</th>
-            <th>Year</th>
-            <th>DOI</th>
-            <th>Abstract</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="bookmarksRows"></tbody>
-      </table>
-    </div>
-  </section>
 
   <footer class="shell-footer">
     <span id="footerSystem">System: unknown</span>

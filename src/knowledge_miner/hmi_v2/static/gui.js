@@ -61,7 +61,7 @@ const state = {
   serverOffline: false,
   offlineMessage: "",
   bookmarks: [],
-  bookmarksOpen: false,
+  selectedBookmarkId: "",
 };
 
 const els = {};
@@ -130,7 +130,7 @@ function readDom() {
     "globalSearchInput", "globalSearchBtn", "globalSearchResults", "runLookupInput", "runLookupBtn", "runLookupResult",
     "advancedEventsPauseBtn", "advancedEventsAutoscrollBtn", "advancedEventsState", "advancedEventCounters", "advancedEventsLog",
     "footerSystem", "footerAi", "footerDb", "footerUpdated",
-    "openBookmarksBtn", "bookmarksModal", "closeBookmarksBtn", "bookmarksState", "bookmarksRows",
+    "bookmarksRows", "bookmarksTitle", "bookmarksAbstract", "bookmarksMetadata", "bookmarksCreateSessionBtn", "bookmarksRemoveBtn", "bookmarksState",
   ];
   for (const id of ids) {
     els[id] = $(id);
@@ -140,6 +140,7 @@ function readDom() {
     review: $("page-review"),
     documents: $("page-documents"),
     library: $("page-library"),
+    bookmarks: $("page-bookmarks"),
     advanced: $("page-advanced"),
   };
   els.navButtons = Array.from(document.querySelectorAll(".nav-btn"));
@@ -175,7 +176,6 @@ function normalizeSession(raw) {
     resultsRunId: raw?.resultsRunId || raw?.discoveryRunId || "",
     acquisitionRunId: raw?.acquisitionRunId || "",
     exportSourceIds: Array.isArray(raw?.exportSourceIds) ? raw.exportSourceIds : [],
-    bookmarkedSourceIds: Array.isArray(raw?.bookmarkedSourceIds) ? raw.bookmarkedSourceIds : [],
     sessionContext: typeof raw?.sessionContext === "string" ? raw.sessionContext : "",
     sessionContextUpdatedAt: typeof raw?.sessionContextUpdatedAt === "string" ? raw.sessionContextUpdatedAt : "",
     providerLimits: normalizeProviderLimits(raw?.providerLimits),
@@ -515,9 +515,6 @@ function renderShell() {
   renderStopButton();
   applyOfflineActionState();
   renderAdvancedOperationalEvents();
-  if (els.bookmarksModal) {
-    els.bookmarksModal.hidden = !state.bookmarksOpen;
-  }
   renderActivity();
 }
 
@@ -544,12 +541,13 @@ function applyOfflineActionState() {
     "libraryBookmarkBtn",
     "libraryZipBtn",
     "libraryMetadataBtn",
+    "bookmarksCreateSessionBtn",
+    "bookmarksRemoveBtn",
     "saveAiSettingsBtn",
     "stopRunningBtn",
     "saveProviderSettingsBtn",
     "globalSearchBtn",
     "runLookupBtn",
-    "closeBookmarksBtn",
   ];
   controls.forEach((id) => {
     if (els[id]) {
@@ -862,18 +860,60 @@ function renderSuggestedQueries() {
   }
 }
 
-function renderBookmarksModal() {
+function selectedBookmark() {
+  return state.bookmarks.find((item) => item.id === state.selectedBookmarkId) || null;
+}
+
+function bookmarkMetadataHtml(bookmark) {
+  const doiLink = bookmark?.doi_url
+    ? `<a class="linkish" href="${escapeHtml(bookmark.doi_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(bookmark.doi || "Open DOI")}</a>`
+    : "-";
+  const sourceLink = bookmark?.source_url
+    ? `<a class="linkish" href="${escapeHtml(bookmark.source_url)}" target="_blank" rel="noopener noreferrer">Open source</a>`
+    : "-";
+  return [
+    `<span>Source session: ${escapeHtml(bookmark?.source_session_name || bookmark?.source_session_id || "-")}</span>`,
+    `<span>Year: ${escapeHtml(bookmark?.year ?? "-")}</span>`,
+    `<span>DOI: ${doiLink}</span>`,
+    `<span>Link: ${sourceLink}</span>`,
+  ].join(" ");
+}
+
+function renderBookmarkDetail() {
+  const bookmark = selectedBookmark();
+  if (!bookmark) {
+    els.bookmarksTitle.textContent = "No bookmark selected.";
+    els.bookmarksAbstract.textContent = "Select a bookmark to inspect its context and create a new session.";
+    els.bookmarksMetadata.innerHTML = "Source session: - | Year: - | DOI: - | Link: -";
+    els.bookmarksCreateSessionBtn.disabled = true;
+    els.bookmarksRemoveBtn.disabled = true;
+    return;
+  }
+  els.bookmarksTitle.textContent = bookmark.title || "Untitled bookmark";
+  els.bookmarksAbstract.textContent = bookmark.abstract || "No abstract available.";
+  els.bookmarksMetadata.innerHTML = bookmarkMetadataHtml(bookmark);
+  els.bookmarksCreateSessionBtn.disabled = false;
+  els.bookmarksRemoveBtn.disabled = false;
+}
+
+function renderBookmarksRows() {
   if (!els.bookmarksRows) {
     return;
   }
   els.bookmarksRows.innerHTML = "";
   if (!state.bookmarks.length) {
     els.bookmarksState.textContent = "No bookmarks saved yet.";
+    state.selectedBookmarkId = "";
+    renderBookmarkDetail();
     return;
   }
   els.bookmarksState.textContent = `${state.bookmarks.length} bookmark${state.bookmarks.length === 1 ? "" : "s"} loaded.`;
+  if (!state.bookmarks.some((item) => item.id === state.selectedBookmarkId)) {
+    state.selectedBookmarkId = state.bookmarks[0]?.id || "";
+  }
   state.bookmarks.forEach((bookmark) => {
     const tr = document.createElement("tr");
+    tr.classList.toggle("active", bookmark.id === state.selectedBookmarkId);
     const doiCell = bookmark.doi_url
       ? `<a href="${escapeHtml(bookmark.doi_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(bookmark.doi || "Open DOI")}</a>`
       : "-";
@@ -882,34 +922,31 @@ function renderBookmarksModal() {
       <td>${escapeHtml(bookmark.source_session_name || bookmark.source_session_id || "-")}</td>
       <td>${escapeHtml(bookmark.year ?? "-")}</td>
       <td>${doiCell}</td>
-      <td><div class="bookmark-abstract">${escapeHtml(bookmark.abstract || "-")}</div></td>
-      <td>
-        <div class="row">
-          <button type="button" data-bookmark-action="create-session" data-bookmark-id="${escapeHtml(bookmark.id)}">Create Session</button>
-          <button type="button" data-bookmark-action="remove" data-bookmark-id="${escapeHtml(bookmark.id)}">Remove</button>
-        </div>
-      </td>
     `;
-    tr.querySelector('[data-bookmark-action="create-session"]')?.addEventListener("click", async () => {
-      await createSessionFromBookmark(bookmark.id);
-    });
-    tr.querySelector('[data-bookmark-action="remove"]')?.addEventListener("click", async () => {
-      await removeBookmark(bookmark.id);
+    tr.addEventListener("click", () => {
+      state.selectedBookmarkId = bookmark.id;
+      renderBookmarksRows();
     });
     els.bookmarksRows.appendChild(tr);
   });
+  renderBookmarkDetail();
 }
 
 async function loadBookmarks() {
   try {
     const result = await api("/v1/bookmarks?limit=500");
     state.bookmarks = Array.isArray(result.data?.items) ? result.data.items : [];
-    renderBookmarksModal();
+    if (!state.bookmarks.some((item) => item.id === state.selectedBookmarkId)) {
+      state.selectedBookmarkId = state.bookmarks[0]?.id || "";
+    }
+    renderBookmarksRows();
   } catch (error) {
     state.bookmarks = [];
+    state.selectedBookmarkId = "";
     if (els.bookmarksState) {
       els.bookmarksState.textContent = `Unable to load bookmarks: ${errorDetail(error)}`;
     }
+    renderBookmarkDetail();
   }
 }
 
@@ -989,7 +1026,6 @@ async function createSessionFromBookmark(bookmarkId) {
     state.activeSessionId = session.id;
     state.pendingSessionId = session.id;
     state.activePage = "discover";
-    state.bookmarksOpen = false;
     resetReviewSort();
     persistSessions();
     renderSessions();
@@ -1246,6 +1282,21 @@ function displayQueryStatus(status) {
   return status === "ranking_relevance" ? "ranking" : String(status || "waiting");
 }
 
+function activeDiscoverQueryTotals(session = activeSession()) {
+  const runId = discoverRunId(session);
+  const activeQueries = state.discoverRunQueries.filter((item) => item.run_id === runId);
+  return activeQueries.reduce(
+    (acc, item) => {
+      acc.discovered += Number(item.discovered_count || 0);
+      acc.accepted += Number(item.accepted_count || 0);
+      acc.rejected += Number(item.rejected_count || 0);
+      acc.pending += Number(item.pending_count || 0);
+      return acc;
+    },
+    { discovered: 0, accepted: 0, rejected: 0, pending: 0 },
+  );
+}
+
 function renderDiscoverRunQueries() {
   els.discoverRunQueries.innerHTML = "";
   if (!state.discoverRunQueries.length) {
@@ -1363,14 +1414,22 @@ async function loadDiscover(recoverOnNotFound = true) {
   const rejectedItems = rejectedResult || [];
   const approvedCount = allItems.filter((item) => item.accepted).length;
   const reviewedCount = allItems.length - pendingItems.length;
+  const liveTotals = activeDiscoverQueryTotals(session);
+  const liveDiscovered = Math.max(allItems.length, liveTotals.discovered);
+  const liveApproved = Math.max(approvedCount, liveTotals.accepted);
+  const liveRejected = Math.max(rejectedItems.length, liveTotals.rejected);
+  const livePending = Math.max(pendingItems.length, liveTotals.pending);
+  const liveReviewed = Math.max(reviewedCount, liveApproved + liveRejected);
   els.discoverIterationLine.textContent = `Iteration: ${run.current_iteration} / ${run.total}`;
-  els.discoverSummaryDiscovered.textContent = String(allItems.length);
-  els.discoverSummaryApproved.textContent = String(approvedCount);
-  els.discoverSummaryRejected.textContent = String(rejectedItems.length);
-  els.discoverSummaryReviewed.textContent = String(reviewedCount);
-  els.discoverSummaryPending.textContent = String(pendingItems.length);
+  els.discoverSummaryDiscovered.textContent = String(run.stage_status === "running" ? liveDiscovered : allItems.length);
+  els.discoverSummaryApproved.textContent = String(run.stage_status === "running" ? liveApproved : approvedCount);
+  els.discoverSummaryRejected.textContent = String(run.stage_status === "running" ? liveRejected : rejectedItems.length);
+  els.discoverSummaryReviewed.textContent = String(run.stage_status === "running" ? liveReviewed : reviewedCount);
+  els.discoverSummaryPending.textContent = String(run.stage_status === "running" ? livePending : pendingItems.length);
   if (run.stage_status === "running" && resultsRunId(session) && resultsRunId(session) !== discoverRunId(session)) {
-    els.discoverState.textContent = "New discovery run is in progress. Review/Documents/Library keep the accumulated session results.";
+    els.discoverState.textContent = `New discovery run is in progress. Found so far: ${liveDiscovered}. Review/Documents/Library keep the accumulated session results.`;
+  } else if (run.stage_status === "running") {
+    els.discoverState.textContent = `Searching. Found so far: ${liveDiscovered}.`;
   } else if (run.status === "completed" && discoverRunId(session) && resultsRunId(session) !== discoverRunId(session)) {
     session.resultsRunId = discoverRunId(session);
     persistSessions();
@@ -2504,15 +2563,6 @@ function wireEvents() {
     state.fileMenuOpen = false;
     renderShell();
   });
-  els.openBookmarksBtn?.addEventListener("click", async () => {
-    state.bookmarksOpen = true;
-    renderShell();
-    await loadBookmarks();
-  });
-  els.closeBookmarksBtn?.addEventListener("click", () => {
-    state.bookmarksOpen = false;
-    renderShell();
-  });
   els.saveSessionBtn.addEventListener("click", () => {
     const session = activeSession();
     session.name = els.discoverSessionName.value.trim() || session.name;
@@ -2739,6 +2789,21 @@ function wireEvents() {
     renderLibraryRows();
     renderReviewRows();
     renderDocuments();
+  });
+  els.bookmarksCreateSessionBtn?.addEventListener("click", async () => {
+    const bookmark = selectedBookmark();
+    if (!bookmark) {
+      return;
+    }
+    await createSessionFromBookmark(bookmark.id);
+  });
+  els.bookmarksRemoveBtn?.addEventListener("click", async () => {
+    const bookmark = selectedBookmark();
+    if (!bookmark) {
+      return;
+    }
+    await removeBookmark(bookmark.id);
+    await loadBookmarks();
   });
   els.libraryMetadataBtn.addEventListener("click", exportLibraryMetadata);
   els.libraryZipBtn.addEventListener("click", exportLibraryZip);

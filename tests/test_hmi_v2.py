@@ -29,6 +29,8 @@ def test_hmi2_shell_route_and_navigation():
     assert "Save" in body
     assert "Library Export" in body
     assert "Bookmarks" in body
+    assert 'data-page="bookmarks"' in body
+    assert 'id="page-bookmarks"' in body
     assert 'id="reviewHeading"' in body
     assert "Download missing" in body
     assert "Run Next Citation Iteration" in body
@@ -81,8 +83,15 @@ def test_hmi2_shell_route_and_navigation():
     assert 'id="reviewBookmarkBtn"' in body
     assert 'id="documentsBookmarkBtn"' in body
     assert 'id="libraryBookmarkBtn"' in body
-    assert 'id="openBookmarksBtn"' in body
+    assert 'id="bookmarksTitle"' in body
+    assert 'id="bookmarksAbstract"' in body
+    assert 'id="bookmarksMetadata"' in body
+    assert 'id="bookmarksCreateSessionBtn"' in body
+    assert 'id="bookmarksRemoveBtn"' in body
     assert 'id="bookmarksRows"' in body
+    assert 'id="openBookmarksBtn"' not in body
+    assert 'id="closeBookmarksBtn"' not in body
+    assert 'id="bookmarksModal"' not in body
     assert "Advanced" in body
     assert "ChatGPT model" in body
     assert 'id="aiModelSelect"' in body
