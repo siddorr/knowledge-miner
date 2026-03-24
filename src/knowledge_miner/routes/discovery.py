@@ -156,7 +156,7 @@ def create_citation_iteration_run(
     if accepted_count <= 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Need at least 1 accepted paper before running citation iteration.",
+            detail="Need at least 1 accepted paper before running citation expansion.",
         )
     _enqueue_citation_task(background_tasks, previous.id, previous.id)
     return RunCreateResponse(run_id=previous.id, status=previous.status)
@@ -230,11 +230,21 @@ def list_discovery_run_queries(
     rows = db.scalars(
         select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run_id).order_by(DiscoveryRunQuery.position.asc())
     ).all()
+    run_number = None
+    if run.session_id:
+        ordered_run_ids = db.scalars(
+            select(Run.id).where(Run.session_id == run.session_id).order_by(Run.created_at.asc(), Run.id.asc())
+        ).all()
+        run_numbers = {candidate_run_id: index + 1 for index, candidate_run_id in enumerate(ordered_run_ids)}
+        run_number = run_numbers.get(run.id)
     return DiscoveryRunQueriesResponse(
         run_id=run_id,
         queries=[
             DiscoveryRunQueryOut(
                 run_id=run_id,
+                run_number=run_number,
+                query_step_number=row.position,
+                query_lineage_number=(f"{run_number}.{row.position}" if run_number is not None else None),
                 query=row.query_text,
                 position=row.position,
                 status=row.status,
@@ -285,6 +295,12 @@ def list_session_discovery_queries(
             DiscoveryRunQueryOut(
                 run_id=run.id,
                 run_number=run_numbers.get(run.id),
+                query_step_number=row.position,
+                query_lineage_number=(
+                    f"{run_numbers.get(run.id)}.{row.position}"
+                    if run_numbers.get(run.id) is not None
+                    else None
+                ),
                 query=row.query_text,
                 position=row.position,
                 status=row.status,

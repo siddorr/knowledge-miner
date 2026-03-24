@@ -94,3 +94,16 @@ def ensure_sqlite_schema_compatibility() -> None:
             if "query_metadata" not in query_columns:
                 conn.exec_driver_sql("ALTER TABLE discovery_run_queries ADD COLUMN query_metadata JSON")
                 conn.execute(text("UPDATE discovery_run_queries SET query_metadata = '{}' WHERE query_metadata IS NULL"))
+
+        if "sources" in table_names:
+            source_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(sources)").fetchall()}
+            if "query_id" not in source_columns:
+                conn.exec_driver_sql("ALTER TABLE sources ADD COLUMN query_id VARCHAR")
+            if "query_step_number" not in source_columns:
+                conn.exec_driver_sql("ALTER TABLE sources ADD COLUMN query_step_number INTEGER")
+            if "query_source_number" not in source_columns:
+                conn.exec_driver_sql("ALTER TABLE sources ADD COLUMN query_source_number INTEGER")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_sources_query_id ON sources (query_id)")
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_sources_run_query_lineage ON sources (run_id, query_id, query_source_number)"
+            )

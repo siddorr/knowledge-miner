@@ -67,11 +67,11 @@
               <button id="addQueryBtn" type="button">Add Query</button>
               <button id="generateQuerySuggestionsBtn" type="button">Generate Suggestions</button>
               <button id="runDiscoveryBtn" type="button">Run Discovery</button>
-              <button id="runNextCitationBtn" type="button">Run Next Citation Iteration</button>
+              <button id="runNextCitationBtn" type="button">Run Citation Expansion</button>
               <button id="resumeCitationBtn" type="button">Resume Citation Expansion</button>
             </div>
             <p id="discoverSelectedCount" class="muted">Selected queries: 0</p>
-            <p id="discoverIterationLine">Iteration: -</p>
+            <p id="discoverIterationLine">Run: -</p>
             <p id="discoverCitationHint" class="muted">Need at least 1 accepted paper.</p>
           </div>
           <section class="context-card" aria-label="Session context">
@@ -121,7 +121,7 @@
         <strong>Executed Queries in Session</strong>
         <p class="muted">This list keeps the executed queries from all discovery runs in the active session, with the newest runs first.</p>
         <table>
-          <thead><tr><th>Run</th><th>#</th><th>Query</th><th>Status</th><th>Providers</th><th>Review</th><th>Results</th></tr></thead>
+          <thead><tr><th>#</th><th>Query</th><th>Status</th><th>Providers</th><th>Review</th><th>Results</th></tr></thead>
           <tbody id="discoverRunQueries"></tbody>
         </table>
         <p id="discoverRunQueriesState" class="muted"></p>
@@ -158,8 +158,7 @@
             <thead>
               <tr>
                 <th>Status</th>
-                <th><button type="button" class="sort-btn" data-review-sort="run_number">Run</button></th>
-                <th><button type="button" class="sort-btn" data-review-sort="run_source_number">#</button></th>
+                <th><button type="button" class="sort-btn" data-review-sort="lineage">#</button></th>
                 <th><button type="button" class="sort-btn" data-review-sort="year">Year</button></th>
                 <th><button type="button" class="sort-btn" data-review-sort="citation_count">Cit</button></th>
                 <th><button type="button" class="sort-btn" data-review-sort="relevance_score">Score</button></th>
@@ -211,7 +210,7 @@
       </div>
       <div class="scroll-table-wrap documents-table-wrap">
         <table>
-          <thead><tr><th><button type="button" class="sort-btn" data-documents-sort="rank">Rank</button></th><th><button type="button" class="sort-btn" data-documents-sort="score">Score</button></th><th><button type="button" class="sort-btn" data-documents-sort="year">Year</button></th><th><button type="button" class="sort-btn" data-documents-sort="citations">Cit</button></th><th><button type="button" class="sort-btn" data-documents-sort="title">Title</button></th><th>DOI</th><th><button type="button" class="sort-btn" data-documents-sort="status">Status</button></th></tr></thead>
+          <thead><tr><th><button type="button" class="sort-btn" data-documents-sort="lineage">#</button></th><th><button type="button" class="sort-btn" data-documents-sort="rank">Rank</button></th><th><button type="button" class="sort-btn" data-documents-sort="score">Score</button></th><th><button type="button" class="sort-btn" data-documents-sort="year">Year</button></th><th><button type="button" class="sort-btn" data-documents-sort="citations">Cit</button></th><th><button type="button" class="sort-btn" data-documents-sort="title">Title</button></th><th>DOI</th><th><button type="button" class="sort-btn" data-documents-sort="status">Status</button></th></tr></thead>
           <tbody id="documentsRows"></tbody>
         </table>
       </div>
@@ -269,7 +268,7 @@
         <section class="pane scroll-pane">
           <div class="scroll-table-wrap">
           <table>
-            <thead><tr><th><button type="button" class="sort-btn" data-library-sort="rank">Rank</button></th><th><button type="button" class="sort-btn" data-library-sort="relevance_score">AI Score</button></th><th><button type="button" class="sort-btn" data-library-sort="year">Year</button></th><th><button type="button" class="sort-btn" data-library-sort="citation_count">Citations</button></th><th><button type="button" class="sort-btn" data-library-sort="title">Title</button></th></tr></thead>
+            <thead><tr><th><button type="button" class="sort-btn" data-library-sort="lineage">#</button></th><th><button type="button" class="sort-btn" data-library-sort="rank">Rank</button></th><th><button type="button" class="sort-btn" data-library-sort="relevance_score">AI Score</button></th><th><button type="button" class="sort-btn" data-library-sort="year">Year</button></th><th><button type="button" class="sort-btn" data-library-sort="citation_count">Citations</button></th><th><button type="button" class="sort-btn" data-library-sort="title">Title</button></th></tr></thead>
             <tbody id="libraryRows"></tbody>
           </table>
           </div>

@@ -320,6 +320,12 @@ def _run_source_numbers(db: Session, run_ids: list[str]) -> dict[str, int]:
     return numbers
 
 
+def _lineage_number(*, run_number: int | None, query_step_number: int | None, query_source_number: int | None) -> str | None:
+    if run_number is None or query_step_number is None or query_source_number is None:
+        return None
+    return f"{run_number}.{query_step_number}.{query_source_number}"
+
+
 def _serialize_source(
     source: Source,
     *,
@@ -331,6 +337,13 @@ def _serialize_source(
         run_id=source.run_id,
         run_number=run_number,
         run_source_number=run_source_number,
+        query_step_number=source.query_step_number,
+        query_source_number=source.query_source_number,
+        lineage_number=_lineage_number(
+            run_number=run_number,
+            query_step_number=source.query_step_number,
+            query_source_number=source.query_source_number,
+        ),
         title=source.title,
         year=source.year,
         url=source.url,

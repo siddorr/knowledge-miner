@@ -28,7 +28,7 @@ const state = {
   activePage: window.__KM_HMI2_LAUNCH_SECTION__ || "discover",
   fileMenuOpen: false,
   reviewQueue: "pending",
-  reviewSort: { key: "run_number", dir: "desc" },
+  reviewSort: { key: "lineage", dir: "desc" },
   documentsSort: { key: "rank", dir: "asc" },
   documentsPage: 0,
   librarySort: { key: "rank", dir: "asc" },
@@ -49,6 +49,7 @@ const state = {
   currentDiscoveryStatus: null,
   currentAcquisitionStatus: null,
   liveRefreshTimer: null,
+  discoverPollTimer: null,
   internalRepositoryBaseUrl: localStorage.getItem(INTERNAL_REPO_URL_KEY) || "",
   aiSettings: null,
   advancedEventsPaused: false,
@@ -77,6 +78,30 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function lineageKeyParts(item) {
+  return [
+    Number(item?.run_number ?? 0),
+    Number(item?.query_step_number ?? 0),
+    Number(item?.query_source_number ?? 0),
+  ];
+}
+
+function compareLineageValues(left, right, dir = "asc") {
+  const factor = dir === "asc" ? 1 : -1;
+  const leftParts = lineageKeyParts(left);
+  const rightParts = lineageKeyParts(right);
+  for (let index = 0; index < leftParts.length; index += 1) {
+    if (leftParts[index] !== rightParts[index]) {
+      return (leftParts[index] - rightParts[index]) * factor;
+    }
+  }
+  return 0;
+}
+
+function formatLineageNumber(item) {
+  return item?.lineage_number || "-";
 }
 
 async function copyTextToClipboard(text) {
@@ -572,25 +597,28 @@ function renderReviewFilterChips() {
 }
 
 function resetReviewSort() {
-  state.reviewSort = { key: "run_number", dir: "desc" };
+  state.reviewSort = { key: "lineage", dir: "desc" };
 }
 
 function defaultReviewSortDir(key) {
-  if (key === "run_source_number") {
+  if (key === "lineage") {
+    return "desc";
+  }
+  if (key === "title") {
     return "asc";
   }
   return "desc";
 }
 
 function defaultDocumentsSortDir(key) {
-  if (key === "rank" || key === "title" || key === "status") {
+  if (key === "rank" || key === "title" || key === "status" || key === "lineage") {
     return "asc";
   }
   return "desc";
 }
 
 function defaultLibrarySortDir(key) {
-  if (key === "rank" || key === "title") {
+  if (key === "rank" || key === "title" || key === "lineage") {
     return "asc";
   }
   return "desc";
@@ -598,11 +626,18 @@ function defaultLibrarySortDir(key) {
 
 function compareReviewItems(a, b) {
   const { key, dir } = state.reviewSort;
-  const factor = dir === "asc" ? 1 : -1;
-  const valueA = Number(a[key] ?? 0);
-  const valueB = Number(b[key] ?? 0);
-  if (valueA !== valueB) {
-    return (valueA - valueB) * factor;
+  if (key === "lineage") {
+    const lineageCompare = compareLineageValues(a, b, dir);
+    if (lineageCompare !== 0) {
+      return lineageCompare;
+    }
+  } else {
+    const factor = dir === "asc" ? 1 : -1;
+    const valueA = Number(a[key] ?? 0);
+    const valueB = Number(b[key] ?? 0);
+    if (valueA !== valueB) {
+      return (valueA - valueB) * factor;
+    }
   }
   return String(a.title || "").localeCompare(String(b.title || ""));
 }
@@ -615,11 +650,9 @@ function renderReviewSortButtons() {
     const active = button.dataset.reviewSort === state.reviewSort.key;
     button.classList.toggle("active", active);
     const suffix = active ? (state.reviewSort.dir === "asc" ? " ▲" : " ▼") : "";
-    const base = button.dataset.reviewSort === "run_number"
-      ? "Run"
-      : button.dataset.reviewSort === "run_source_number"
-        ? "#"
-        : button.dataset.reviewSort === "year"
+    const base = button.dataset.reviewSort === "lineage"
+      ? "#"
+      : button.dataset.reviewSort === "year"
           ? "Year"
           : button.dataset.reviewSort === "citation_count"
             ? "Cit"
@@ -633,6 +666,7 @@ function renderDocumentsSortButtons() {
     return;
   }
   const labels = {
+    lineage: "#",
     rank: "Rank",
     score: "Score",
     year: "Year",
@@ -670,6 +704,7 @@ function renderLibrarySortButtons() {
     return;
   }
   const labels = {
+    lineage: "#",
     rank: "Rank",
     relevance_score: "AI Score",
     year: "Year",
@@ -690,6 +725,13 @@ function sortedDocumentRows() {
   const { key, dir } = state.documentsSort;
   const factor = dir === "asc" ? 1 : -1;
   rows.sort((left, right) => {
+    if (key === "lineage") {
+      const lineageCompare = compareLineageValues(left.source, right.source, dir);
+      if (lineageCompare !== 0) {
+        return lineageCompare;
+      }
+      return String(left.title || "").localeCompare(String(right.title || ""));
+    }
     if (key === "title" || key === "status") {
       return String(left[key] || "").localeCompare(String(right[key] || "")) * factor;
     }
@@ -708,6 +750,13 @@ function sortedLibraryRows(items) {
   const { key, dir } = state.librarySort;
   const factor = dir === "asc" ? 1 : -1;
   rows.sort((left, right) => {
+    if (key === "lineage") {
+      const lineageCompare = compareLineageValues(left, right, dir);
+      if (lineageCompare !== 0) {
+        return lineageCompare;
+      }
+      return String(left.title || "").localeCompare(String(right.title || ""));
+    }
     if (key === "rank") {
       const leftRank = state.libraryRows.findIndex((item) => item.id === left.id);
       const rightRank = state.libraryRows.findIndex((item) => item.id === right.id);
@@ -1269,7 +1318,9 @@ function buildMetadataHtml(item) {
     ? `${escapeHtml(item.authors.slice(0, 3).join(", "))}${item.authors.length > 3 ? ` +${item.authors.length - 3} more` : ""}`
     : "-";
   const link = formatLink(item);
+  const lineage = formatLineageNumber(item);
   return [
+    `<span>#: ${escapeHtml(lineage)}</span>`,
     `<span>Year: ${escapeHtml(item.year ?? "-")}</span>`,
     `<span>Journal: ${escapeHtml(item.journal || "-")}</span>`,
     `<span>Citations: ${escapeHtml(item.citation_count ?? "-")}</span>`,
@@ -1295,6 +1346,21 @@ function activeDiscoverQueryTotals(session = activeSession()) {
     },
     { discovered: 0, accepted: 0, rejected: 0, pending: 0 },
   );
+}
+
+function activeCitationScopeProgress(session = activeSession()) {
+  const runId = discoverRunId(session);
+  const citationRow = state.discoverRunQueries.find(
+    (item) => item.run_id === runId && item.query === "citation expansion",
+  );
+  if (!citationRow) {
+    return null;
+  }
+  return {
+    processed: Number(citationRow.scope_processed_parents ?? 0),
+    total: Number(citationRow.scope_total_parents ?? 0),
+    checkpoint: citationRow.checkpoint_state || "none",
+  };
 }
 
 function renderDiscoverRunQueries() {
@@ -1325,15 +1391,10 @@ function renderDiscoverRunQueries() {
       ? `Parents: ${item.scope_processed_parents ?? 0}/${item.scope_total_parents ?? 0} (${item.checkpoint_state || "none"})`
       : "";
     const displayStatus = displayQueryStatus(item.status);
-    const countText = item.status === "completed" || item.status === "ranking_relevance"
-      ? String(item.discovered_count)
-      : "-";
-    const runLabel = item.run_id
-      ? `Run ${item.run_number ?? "-"}`
-      : "-";
+    const countText = String(item.discovered_count ?? 0);
+    const lineageLabel = item.query_lineage_number || "-";
     tr.innerHTML = `
-      <td>${escapeHtml(runLabel)}</td>
-      <td>${item.position}</td>
+      <td>${escapeHtml(lineageLabel)}</td>
       <td>${escapeHtml(item.query)}</td>
       <td><span class="status-chip ${escapeHtml(item.status)}">${escapeHtml(displayStatus)}</span></td>
       <td>${escapeHtml(providers)}</td>
@@ -1348,8 +1409,8 @@ function updateCitationAvailability(acceptedCount) {
   const disabled = acceptedCount <= 0;
   els.runNextCitationBtn.disabled = disabled;
   els.discoverCitationHint.textContent = disabled
-    ? "Need at least 1 accepted paper before running citation iteration."
-    : "Citation iteration is available for the current session.";
+    ? "Need at least 1 accepted paper before running citation expansion."
+    : "Citation expansion is available for the current session.";
 }
 
 async function loadDiscover(recoverOnNotFound = true) {
@@ -1358,7 +1419,7 @@ async function loadDiscover(recoverOnNotFound = true) {
   state.currentDiscoveryStatus = null;
   state.discoverRunQueries = [];
   if (!session.discoveryRunId) {
-    els.discoverIterationLine.textContent = "Iteration: -";
+    els.discoverIterationLine.textContent = "Run: -";
     ["discoverSummaryDiscovered", "discoverSummaryApproved", "discoverSummaryRejected", "discoverSummaryReviewed", "discoverSummaryPending"].forEach((id) => {
       els[id].textContent = "0";
     });
@@ -1415,18 +1476,22 @@ async function loadDiscover(recoverOnNotFound = true) {
   const approvedCount = allItems.filter((item) => item.accepted).length;
   const reviewedCount = allItems.length - pendingItems.length;
   const liveTotals = activeDiscoverQueryTotals(session);
+  const citationScope = activeCitationScopeProgress(session);
   const liveDiscovered = Math.max(allItems.length, liveTotals.discovered);
   const liveApproved = Math.max(approvedCount, liveTotals.accepted);
   const liveRejected = Math.max(rejectedItems.length, liveTotals.rejected);
   const livePending = Math.max(pendingItems.length, liveTotals.pending);
   const liveReviewed = Math.max(reviewedCount, liveApproved + liveRejected);
-  els.discoverIterationLine.textContent = `Iteration: ${run.current_iteration} / ${run.total}`;
+  const activeRunNumber = activeRunQueries[0]?.run_number ?? "-";
+  els.discoverIterationLine.textContent = `Run: ${activeRunNumber}`;
   els.discoverSummaryDiscovered.textContent = String(run.stage_status === "running" ? liveDiscovered : allItems.length);
   els.discoverSummaryApproved.textContent = String(run.stage_status === "running" ? liveApproved : approvedCount);
   els.discoverSummaryRejected.textContent = String(run.stage_status === "running" ? liveRejected : rejectedItems.length);
   els.discoverSummaryReviewed.textContent = String(run.stage_status === "running" ? liveReviewed : reviewedCount);
   els.discoverSummaryPending.textContent = String(run.stage_status === "running" ? livePending : pendingItems.length);
-  if (run.stage_status === "running" && resultsRunId(session) && resultsRunId(session) !== discoverRunId(session)) {
+  if (run.stage_status === "running" && citationScope && citationScope.total > 0) {
+    els.discoverState.textContent = `Citation expansion running. Found so far: ${liveDiscovered}. Parents processed: ${citationScope.processed}/${citationScope.total}.`;
+  } else if (run.stage_status === "running" && resultsRunId(session) && resultsRunId(session) !== discoverRunId(session)) {
     els.discoverState.textContent = `New discovery run is in progress. Found so far: ${liveDiscovered}. Review/Documents/Library keep the accumulated session results.`;
   } else if (run.stage_status === "running") {
     els.discoverState.textContent = `Searching. Found so far: ${liveDiscovered}.`;
@@ -1436,6 +1501,11 @@ async function loadDiscover(recoverOnNotFound = true) {
     els.discoverState.textContent = "New discovery run completed. Session-level results were refreshed.";
   } else {
     els.discoverState.textContent = run.message;
+  }
+  if (run.stage_status === "running") {
+    startDiscoverPolling();
+  } else {
+    stopDiscoverPolling();
   }
   updateCitationAvailability(approvedCount);
   renderActivity();
@@ -1494,7 +1564,7 @@ function renderReviewRows() {
   state.reviewItems.forEach((item, index) => {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", index === state.reviewIndex);
-    tr.innerHTML = `<td>${escapeHtml(item.review_status || "-")}</td><td>${item.run_number ?? "-"}</td><td>${item.run_source_number ?? "-"}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}${escapeHtml(item.title)}</td>`;
+    tr.innerHTML = `<td>${escapeHtml(item.review_status || "-")}</td><td>${escapeHtml(formatLineageNumber(item))}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}${escapeHtml(item.title)}</td>`;
     tr.addEventListener("click", () => {
       state.reviewIndex = index;
       state.selectedReviewSourceId = item.id;
@@ -1602,6 +1672,7 @@ function normalizeDocumentRows(acceptedSources, itemsMap) {
     const status = item?.status || "pending";
     return {
       rank: index + 1,
+      lineage: source.lineage_number || "-",
       source,
       acquisitionItem: item || null,
       status,
@@ -1667,7 +1738,7 @@ function renderDocuments() {
     const doiCell = row.source.doi_url
       ? `<a href="${escapeHtml(row.source.doi_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.source.doi || "Open DOI")}</a>`
       : "-";
-    tr.innerHTML = `<td>${row.rank}</td><td>${row.score}</td><td>${row.year}</td><td>${row.citations}</td><td>${isBookmarked(row.source.id) ? '<span class="bookmark-chip">B</span> ' : ""}<span>${escapeHtml(row.title)}</span> <button type="button" class="mini-copy-btn" title="Copy title" aria-label="Copy title">Copy</button></td><td>${doiCell}</td><td>${row.status}</td>`;
+    tr.innerHTML = `<td>${escapeHtml(row.lineage)}</td><td>${row.rank}</td><td>${row.score}</td><td>${row.year}</td><td>${row.citations}</td><td>${isBookmarked(row.source.id) ? '<span class="bookmark-chip">B</span> ' : ""}<span>${escapeHtml(row.title)}</span> <button type="button" class="mini-copy-btn" title="Copy title" aria-label="Copy title">Copy</button></td><td>${doiCell}</td><td>${row.status}</td>`;
     tr.querySelector(".mini-copy-btn")?.addEventListener("click", async (event) => {
       event.stopPropagation();
       const ok = await copyTextToClipboard(row.title);
@@ -1788,7 +1859,7 @@ function renderLibraryRows() {
   state.libraryFilteredRows.forEach((item, index) => {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", item.id === state.selectedLibrarySourceId);
-    tr.innerHTML = `<td>${index + 1}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}<span>${escapeHtml(item.title)}</span> <button type="button" class="mini-copy-btn" title="Copy title" aria-label="Copy title">Copy</button></td>`;
+    tr.innerHTML = `<td>${escapeHtml(formatLineageNumber(item))}</td><td>${index + 1}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}<span>${escapeHtml(item.title)}</span> <button type="button" class="mini-copy-btn" title="Copy title" aria-label="Copy title">Copy</button></td>`;
     tr.querySelector(".mini-copy-btn")?.addEventListener("click", async (event) => {
       event.stopPropagation();
       const ok = await copyTextToClipboard(item.title);
@@ -1824,7 +1895,7 @@ function resetSessionBoundPaneState() {
   state.selectedReviewSourceId = "";
   state.selectedLibrarySourceId = "";
 
-  els.discoverIterationLine.textContent = "Iteration: -";
+  els.discoverIterationLine.textContent = "Run: -";
   ["discoverSummaryDiscovered", "discoverSummaryApproved", "discoverSummaryRejected", "discoverSummaryReviewed", "discoverSummaryPending"].forEach((id) => {
     els[id].textContent = "0";
   });
@@ -1937,11 +2008,11 @@ async function createNextCitationIteration() {
   const previousResultsRunId = resultsRunId(session);
   const providerLimits = normalizeProviderLimits(session.providerLimits);
   if (!session.discoveryRunId) {
-    els.discoverState.textContent = "Run the first discovery iteration before starting citation expansion.";
+    els.discoverState.textContent = "Run discovery before starting citation expansion.";
     return;
   }
   if (!queries.length) {
-    els.discoverState.textContent = "Select at least one manual query for the next citation iteration.";
+    els.discoverState.textContent = "Select at least one manual query for citation expansion.";
     return;
   }
   beginBusy("Running citation expansion");
@@ -1955,7 +2026,7 @@ async function createNextCitationIteration() {
     session.discoveryRunId = result.data.run_id;
     if (previousResultsRunId && previousResultsRunId !== result.data.run_id) {
       session.resultsRunId = previousResultsRunId;
-      els.discoverState.textContent = "Citation iteration started. Review/Documents/Library keep the accumulated session results while the new run executes.";
+      els.discoverState.textContent = "Citation expansion started. Review/Documents/Library keep the accumulated session results while the new run executes.";
     } else {
       session.resultsRunId = result.data.run_id;
     }
@@ -2395,6 +2466,32 @@ function startHealthPolling() {
   pollServerHealth();
 }
 
+function stopDiscoverPolling() {
+  if (state.discoverPollTimer) {
+    window.clearInterval(state.discoverPollTimer);
+    state.discoverPollTimer = null;
+  }
+}
+
+function startDiscoverPolling() {
+  stopDiscoverPolling();
+  state.discoverPollTimer = window.setInterval(async () => {
+    const session = activeSession();
+    if (!session?.discoveryRunId || state.serverOffline) {
+      return;
+    }
+    if (state.currentDiscoveryStatus?.stage_status !== "running") {
+      stopDiscoverPolling();
+      return;
+    }
+    try {
+      await loadDiscover();
+    } catch {
+      // Best-effort live polling; manual refresh or later polls can recover.
+    }
+  }, 3000);
+}
+
 function connectLiveUpdates() {
   if (state.eventSource) {
     state.eventSource.close();
@@ -2691,7 +2788,7 @@ function wireEvents() {
   });
   els.reviewSortButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      const key = button.dataset.reviewSort || "run_number";
+      const key = button.dataset.reviewSort || "lineage";
       if (state.reviewSort.key === key) {
         state.reviewSort.dir = state.reviewSort.dir === "desc" ? "asc" : "desc";
       } else {
@@ -2702,7 +2799,7 @@ function wireEvents() {
   });
   els.documentsSortButtons?.forEach((button) => {
     button.addEventListener("click", () => {
-      const key = button.dataset.documentsSort || "rank";
+      const key = button.dataset.documentsSort || "lineage";
       if (state.documentsSort.key === key) {
         state.documentsSort.dir = state.documentsSort.dir === "asc" ? "desc" : "asc";
       } else {
@@ -2713,7 +2810,7 @@ function wireEvents() {
   });
   els.librarySortButtons?.forEach((button) => {
     button.addEventListener("click", () => {
-      const key = button.dataset.librarySort || "rank";
+      const key = button.dataset.librarySort || "lineage";
       if (state.librarySort.key === key) {
         state.librarySort.dir = state.librarySort.dir === "asc" ? "desc" : "asc";
       } else {

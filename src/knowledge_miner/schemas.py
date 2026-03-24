@@ -69,6 +69,8 @@ class RunStatusResponse(BaseModel):
 class DiscoveryRunQueryOut(BaseModel):
     run_id: str | None = None
     run_number: int | None = None
+    query_step_number: int | None = None
+    query_lineage_number: str | None = None
     query: str
     position: int
     status: str
@@ -115,6 +117,9 @@ class SourceOut(BaseModel):
     run_id: str | None = None
     run_number: int | None = None
     run_source_number: int | None = None
+    query_step_number: int | None = None
+    query_source_number: int | None = None
+    lineage_number: str | None = None
     title: str
     year: int | None
     url: str | None

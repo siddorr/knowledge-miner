@@ -33,7 +33,7 @@ def test_hmi2_shell_route_and_navigation():
     assert 'id="page-bookmarks"' in body
     assert 'id="reviewHeading"' in body
     assert "Download missing" in body
-    assert "Run Next Citation Iteration" in body
+    assert "Run Citation Expansion" in body
     assert "Resume Citation Expansion" in body
     assert "Generate Suggestions" in body
     assert "Suggested Queries" in body
@@ -53,8 +53,7 @@ def test_hmi2_shell_route_and_navigation():
     assert 'data-review-filter="all"' in body
     assert 'data-review-filter="latest_auto_approved"' in body
     assert 'data-review-filter="latest_auto_rejected"' in body
-    assert 'data-review-sort="run_number"' in body
-    assert 'data-review-sort="run_source_number"' in body
+    assert 'data-review-sort="lineage"' in body
     assert 'data-review-sort="year"' in body
     assert 'data-review-sort="citation_count"' in body
     assert 'data-review-sort="relevance_score"' in body
@@ -67,12 +66,14 @@ def test_hmi2_shell_route_and_navigation():
     assert "Internal PDF Repository URL" in body
     assert "Save Repository URL" in body
     assert "<th>DOI</th>" in body
+    assert 'data-documents-sort="lineage"' in body
     assert 'data-documents-sort="rank"' in body
     assert 'data-documents-sort="score"' in body
     assert 'data-documents-sort="year"' in body
     assert 'data-documents-sort="citations"' in body
     assert 'data-documents-sort="title"' in body
     assert 'data-documents-sort="status"' in body
+    assert 'data-library-sort="lineage"' in body
     assert 'data-library-sort="rank"' in body
     assert 'data-library-sort="relevance_score"' in body
     assert 'data-library-sort="year"' in body

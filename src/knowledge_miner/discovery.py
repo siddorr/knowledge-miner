@@ -1366,8 +1366,25 @@ def _ingest_candidates(
     observability: RunObservability | None = None,
 ) -> IngestStats:
     stats = IngestStats()
+    candidate_list = list(candidates)
+    total_candidates = len(candidate_list)
     pending_source_ids: set[str] = set()
     logged_context = False
+    query_row = db.get(DiscoveryRunQuery, query_id) if query_id else None
+    query_step_number = query_row.position if query_row is not None else None
+    next_query_source_number = (
+        (
+            db.scalar(
+                select(func.max(Source.query_source_number)).where(
+                    Source.run_id == run_id,
+                    Source.query_id == query_id,
+                )
+            )
+            or 0
+        )
+        if query_id
+        else 0
+    )
 
     def _inc(bucket: str, value: int = 1) -> None:
         setattr(stats, bucket, getattr(stats, bucket) + value)
@@ -1394,7 +1411,20 @@ def _ingest_candidates(
             return None
         return year
 
-    for c in candidates:
+    def _commit_query_progress(processed: int) -> None:
+        if not query_id:
+            return
+        query_row = db.get(DiscoveryRunQuery, query_id)
+        if query_row is None:
+            return
+        query_row.accepted_count = stats.accepted
+        query_row.rejected_count = stats.rejected
+        query_row.pending_count = stats.pending
+        query_row.processing_count = max(total_candidates - processed, 0)
+        query_row.updated_at = datetime.now(UTC)
+        db.commit()
+
+    for index, c in enumerate(candidate_list, start=1):
         normalized_year = _normalize_candidate_year(c.get("year"))
         canonical_sid = canonical_id(
             doi=c.get("doi"),
@@ -1414,6 +1444,8 @@ def _ingest_candidates(
             if observability is not None:
                 observability.inc("dedup")
             _inc("pending")
+            if query_id and (index % 5 == 0 or index == total_candidates):
+                _commit_query_progress(index)
             continue
 
         existing = _find_existing_source(db, run_id, c, canonical_sid)
@@ -1423,6 +1455,8 @@ def _ingest_candidates(
             if observability is not None:
                 observability.inc("dedup")
             _track_review_status(existing.review_status)
+            if query_id and (index % 5 == 0 or index == total_candidates):
+                _commit_query_progress(index)
             continue
 
         score = score_text(c["title"], c.get("abstract"))
@@ -1544,6 +1578,9 @@ def _ingest_candidates(
             "heuristic_score": score,
             "ai_decision": ai_decision,
             "ai_confidence": ai_confidence,
+            "query_id": query_id,
+            "query_step_number": query_step_number,
+            "query_source_number": next_query_source_number + 1 if query_id else None,
             "parent_source_id": c.get("parent_source_id"),
             "provenance_history": [_provenance_event(c, iteration)],
         }
@@ -1556,8 +1593,14 @@ def _ingest_candidates(
         if inserted_sid is None:
             if observability is not None:
                 observability.inc("dedup")
+            if query_id and (index % 5 == 0 or index == total_candidates):
+                _commit_query_progress(index)
             continue
+        if query_id:
+            next_query_source_number += 1
         pending_source_ids.add(inserted_sid)
+        if query_id and (index % 5 == 0 or index == total_candidates):
+            _commit_query_progress(index)
     db.commit()
     return stats
 
