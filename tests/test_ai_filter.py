@@ -1,6 +1,11 @@
 import json
 
-from knowledge_miner.ai_filter import AIAuthError, AIRelevanceFilter, describe_ai_filter_runtime
+from knowledge_miner.ai_filter import (
+    AIAuthError,
+    AIRelevanceFilter,
+    _limit_query_suggestions_by_length,
+    describe_ai_filter_runtime,
+)
 
 
 def test_ai_filter_parse_result_valid():
@@ -58,3 +63,27 @@ def test_ai_filter_auth_error_disables_for_rest_of_run(monkeypatch):
     assert out1 is None
     assert out2 is None
     assert calls["n"] == 1
+
+
+def test_limit_query_suggestions_by_length_enforces_requested_mix():
+    suggestions = [
+        "fab wastewater",
+        "semiconductor reuse",
+        "upw integration",
+        "zld design",
+        "cmp wastewater treatment",
+        "semiconductor wastewater treatment pilot",
+        "ultrapure water reuse economics",
+        "semiconductor fab wastewater reuse",
+        "advanced fluoride removal semiconductor wastewater",
+        "membrane fouling in semiconductor wastewater reuse",
+        "wastewater",
+        "semiconductor wastewater design integration reuse",
+    ]
+
+    limited = _limit_query_suggestions_by_length(suggestions, max_suggestions=10)
+
+    assert len(limited) == 10
+    assert sum(1 for item in limited if len(item.split()) <= 3) == 5
+    assert sum(1 for item in limited if len(item.split()) == 4) == 3
+    assert sum(1 for item in limited if len(item.split()) >= 5) == 2

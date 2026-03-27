@@ -174,6 +174,57 @@ def _seed_cross_run_exportable_source(tmp_path: Path) -> tuple[str, str]:
     return anchor_run_id, "src_export_cross"
 
 
+def _seed_cross_session_reusable_export_source(tmp_path: Path) -> tuple[str, str]:
+    original_run_id, _ = _seed_exportable_run(tmp_path)
+    with SessionLocal() as db:
+        run = Run(
+            id="run_export_reuse_b",
+            session_id="session_export_reuse_b",
+            status="completed",
+            seed_queries=["reuse"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        source = Source(
+            id="src_export_reuse_b",
+            run_id=run.id,
+            title="UPW export paper reused",
+            year=2024,
+            url="https://example.org/upw",
+            doi="10.1000/upw-export",
+            abstract="reuse export abstract",
+            journal="Journal of Ultrapure Water",
+            authors=["A. Expert"],
+            citation_count=33,
+            type="academic",
+            source="openalex",
+            source_native_id="oa_reuse_b",
+            patent_office=None,
+            patent_number=None,
+            iteration=1,
+            discovery_method="seed_search",
+            relevance_score=8.8,
+            accepted=True,
+            review_status="human_accept",
+            final_decision="human_accept",
+            decision_source="human_review",
+            heuristic_recommendation="accept",
+            heuristic_score=8.0,
+            ai_decision=None,
+            ai_confidence=None,
+            parent_source_id=None,
+            provenance_history=[],
+        )
+        db.add_all([run, source])
+        db.commit()
+    return original_run_id, "src_export_reuse_b"
+
+
 def test_library_export_metadata_csv(tmp_path: Path):
     run_id, source_id = _seed_exportable_run(tmp_path)
     with SessionLocal() as db:
@@ -233,3 +284,18 @@ def test_library_export_supports_selected_cross_run_sources(tmp_path: Path):
     )
     assert response.status_code == 200
     assert "Cross-session export paper" in response.text
+
+
+def test_library_export_reuses_pdf_from_other_session(tmp_path: Path):
+    anchor_run_id, source_id = _seed_cross_session_reusable_export_source(tmp_path)
+    client = TestClient(app)
+    response = client.get(
+        f"/v1/library-export/runs/{anchor_run_id}/pdfs.zip",
+        params=[("source_id", source_id)],
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    names = archive.namelist()
+    assert len(names) == 1
+    assert names[0].endswith(".pdf")

@@ -35,6 +35,7 @@ class Run(Base):
     seed_queries: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     session_context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_context_key: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     max_iterations: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
     current_iteration: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     accepted_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -81,6 +82,12 @@ class DiscoveryRunQuery(Base):
     openalex_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     brave_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     semantic_scholar_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    openalex_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    semantic_scholar_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    brave_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    openalex_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    semantic_scholar_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    brave_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     accepted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     rejected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     pending_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -202,6 +209,10 @@ class PaperAnnotation(Base):
             "summary_status IN ('none','queued','running','completed','failed')",
             name="ck_paper_annotations_summary_status_values",
         ),
+        CheckConstraint(
+            "tag_suggestion_status IN ('none','queued','running','completed','failed')",
+            name="ck_paper_annotations_tag_suggestion_status_values",
+        ),
         Index("ix_paper_annotations_session_id_updated_at", "session_id", "updated_at"),
         Index("ix_paper_annotations_session_id_source_id", "session_id", "source_id", unique=True),
     )
@@ -211,12 +222,19 @@ class PaperAnnotation(Base):
     source_id: Mapped[str] = mapped_column(String, ForeignKey("sources.id"), nullable=False, index=True)
     freeform_tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     approved_tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    ai_suggested_tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     summary_status: Mapped[str] = mapped_column(String, nullable=False, default="none")
+    tag_suggestion_status: Mapped[str] = mapped_column(String, nullable=False, default="none")
     summary_prompt_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    tag_suggestion_prompt_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tag_suggestion_model: Mapped[str | None] = mapped_column(String, nullable=True)
     summary_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tag_suggestion_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     summary_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tag_suggestion_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -261,10 +279,24 @@ class CitationExpansionParent(Base):
     __table_args__ = (
         PrimaryKeyConstraint("run_id", "parent_source_id"),
         Index("ix_citation_expansion_parents_run_id_expanded_at", "run_id", "expanded_at"),
+        Index(
+            "ix_citation_expansion_parents_session_context_parent",
+            "session_id",
+            "session_context_key",
+            "parent_source_id",
+        ),
+        Index(
+            "ix_citation_expansion_parents_session_context_expanded_at",
+            "session_id",
+            "session_context_key",
+            "expanded_at",
+        ),
     )
 
     run_id: Mapped[str] = mapped_column(String, ForeignKey("runs.id"), nullable=False)
     parent_source_id: Mapped[str] = mapped_column(String, ForeignKey("sources.id"), nullable=False)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    session_context_key: Mapped[str | None] = mapped_column(String, nullable=True)
     query_id: Mapped[str | None] = mapped_column(String, nullable=True)
     expanded_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
@@ -373,6 +405,8 @@ class Artifact(Base):
     checksum_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mime_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    quality_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    quality_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 

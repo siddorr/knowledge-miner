@@ -7,6 +7,7 @@ import types
 
 from fastapi.testclient import TestClient
 
+from knowledge_miner.acquisition import find_reusable_artifact
 import knowledge_miner.main as main_module
 import knowledge_miner.rate_limit as rate_limit_module
 from knowledge_miner.config import settings
@@ -146,6 +147,117 @@ def _seed_cross_run_session_sources() -> tuple[str, str, str]:
     return run_id, source_a, "doi:10.1000/test-acq-cross"
 
 
+def _seed_cross_session_reusable_artifact(tmp_path: Path) -> tuple[str, str]:
+    pdf_path = tmp_path / "reusable.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 reusable")
+    with SessionLocal() as db:
+        run_a = Run(
+            id="run_reuse_a",
+            session_id="session_reuse_a",
+            status="completed",
+            seed_queries=["upw"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        source_a = Source(
+            id="doi:10.1000/reuse-shared::run_a",
+            run_id=run_a.id,
+            title="Reusable paper",
+            year=2024,
+            url="https://example.org/reuse-shared",
+            doi="10.1000/reuse-shared",
+            abstract="shared",
+            type="academic",
+            source="openalex",
+            source_native_id="reuse_a",
+            patent_office=None,
+            patent_number=None,
+            iteration=1,
+            discovery_method="seed_search",
+            relevance_score=7.0,
+            accepted=True,
+            review_status="human_accept",
+            final_decision="human_accept",
+            decision_source="human_review",
+            heuristic_recommendation="accept",
+            heuristic_score=7.0,
+            ai_decision=None,
+            ai_confidence=None,
+            parent_source_id=None,
+            provenance_history=[],
+        )
+        acq_run_a = AcquisitionRun(
+            id="acq_reuse_a",
+            discovery_run_id=run_a.id,
+            retry_failed_only=False,
+            status="completed",
+            total_sources=1,
+            downloaded_total=1,
+            partial_total=0,
+            failed_total=0,
+            skipped_total=0,
+        )
+        artifact = Artifact(
+            id="artifact_reuse_a",
+            acq_run_id=acq_run_a.id,
+            source_id=source_a.id,
+            item_id=None,
+            kind="pdf",
+            path=str(pdf_path),
+            checksum_sha256="reuse-a",
+            size_bytes=pdf_path.stat().st_size,
+            mime_type="application/pdf",
+        )
+        run_b = Run(
+            id="run_reuse_b",
+            session_id="session_reuse_b",
+            status="completed",
+            seed_queries=["reuse"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        source_b = Source(
+            id="doi:10.1000/reuse-shared::run_b",
+            run_id=run_b.id,
+            title="Reusable paper",
+            year=2024,
+            url="https://example.org/reuse-shared",
+            doi="10.1000/reuse-shared",
+            abstract="shared",
+            type="academic",
+            source="openalex",
+            source_native_id="reuse_b",
+            patent_office=None,
+            patent_number=None,
+            iteration=1,
+            discovery_method="seed_search",
+            relevance_score=7.1,
+            accepted=True,
+            review_status="human_accept",
+            final_decision="human_accept",
+            decision_source="human_review",
+            heuristic_recommendation="accept",
+            heuristic_score=7.1,
+            ai_decision=None,
+            ai_confidence=None,
+            parent_source_id=None,
+            provenance_history=[],
+        )
+        db.add_all([run_a, source_a, acq_run_a, artifact, run_b, source_b])
+        db.commit()
+    return "run_reuse_b", "doi:10.1000/reuse-shared::run_b"
+
+
 def _seed_manual_recovery_case() -> tuple[str, str]:
     run_id, source_id = _seed_discovery_run(completed=True)
     with SessionLocal() as db:
@@ -188,6 +300,164 @@ def test_create_acquisition_run_happy_path(monkeypatch):
     body = resp.json()
     assert body["acq_run_id"].startswith("acq_")
     assert body["status"] in {"queued", "running", "completed"}
+
+
+def test_create_acquisition_run_reuses_downloaded_artifact_across_sessions(monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    original_artifacts_dir = settings.artifacts_dir
+    object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+    try:
+        run_id, source_id = _seed_cross_session_reusable_artifact(tmp_path)
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/acquisition/runs",
+            json={"run_id": run_id, "retry_failed_only": False},
+            headers=_auth_headers(),
+        )
+        assert resp.status_code == 202
+        acq_run_id = resp.json()["acq_run_id"]
+        items = client.get(f"/v1/acquisition/runs/{acq_run_id}/items", headers=_auth_headers())
+        assert items.status_code == 200
+        body = items.json()
+        assert body["items"][0]["source_id"] == source_id
+        assert body["items"][0]["status"] == "downloaded"
+        with SessionLocal() as db:
+            artifacts = db.scalars(select(Artifact).where(Artifact.acq_run_id == acq_run_id, Artifact.source_id == source_id)).all()
+            assert len(artifacts) == 1
+            assert Path(artifacts[0].path).name == "reusable.pdf"
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
+def test_session_latest_acquisition_items_surface_global_reuse(tmp_path):
+    original_artifacts_dir = settings.artifacts_dir
+    object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+    try:
+        _seed_cross_session_reusable_artifact(tmp_path)
+        client = TestClient(app)
+        resp = client.get("/v1/sessions/session_reuse_b/acquisition-items/latest", headers=_auth_headers())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["items"][0]["status"] == "downloaded"
+        assert body["items"][0]["source_id"] == "doi:10.1000/reuse-shared::run_b"
+        assert body["items"][0]["artifact_kind"] == "pdf"
+        assert body["items"][0]["artifact_quality_status"] == "pdf"
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
+def test_find_reusable_artifact_skips_invalid_html(tmp_path):
+    bad_html = tmp_path / "bad.html"
+    bad_html.write_text("<html><head><title>Redirecting</title></head><body>Redirecting</body></html>", encoding="utf-8")
+    with SessionLocal() as db:
+        run_a = Run(
+            id="run_invalid_html_a",
+            session_id="session_invalid_html_a",
+            status="completed",
+            seed_queries=["html"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        run_b = Run(
+            id="run_invalid_html_b",
+            session_id="session_invalid_html_b",
+            status="completed",
+            seed_queries=["html"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        source_a = Source(
+            id="doi:10.1000/reuse-html-a",
+            run_id=run_a.id,
+            title="Reusable html paper",
+            year=2024,
+            url="https://example.org/reuse-html",
+            doi="10.1000/reuse-html",
+            abstract="shared",
+            type="academic",
+            source="openalex",
+            source_native_id="reuse_html_a",
+            patent_office=None,
+            patent_number=None,
+            iteration=1,
+            discovery_method="seed_search",
+            relevance_score=7.0,
+            accepted=True,
+            review_status="human_accept",
+            final_decision="human_accept",
+            decision_source="human_review",
+            heuristic_recommendation="accept",
+            heuristic_score=7.0,
+            ai_decision=None,
+            ai_confidence=None,
+            parent_source_id=None,
+            provenance_history=[],
+        )
+        source_b = Source(
+            id="doi:10.1000/reuse-html-b",
+            run_id=run_b.id,
+            title="Reusable html paper",
+            year=2024,
+            url="https://example.org/reuse-html",
+            doi="10.1000/reuse-html",
+            abstract="shared",
+            type="academic",
+            source="openalex",
+            source_native_id="reuse_html_b",
+            patent_office=None,
+            patent_number=None,
+            iteration=1,
+            discovery_method="seed_search",
+            relevance_score=7.1,
+            accepted=True,
+            review_status="human_accept",
+            final_decision="human_accept",
+            decision_source="human_review",
+            heuristic_recommendation="accept",
+            heuristic_score=7.1,
+            ai_decision=None,
+            ai_confidence=None,
+            parent_source_id=None,
+            provenance_history=[],
+        )
+        acq_run = AcquisitionRun(
+            id="acq_invalid_html_a",
+            discovery_run_id=run_a.id,
+            retry_failed_only=False,
+            status="completed",
+            total_sources=1,
+            downloaded_total=0,
+            partial_total=1,
+            failed_total=0,
+            skipped_total=0,
+        )
+        artifact = Artifact(
+            id="artifact_invalid_html_a",
+            acq_run_id=acq_run.id,
+            source_id=source_a.id,
+            item_id=None,
+            kind="html",
+            path=str(bad_html),
+            checksum_sha256="bad-html",
+            size_bytes=bad_html.stat().st_size,
+            mime_type="text/html",
+            quality_status="html_invalid",
+            quality_reason="html_redirect_page",
+        )
+        db.add_all([run_a, run_b, source_a, source_b, acq_run, artifact])
+        db.commit()
+        assert find_reusable_artifact(db, source_b) is None
 
 
 def test_create_manual_upload_context_does_not_enqueue(monkeypatch):
@@ -425,6 +695,70 @@ def test_get_artifact_endpoint(monkeypatch):
     assert body["source_id"] == source_id
 
 
+def test_get_artifact_content_endpoint_serves_pdf_inline(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    run_id, source_id = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+    create_resp = client.post("/v1/acquisition/runs", json={"run_id": run_id}, headers=_auth_headers())
+    assert create_resp.status_code == 202
+    acq_run_id = create_resp.json()["acq_run_id"]
+
+    pdf_path = tmp_path / "preview.pdf"
+    pdf_bytes = b"%PDF-1.4 preview\n"
+    pdf_path.write_bytes(pdf_bytes)
+
+    with SessionLocal() as db:
+        artifact = Artifact(
+            id="artifact_pdf_1",
+            acq_run_id=acq_run_id,
+            source_id=source_id,
+            item_id=None,
+            kind="pdf",
+            path=str(pdf_path),
+            checksum_sha256="pdf123",
+            size_bytes=len(pdf_bytes),
+            mime_type="application/pdf",
+            quality_status="pdf",
+        )
+        db.add(artifact)
+        db.commit()
+
+    resp = client.get("/v1/acquisition/artifacts/artifact_pdf_1/content", headers=_auth_headers())
+    assert resp.status_code == 200
+    assert "application/pdf" in resp.headers.get("content-type", "")
+    assert "inline" in resp.headers.get("content-disposition", "")
+    assert resp.content == pdf_bytes
+
+
+def test_get_artifact_content_endpoint_returns_missing_file(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
+    run_id, source_id = _seed_discovery_run(completed=True)
+    client = TestClient(app)
+    create_resp = client.post("/v1/acquisition/runs", json={"run_id": run_id}, headers=_auth_headers())
+    assert create_resp.status_code == 202
+    acq_run_id = create_resp.json()["acq_run_id"]
+
+    with SessionLocal() as db:
+        artifact = Artifact(
+            id="artifact_missing_file_1",
+            acq_run_id=acq_run_id,
+            source_id=source_id,
+            item_id=None,
+            kind="pdf",
+            path="missing/nonexistent.pdf",
+            checksum_sha256="missing123",
+            size_bytes=0,
+            mime_type="application/pdf",
+            quality_status="pdf",
+        )
+        db.add(artifact)
+        db.commit()
+
+    resp = client.get("/v1/acquisition/artifacts/artifact_missing_file_1/content", headers=_auth_headers())
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "artifact_file_missing"
+
+
 def test_acquisition_endpoints_allow_without_auth_when_disabled(monkeypatch):
     monkeypatch.setattr(main_module, "enqueue_acquisition_run", lambda acq_run_id: None)
     run_id, _ = _seed_discovery_run(completed=True)
@@ -595,6 +929,36 @@ def test_manual_upload_batch_auto_matches_by_doi(tmp_path: Path):
         assert body["unmatched"] == 1
         assert body["ambiguous"] == 0
         assert any(row["source_id"] == source_id and row["status"] == "matched" for row in body["items"])
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
+def test_manual_upload_batch_auto_matches_by_doi_even_when_item_already_downloaded(tmp_path: Path):
+    acq_run_id, source_id = _seed_manual_recovery_case()
+    original_artifacts_dir = settings.artifacts_dir
+    object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+    try:
+        with SessionLocal() as db:
+            item = db.scalars(select(AcquisitionItem).where(AcquisitionItem.acq_run_id == acq_run_id)).first()
+            assert item is not None
+            item.status = "downloaded"
+            item.last_error = None
+            db.commit()
+
+        client = TestClient(app)
+        files = [
+            ("files", ("matched_again.pdf", b"%PDF-1.4 DOI 10.1000/test-acq", "application/pdf")),
+        ]
+        resp = client.post(
+            f"/v1/acquisition/runs/{acq_run_id}/manual-upload-batch",
+            files=files,
+            headers=_auth_headers(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["matched"] == 1
+        assert body["items"][0]["source_id"] == source_id
+        assert body["items"][0]["reason"] == "doi_exact"
     finally:
         object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
 

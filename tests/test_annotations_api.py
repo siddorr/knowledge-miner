@@ -142,8 +142,11 @@ def test_annotations_list_returns_virtual_state_for_requested_source():
     assert item["source_id"] == source_id
     assert item["freeform_tags"] == []
     assert item["approved_tags"] == []
+    assert item["ai_suggested_tags"] == []
     assert item["can_generate_summary"] is True
+    assert item["can_generate_tags"] is True
     assert item["summary_status"] == "none"
+    assert item["tag_suggestion_status"] == "none"
 
 
 def test_tag_catalog_and_annotation_update_round_trip():
@@ -174,10 +177,46 @@ def test_tag_catalog_and_annotation_update_round_trip():
 def test_generate_summary_persists_completed_annotation(monkeypatch):
     session_id, source_id = _seed_session_source(parsed=True)
     client = TestClient(app)
+    artifact_json = {
+        "summary": "Session-specific summary text.",
+        "wastewater_source": {
+            "fab_area": None,
+            "process_step": None,
+            "tool_or_equipment": None,
+            "waste_stream_name": None,
+            "real_or_synthetic_water": "unclear",
+            "water_source_details": None,
+        },
+        "water_composition": {
+            "components": [],
+            "water_quality_parameters": [],
+        },
+        "treatment_target": {
+            "target_contaminants_or_parameters": [],
+        },
+        "treatment_technology": {
+            "technology_name": "reverse osmosis",
+            "technology_category": "membrane",
+        },
+        "experiments": {
+            "used_real_wastewater": None,
+            "used_synthetic_wastewater": None,
+            "experimental_scale": "pilot",
+        },
+        "performance": {
+            "removal_results": [],
+            "key_findings": [],
+            "limitations": [],
+        },
+    }
 
     monkeypatch.setattr(
         "knowledge_miner.routes.annotations.generate_paper_summary",
-        lambda **_: type("SummaryResult", (), {"summary": "Session-specific summary text."})(),
+        lambda **_: type(
+            "SummaryResult",
+            (),
+            {"summary": "Session-specific summary text.", "artifact_json": artifact_json},
+        )(),
     )
 
     response = client.post(
@@ -197,3 +236,70 @@ def test_generate_summary_persists_completed_annotation(monkeypatch):
     item = listed.json()["items"][0]
     assert item["summary_status"] == "completed"
     assert item["ai_summary"] == "Session-specific summary text."
+    assert item["ai_summary_json"]["summary"] == "Session-specific summary text."
+    assert item["ai_summary_json"]["treatment_technology"]["technology_name"] == "reverse osmosis"
+
+
+def test_generate_tags_persists_completed_annotation(monkeypatch):
+    session_id, source_id = _seed_session_source(parsed=True)
+    client = TestClient(app)
+
+    monkeypatch.setattr(
+        "knowledge_miner.routes.annotations.generate_paper_tags",
+        lambda **_: type("TagResult", (), {"tags": ["fluoride removal", "semiconductor wastewater", "reverse osmosis"]})(),
+    )
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/tags/generate",
+        json={"source_ids": [source_id]},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 202
+    assert response.json()["queued_count"] == 1
+
+    listed = client.get(
+        f"/v1/sessions/{session_id}/annotations",
+        params=[("source_id", source_id)],
+        headers=_auth_headers(),
+    )
+    assert listed.status_code == 200
+    item = listed.json()["items"][0]
+    assert item["tag_suggestion_status"] == "completed"
+    assert item["ai_suggested_tags"] == ["fluoride removal", "semiconductor wastewater", "reverse osmosis"]
+
+
+def test_promote_suggested_tag_to_freeform_and_approved(monkeypatch):
+    session_id, source_id = _seed_session_source(parsed=True)
+    client = TestClient(app)
+
+    client.put(
+        f"/v1/sessions/{session_id}/tag-catalog",
+        json={"tags": ["RO", "fluoride removal"]},
+        headers=_auth_headers(),
+    )
+    monkeypatch.setattr(
+        "knowledge_miner.routes.annotations.generate_paper_tags",
+        lambda **_: type("TagResult", (), {"tags": ["fluoride removal", "semiconductor wastewater"]})(),
+    )
+    queued = client.post(
+        f"/v1/sessions/{session_id}/tags/generate",
+        json={"source_ids": [source_id]},
+        headers=_auth_headers(),
+    )
+    assert queued.status_code == 202
+
+    freeform = client.post(
+        f"/v1/sessions/{session_id}/annotations/{source_id}/suggested-tags/promote",
+        json={"tag": "semiconductor wastewater", "target": "freeform"},
+        headers=_auth_headers(),
+    )
+    assert freeform.status_code == 200
+    assert freeform.json()["freeform_tags"] == ["semiconductor wastewater"]
+
+    approved = client.post(
+        f"/v1/sessions/{session_id}/annotations/{source_id}/suggested-tags/promote",
+        json={"tag": "fluoride removal", "target": "approved"},
+        headers=_auth_headers(),
+    )
+    assert approved.status_code == 200
+    assert approved.json()["approved_tags"] == ["fluoride removal"]

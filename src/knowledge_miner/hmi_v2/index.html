@@ -167,12 +167,13 @@
           <table>
             <thead>
               <tr>
-                <th>Status</th>
-                <th><button type="button" class="sort-btn" data-review-sort="lineage">#</button></th>
-                <th><button type="button" class="sort-btn" data-review-sort="year">Year</button></th>
-                <th><button type="button" class="sort-btn" data-review-sort="citation_count">Cit</button></th>
-                <th><button type="button" class="sort-btn" data-review-sort="relevance_score">Score</button></th>
-                <th>Title</th>
+                <th><button type="button" class="sort-btn" data-review-sort="review_status">Status</button></th>
+                <th class="col-lineage"><button type="button" class="sort-btn icon-sort-btn" data-review-sort="lineage" title="Lineage number" aria-label="Sort by lineage number"><span class="hdr-icon hdr-icon-lineage" aria-hidden="true"></span></button></th>
+                <th class="col-year"><button type="button" class="sort-btn icon-sort-btn" data-review-sort="year" title="Publication year" aria-label="Sort by publication year"><span class="hdr-icon hdr-icon-year" aria-hidden="true"></span></button></th>
+                <th class="col-citations"><button type="button" class="sort-btn icon-sort-btn" data-review-sort="citation_count" title="Citation count" aria-label="Sort by citation count"><span class="hdr-icon hdr-icon-citations" aria-hidden="true"></span></button></th>
+                <th class="col-score"><button type="button" class="sort-btn icon-sort-btn" data-review-sort="relevance_score" title="AI relevance score" aria-label="Sort by AI relevance score"><span class="hdr-icon hdr-icon-score" aria-hidden="true"></span></button></th>
+                <th><button type="button" class="sort-btn" data-review-sort="title">Title</button></th>
+                <th class="col-doc">Doc</th>
               </tr>
             </thead>
             <tbody id="reviewRows"></tbody>
@@ -220,7 +221,7 @@
       </div>
       <div class="scroll-table-wrap documents-table-wrap">
         <table>
-          <thead><tr><th><button type="button" class="sort-btn" data-documents-sort="lineage">#</button></th><th><button type="button" class="sort-btn" data-documents-sort="rank">Rank</button></th><th><button type="button" class="sort-btn" data-documents-sort="score">Score</button></th><th><button type="button" class="sort-btn" data-documents-sort="year">Year</button></th><th><button type="button" class="sort-btn" data-documents-sort="citations">Cit</button></th><th><button type="button" class="sort-btn" data-documents-sort="title">Title</button></th><th>DOI</th><th><button type="button" class="sort-btn" data-documents-sort="status">Status</button></th></tr></thead>
+          <thead><tr><th class="col-lineage"><button type="button" class="sort-btn icon-sort-btn" data-documents-sort="lineage" title="Lineage number" aria-label="Sort by lineage number"><span class="hdr-icon hdr-icon-lineage" aria-hidden="true"></span></button></th><th class="col-score"><button type="button" class="sort-btn icon-sort-btn" data-documents-sort="score" title="AI relevance score" aria-label="Sort by AI relevance score"><span class="hdr-icon hdr-icon-score" aria-hidden="true"></span></button></th><th class="col-year"><button type="button" class="sort-btn icon-sort-btn" data-documents-sort="year" title="Publication year" aria-label="Sort by publication year"><span class="hdr-icon hdr-icon-year" aria-hidden="true"></span></button></th><th class="col-citations"><button type="button" class="sort-btn icon-sort-btn" data-documents-sort="citations" title="Citation count" aria-label="Sort by citation count"><span class="hdr-icon hdr-icon-citations" aria-hidden="true"></span></button></th><th><button type="button" class="sort-btn" data-documents-sort="title">Title</button></th><th class="col-doc">Doc</th><th><button type="button" class="sort-btn" data-documents-sort="doi">DOI</button></th><th><button type="button" class="sort-btn" data-documents-sort="status">Status</button></th></tr></thead>
           <tbody id="documentsRows"></tbody>
         </table>
       </div>
@@ -235,6 +236,7 @@
         <div id="documentsDetailMetadata">Year: - | Journal: - | Citations: - | Authors: - | Link: -</div>
         <div class="row">
           <button id="documentsRowActionBtn" type="button">Download Selected</button>
+          <button id="documentsOpenPdfBtn" type="button">Open PDF</button>
           <button id="documentsBookmarkBtn" type="button">Bookmark</button>
         </div>
       </section>
@@ -265,6 +267,18 @@
           <input id="libraryQuery" type="text" placeholder="ultrapure water semiconductor">
         </label>
         <label>
+          <input id="libraryParsedOnlyCheckbox" type="checkbox">
+          Parsed only
+        </label>
+        <label>
+          <input id="libraryPdfOnlyCheckbox" type="checkbox">
+          PDF available
+        </label>
+        <label>
+          <input id="librarySummaryCurrentOnlyCheckbox" type="checkbox">
+          Current summary
+        </label>
+        <label>
           Export size
           <select id="libraryExportSize">
             <option value="20" selected>20</option>
@@ -274,6 +288,7 @@
           </select>
         </label>
         <button id="libraryGenerateVisibleSummariesBtn" type="button">Generate Summaries for Visible</button>
+        <button id="libraryGenerateVisibleTagsBtn" type="button">Generate Tags for Visible</button>
         <button id="libraryPromptToggleBtn" type="button">Summary Prompt</button>
         <button id="libraryApprovedTagsToggleBtn" type="button">Approved Tags</button>
       </div>
@@ -284,7 +299,9 @@
         </label>
         <div class="row">
           <button id="librarySaveSummaryPromptBtn" type="button">Save Prompt</button>
+          <button id="libraryResetSummaryPromptBtn" type="button">Reset to Default</button>
         </div>
+        <p class="muted">Prompt must return one JSON object with a non-empty <code>summary</code> plus structured analysis fields.</p>
         <p id="librarySummaryPromptState" class="muted">Using the default summary prompt.</p>
       </div>
       <div id="libraryApprovedTagsPanel" class="card" hidden>
@@ -297,18 +314,23 @@
         </div>
         <p id="libraryApprovedTagsState" class="muted">No approved tags configured for this session.</p>
       </div>
-      <p id="libraryFilterHelp" class="muted">Search matches title, abstract, and tags.</p>
+      <p id="libraryFilterHelp" class="muted">Search matches title, abstract, and tags. Optional filters limit the list to parsed papers, papers with a PDF, and/or papers with a current summary for the active prompt.</p>
       <div class="two-pane two-pane-fill">
         <section class="pane scroll-pane">
           <div class="scroll-table-wrap">
           <table>
-            <thead><tr><th><button type="button" class="sort-btn" data-library-sort="lineage">#</button></th><th><button type="button" class="sort-btn" data-library-sort="rank">Rank</button></th><th><button type="button" class="sort-btn" data-library-sort="relevance_score">AI Score</button></th><th><button type="button" class="sort-btn" data-library-sort="year">Year</button></th><th><button type="button" class="sort-btn" data-library-sort="citation_count">Citations</button></th><th><button type="button" class="sort-btn" data-library-sort="title">Title</button></th></tr></thead>
+            <thead><tr><th class="col-lineage"><button type="button" class="sort-btn icon-sort-btn" data-library-sort="lineage" title="Lineage number" aria-label="Sort by lineage number"><span class="hdr-icon hdr-icon-lineage" aria-hidden="true"></span></button></th><th class="col-score"><button type="button" class="sort-btn icon-sort-btn" data-library-sort="relevance_score" title="AI relevance score" aria-label="Sort by AI relevance score"><span class="hdr-icon hdr-icon-score" aria-hidden="true"></span></button></th><th class="col-year"><button type="button" class="sort-btn icon-sort-btn" data-library-sort="year" title="Publication year" aria-label="Sort by publication year"><span class="hdr-icon hdr-icon-year" aria-hidden="true"></span></button></th><th class="col-citations"><button type="button" class="sort-btn icon-sort-btn" data-library-sort="citation_count" title="Citation count" aria-label="Sort by citation count"><span class="hdr-icon hdr-icon-citations" aria-hidden="true"></span></button></th><th><button type="button" class="sort-btn" data-library-sort="title">Title</button></th><th class="col-doc">Doc</th></tr></thead>
             <tbody id="libraryRows"></tbody>
           </table>
           </div>
         </section>
         <section class="pane detail-pane scroll-pane">
           <h3 id="libraryTitle">No paper selected.</h3>
+          <div class="subtab-row">
+            <button id="libraryDetailsTabBtn" type="button" class="subtab-btn active">Details</button>
+            <button id="librarySummaryPreviewTabBtn" type="button" class="subtab-btn">Summary Preview</button>
+          </div>
+          <div id="libraryDetailsPanel">
           <p id="libraryAbstract" class="detail-text">Select a paper to inspect and export.</p>
           <div id="libraryMetadata">Year: - | Journal: - | Citations: - | Authors: - | Link: -</div>
           <div class="row">
@@ -336,6 +358,27 @@
           <div class="row">
             <button id="libraryGenerateSummaryBtn" type="button">Generate Summary</button>
             <button id="libraryRegenerateSummaryBtn" type="button">Regenerate Summary</button>
+          </div>
+          <h4>AI Suggested Tags</h4>
+          <p id="librarySuggestedTagsStatus" class="muted">No AI tags generated.</p>
+          <div id="librarySuggestedTags" class="tag-chip-list"></div>
+          <div class="row">
+            <button id="libraryGenerateTagsBtn" type="button">Generate Tags</button>
+            <button id="libraryRegenerateTagsBtn" type="button">Regenerate Tags</button>
+          </div>
+          </div>
+          <div id="librarySummaryPreviewPanel" hidden>
+            <p id="librarySummaryPreviewStatus" class="muted">No summary generated.</p>
+            <h4>Narrative Summary</h4>
+            <pre id="librarySummaryPreviewText" class="detail-text">Select a paper to inspect generated summary.</pre>
+            <h4>Structured Data</h4>
+            <div id="librarySummaryStructuredText" class="detail-text structured-summary-view">No structured summary data available for this paper yet.</div>
+            <div class="row">
+              <button id="librarySummaryPreviewOpenPdfBtn" type="button">Open PDF</button>
+              <button id="libraryCopySummaryBtn" type="button">Copy Summary</button>
+              <button id="librarySummaryPreviewGenerateBtn" type="button">Generate Summary</button>
+              <button id="librarySummaryPreviewRegenerateBtn" type="button">Regenerate Summary</button>
+            </div>
           </div>
         </section>
       </div>
@@ -429,6 +472,10 @@
         <p>Discovery: <code id="latestDiscoveryId">-</code></p>
         <p>Acquisition: <code id="latestAcquisitionId">-</code></p>
         <p>Parse: <code id="latestParseId">-</code></p>
+        <div class="row">
+          <button id="startParseBtn" type="button">Parse All Downloaded</button>
+        </div>
+        <p id="advancedParseState" class="muted">Parsing can be triggered manually here and will also start automatically after downloads complete.</p>
       </div>
       <div class="card">
         <label>
@@ -449,6 +496,32 @@
           <button id="runLookupBtn" type="button">Lookup Discovery Run</button>
         </div>
         <pre id="runLookupResult" class="detail-text">No run loaded.</pre>
+      </div>
+      <div class="card">
+        <div class="row">
+          <strong>Database Restore</strong>
+          <button id="createDatabaseBackupBtn" type="button">Create Backup Now</button>
+          <button id="refreshDatabaseBackupsBtn" type="button">Refresh Backups</button>
+        </div>
+        <p id="databaseRestoreState" class="muted">No database backups loaded yet.</p>
+        <p id="databaseTargetWarning" class="muted">DB target status unknown.</p>
+        <p>Live database: <code id="databaseRestoreTarget">-</code></p>
+        <p>Backup directory: <code id="databaseBackupDir">-</code></p>
+        <p>Automatic backups: <span id="databaseBackupPolicy">Hourly, keeping latest 48 automatic snapshots.</span></p>
+        <label>
+          Backup File
+          <select id="databaseBackupSelect">
+            <option value="">Select a backup</option>
+          </select>
+        </label>
+        <label>
+          Confirm Backup Name
+          <input id="databaseRestoreConfirmInput" type="text" placeholder="Type the backup file name exactly">
+        </label>
+        <div class="row">
+          <button id="restoreDatabaseBtn" type="button">Restore Selected Backup</button>
+        </div>
+        <ul id="databaseBackupList" class="detail-list"></ul>
       </div>
       <div class="card">
         <div class="row">

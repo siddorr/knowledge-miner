@@ -7,13 +7,15 @@ from sqlalchemy.orm import Session
 from ..auth import require_api_key
 from ..db import get_db
 from ..models import DocumentChunk, ParseRun, ParsedDocument
-from ..parse import create_parse_run, enqueue_parse_run
+from ..parse import create_parse_run, create_parse_runs_for_session_downloads, enqueue_parse_run
 from ..rate_limit import require_rate_limit
 from ..schemas import (
     DocumentChunkOut,
     DocumentChunksListResponse,
     ParseRunCreateRequest,
     ParseRunCreateResponse,
+    ParseAllDownloadedRequest,
+    ParseAllDownloadedResponse,
     ParseRunStatusResponse,
     ParsedDocumentOut,
     ParsedDocumentsListResponse,
@@ -73,6 +75,37 @@ def create_parse(
     return ParseRunCreateResponse(parse_run_id=run.id, status=run.status)
 
 
+@router.post(
+    "/v1/parse/runs/queue-all",
+    response_model=ParseAllDownloadedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_parse_all_downloaded(
+    payload: ParseAllDownloadedRequest,
+    background_tasks: BackgroundTasks,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+) -> ParseAllDownloadedResponse:
+    runs = create_parse_runs_for_session_downloads(db, payload.session_id)
+    for run in runs:
+        _enqueue_parse_task(background_tasks, run.id)
+    return ParseAllDownloadedResponse(
+        queued_runs=len(runs),
+        parse_run_ids=[run.id for run in runs],
+        acquisition_run_ids=[run.acq_run_id for run in runs],
+        queued_summary=[
+            {
+                "acq_run_id": run.acq_run_id,
+                "parse_run_id": run.id,
+                "status": run.status,
+                "total_documents": run.total_documents,
+            }
+            for run in runs
+        ],
+    )
+
+
 @router.get("/v1/parse/runs/{parse_run_id}", response_model=ParseRunStatusResponse)
 def get_parse_status(
     parse_run_id: str,
@@ -91,7 +124,7 @@ def get_parse_status(
     if stage_status == "queued":
         message = "Queued to parse documents."
     elif stage_status == "running":
-        message = "Parsing and chunking documents."
+        message = f"Parsing documents: {completed}/{total} completed."
     elif stage_status == "failed":
         message = run.error_message or "Parse failed."
     else:

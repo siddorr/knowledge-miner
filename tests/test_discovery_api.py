@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
@@ -8,6 +11,7 @@ from knowledge_miner.config import settings
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.main import app
 from knowledge_miner.models import DiscoveryRunQuery, Run, Source
+from knowledge_miner.runtime_state import request_run_stop
 
 
 def setup_function():
@@ -650,6 +654,123 @@ def test_citation_iteration_resume_endpoint(monkeypatch):
     assert response.status_code == 202
     body = response.json()
     assert body["run_id"] == run_id
+
+
+def test_citation_iteration_requires_resume_when_resumable_checkpoint_exists(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_citation_iteration_run", lambda run_id, source_run_id: None)
+    run_id = _seed_run_with_sources()
+    with SessionLocal() as db:
+        db.add(
+            DiscoveryRunQuery(
+                id="rq_resumable",
+                run_id=run_id,
+                query_text="citation expansion",
+                query_metadata={},
+                position=2,
+                status="failed",
+                checkpoint_state="resumable",
+                discovered_count=0,
+                openalex_count=0,
+                brave_count=0,
+                semantic_scholar_count=0,
+                accepted_count=0,
+                rejected_count=0,
+                pending_count=0,
+                processing_count=0,
+                error_message="stopped_by_user",
+            )
+        )
+        db.commit()
+
+    client = TestClient(app)
+    response = client.post(
+        f"/v1/discovery/runs/{run_id}/next-citation-iteration",
+        json={},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "citation_iteration_resumable_exists_use_resume"
+
+
+def test_citation_iteration_resume_clears_stale_stop_request(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_citation_iteration_run", lambda run_id, source_run_id: None)
+    run_id = _seed_run_with_sources()
+    with SessionLocal() as db:
+        run = db.get(Run, run_id)
+        assert run is not None
+        run.status = "failed"
+        run.error_message = "stopped_by_user"
+        db.add(
+            DiscoveryRunQuery(
+                id="rq_resume",
+                run_id=run_id,
+                query_text="citation expansion",
+                query_metadata={},
+                position=2,
+                status="failed",
+                checkpoint_state="resumable",
+                discovered_count=0,
+                openalex_count=0,
+                brave_count=0,
+                semantic_scholar_count=0,
+                accepted_count=0,
+                rejected_count=0,
+                pending_count=0,
+                processing_count=0,
+                error_message="stopped_by_user",
+            )
+        )
+        db.commit()
+    stop_path = request_run_stop(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
+    assert Path(stop_path).exists()
+
+    client = TestClient(app)
+    response = client.post(
+        f"/v1/discovery/runs/{run_id}/citation-expansion/resume",
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 202
+    assert not Path(stop_path).exists()
+
+
+def test_stop_discovery_run_force_stop_clears_stale_stop_request(monkeypatch):
+    monkeypatch.setattr(main_module, "enqueue_citation_iteration_run", lambda run_id, source_run_id: None)
+    run_id = _seed_run_with_sources()
+    with SessionLocal() as db:
+        run = db.get(Run, run_id)
+        assert run is not None
+        run.status = "running"
+        stale_at = datetime.now(UTC) - timedelta(minutes=5)
+        run.updated_at = stale_at
+        db.add(
+            DiscoveryRunQuery(
+                id="rq_force_stop",
+                run_id=run_id,
+                query_text="citation expansion",
+                query_metadata={},
+                position=2,
+                status="searching",
+                checkpoint_state="running",
+                discovered_count=0,
+                openalex_count=0,
+                brave_count=0,
+                semantic_scholar_count=0,
+                accepted_count=0,
+                rejected_count=0,
+                pending_count=0,
+                processing_count=0,
+                updated_at=stale_at,
+            )
+        )
+        db.commit()
+    stop_path = request_run_stop(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
+    assert Path(stop_path).exists()
+
+    client = TestClient(app)
+    response = client.post(f"/v1/discovery/runs/{run_id}/stop", headers=_auth_headers())
+    assert response.status_code == 200
+    assert response.json()["message"] == "Discovery run force-stopped."
+    assert not Path(stop_path).exists()
 
 
 def test_discovery_run_queries_endpoint_returns_persisted_query_state():

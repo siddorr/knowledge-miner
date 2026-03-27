@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import hashlib
-import html
 import json
 import logging
 from pathlib import Path
@@ -11,13 +10,14 @@ import threading
 import time
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .artifact_quality import classify_html_artifact, extract_html_text
 from .ai_filter import AIRelevanceFilter, describe_ai_filter_runtime
 from .config import settings
 from .db import SessionLocal
-from .models import AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Source
+from .models import AcquisitionRun, Artifact, DocumentChunk, ParseRun, ParsedDocument, Run, Source
 from .observability import ParseObservability
 from .runtime_state import acquire_run_lock, is_primary_instance, release_run_lock
 from .scoring import decision_from_score, score_text
@@ -26,13 +26,13 @@ logger = logging.getLogger("knowledge_miner")
 _PYPDF_MISSING_LOGGED = False
 
 
-def create_parse_run(db: Session, acq_run_id: str, *, retry_failed_only: bool) -> ParseRun:
-    acq_run = db.get(AcquisitionRun, acq_run_id)
-    if acq_run is None:
-        raise ValueError("run_not_found")
-    if acq_run.status != "completed":
-        raise RuntimeError("run_not_complete")
-
+def _selected_artifacts_for_parse(
+    db: Session,
+    acq_run_id: str,
+    *,
+    retry_failed_only: bool,
+    unparsed_only: bool = False,
+) -> list[Artifact]:
     artifacts = db.scalars(select(Artifact).where(Artifact.acq_run_id == acq_run_id).order_by(Artifact.id.asc())).all()
     selected_artifacts = artifacts
     if retry_failed_only:
@@ -51,7 +51,28 @@ def create_parse_run(db: Session, acq_run_id: str, *, retry_failed_only: bool) -
             selected_artifacts = [a for a in artifacts if a.id in failed_artifact_ids]
         else:
             selected_artifacts = []
+    if unparsed_only:
+        parsed_artifact_ids = set(
+            db.scalars(
+                select(ParsedDocument.artifact_id)
+                .join(ParseRun, ParseRun.id == ParsedDocument.parse_run_id)
+                .where(
+                    ParseRun.acq_run_id == acq_run_id,
+                    ParsedDocument.status == "parsed",
+                )
+            ).all()
+        )
+        selected_artifacts = [artifact for artifact in selected_artifacts if artifact.id not in parsed_artifact_ids]
+    return selected_artifacts
 
+
+def _create_parse_run_for_artifacts(
+    db: Session,
+    acq_run_id: str,
+    *,
+    retry_failed_only: bool,
+    selected_artifacts: list[Artifact],
+) -> ParseRun:
     ai_filter_active, ai_filter_warning = describe_ai_filter_runtime(
         use_ai_filter=settings.use_ai_filter,
         api_key=settings.ai_api_key,
@@ -84,10 +105,85 @@ def create_parse_run(db: Session, acq_run_id: str, *, retry_failed_only: bool) -
                 publication_year=source.year if source is not None else None,
             )
         )
+    return run
 
+
+def create_parse_run(db: Session, acq_run_id: str, *, retry_failed_only: bool) -> ParseRun:
+    acq_run = db.get(AcquisitionRun, acq_run_id)
+    if acq_run is None:
+        raise ValueError("run_not_found")
+    if acq_run.status != "completed":
+        raise RuntimeError("run_not_complete")
+    active_existing = db.scalars(
+        select(ParseRun)
+        .where(
+            ParseRun.acq_run_id == acq_run_id,
+            ParseRun.retry_failed_only.is_(retry_failed_only),
+            ParseRun.status.in_(("queued", "running")),
+        )
+        .order_by(ParseRun.created_at.desc(), ParseRun.id.desc())
+    ).first()
+    if active_existing is not None:
+        return active_existing
+
+    selected_artifacts = _selected_artifacts_for_parse(db, acq_run_id, retry_failed_only=retry_failed_only)
+    run = _create_parse_run_for_artifacts(
+        db,
+        acq_run_id,
+        retry_failed_only=retry_failed_only,
+        selected_artifacts=selected_artifacts,
+    )
     db.commit()
     db.refresh(run)
     return run
+
+
+def create_parse_runs_for_session_downloads(db: Session, session_id: str) -> list[ParseRun]:
+    session_run_ids = db.scalars(select(Run.id).where(Run.session_id == session_id)).all()
+    if not session_run_ids:
+        return []
+    acq_runs = db.scalars(
+        select(AcquisitionRun)
+        .where(
+            AcquisitionRun.discovery_run_id.in_(session_run_ids),
+            select(Artifact.id).where(Artifact.acq_run_id == AcquisitionRun.id).exists(),
+        )
+        .order_by(AcquisitionRun.created_at.asc(), AcquisitionRun.id.asc())
+    ).all()
+    queued_runs: list[ParseRun] = []
+    for acq_run in acq_runs:
+        active_existing = db.scalars(
+            select(ParseRun)
+            .where(
+                ParseRun.acq_run_id == acq_run.id,
+                ParseRun.retry_failed_only.is_(False),
+                ParseRun.status.in_(("queued", "running")),
+            )
+            .order_by(ParseRun.created_at.desc(), ParseRun.id.desc())
+        ).first()
+        if active_existing is not None:
+            queued_runs.append(active_existing)
+            continue
+        selected_artifacts = _selected_artifacts_for_parse(
+            db,
+            acq_run.id,
+            retry_failed_only=False,
+            unparsed_only=True,
+        )
+        if not selected_artifacts:
+            continue
+        queued_runs.append(
+            _create_parse_run_for_artifacts(
+                db,
+                acq_run.id,
+                retry_failed_only=False,
+                selected_artifacts=selected_artifacts,
+            )
+        )
+    db.commit()
+    for run in queued_runs:
+        db.refresh(run)
+    return queued_runs
 
 
 def enqueue_parse_run(parse_run_id: str) -> None:
@@ -121,36 +217,29 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
     observability = ParseObservability()
     try:
         run.status = "running"
+        run.error_message = None
+        run.updated_at = datetime.now(UTC)
         db.commit()
 
-        docs = db.scalars(select(ParsedDocument).where(ParsedDocument.parse_run_id == run_id).order_by(ParsedDocument.id.asc())).all()
-        parsed_total = 0
-        failed_total = 0
-        chunked_total = 0
-        for doc in docs:
+        doc_ids = db.scalars(
+            select(ParsedDocument.id)
+            .where(ParsedDocument.parse_run_id == run_id, ParsedDocument.status == "queued")
+            .order_by(ParsedDocument.id.asc())
+        ).all()
+        for doc_id in doc_ids:
             started = time.perf_counter()
-            artifact = db.get(Artifact, doc.artifact_id)
-            if artifact is None:
-                doc.status = "failed"
-                doc.last_error = "artifact_not_found"
-                failed_total += 1
-                observability.inc("failed_documents")
-                observability.record_document(
-                    parse_run_id=run_id,
-                    document_id=doc.id,
-                    artifact_id=doc.artifact_id,
-                    latency_ms=(time.perf_counter() - started) * 1000.0,
-                    status="failed",
-                    error="artifact_not_found",
-                )
+            doc = db.get(ParsedDocument, doc_id)
+            if doc is None or doc.status != "queued":
                 continue
+            artifact_id = doc.artifact_id
             try:
+                artifact = db.get(Artifact, doc.artifact_id)
+                if artifact is None:
+                    raise FileNotFoundError("artifact_not_found")
                 text, parser_used, section_count = _extract_artifact_text(artifact)
                 content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
                 cached_doc = _find_cached_parsed_document(
                     db,
-                    acq_run_id=run.acq_run_id,
-                    source_id=doc.source_id,
                     content_hash=content_hash,
                     exclude_parse_run_id=run_id,
                 )
@@ -172,8 +261,6 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
                 doc.decision = doc_decision
                 doc.confidence = doc_confidence
                 doc.reason = doc_reason
-                parsed_total += 1
-                observability.inc("parsed_documents")
                 if cached_doc is not None:
                     chunk_count = _copy_chunks_from_cached_document(
                         db,
@@ -181,7 +268,6 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
                         target_doc_id=doc.id,
                         cached_doc_id=cached_doc.id,
                     )
-                    chunked_total += chunk_count
                 else:
                     chunk_count = _persist_chunks_for_document(
                         db,
@@ -191,38 +277,53 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
                         chunks=chunks,
                         ai_filter=ai_filter,
                     )
-                    chunked_total += chunk_count
                 observability.inc("chunked_chunks", chunk_count)
+                doc.updated_at = datetime.now(UTC)
+                _refresh_parse_run_progress(db, run_id)
+                db.commit()
+                observability.inc("parsed_documents")
                 observability.record_document(
                     parse_run_id=run_id,
                     document_id=doc.id,
-                    artifact_id=doc.artifact_id,
+                    artifact_id=artifact_id,
                     latency_ms=(time.perf_counter() - started) * 1000.0,
                     status="parsed",
                     parser_used=doc.parser_used,
                     chunks=chunk_count,
                 )
             except Exception as exc:
+                db.rollback()
+                doc = db.get(ParsedDocument, doc_id)
+                if doc is None:
+                    continue
                 doc.status = "failed"
+                doc.body_text = None
+                doc.language = None
+                doc.parser_used = None
+                doc.char_count = 0
+                doc.section_count = 0
+                doc.content_hash = None
+                doc.relevance_score = None
+                doc.decision = None
+                doc.confidence = None
+                doc.reason = None
                 doc.last_error = str(exc)
-                failed_total += 1
+                doc.updated_at = datetime.now(UTC)
+                _refresh_parse_run_progress(db, run_id)
+                db.commit()
                 observability.inc("failed_documents")
                 observability.record_document(
                     parse_run_id=run_id,
                     document_id=doc.id,
-                    artifact_id=doc.artifact_id,
+                    artifact_id=artifact_id,
                     latency_ms=(time.perf_counter() - started) * 1000.0,
                     status="failed",
                     error=str(exc),
                 )
-            doc.updated_at = datetime.now(UTC)
 
-        db_run = db.get(ParseRun, run_id)
+        db_run = _refresh_parse_run_progress(db, run_id)
         if db_run is None:
             return
-        db_run.parsed_total = parsed_total
-        db_run.failed_total = failed_total
-        db_run.chunked_total = chunked_total
         db_run.status = "completed"
         db_run.updated_at = datetime.now(UTC)
         indexing_started = time.perf_counter()
@@ -259,13 +360,92 @@ def execute_parse_run(db: Session, run: ParseRun) -> None:
         raise
 
 
+def _refresh_parse_run_progress(db: Session, run_id: str) -> ParseRun | None:
+    db_run = db.get(ParseRun, run_id)
+    if db_run is None:
+        return None
+    db_run.parsed_total = int(
+        db.scalar(
+            select(func.count()).select_from(ParsedDocument).where(
+                ParsedDocument.parse_run_id == run_id,
+                ParsedDocument.status == "parsed",
+            )
+        )
+        or 0
+    )
+    db_run.failed_total = int(
+        db.scalar(
+            select(func.count()).select_from(ParsedDocument).where(
+                ParsedDocument.parse_run_id == run_id,
+                ParsedDocument.status == "failed",
+            )
+        )
+        or 0
+    )
+    db_run.chunked_total = int(
+        db.scalar(select(func.count()).select_from(DocumentChunk).where(DocumentChunk.parse_run_id == run_id)) or 0
+    )
+    db_run.updated_at = datetime.now(UTC)
+    return db_run
+
+
+def resume_queued_parse_runs() -> list[str]:
+    resumed: list[str] = []
+    with SessionLocal() as db:
+        runs = db.scalars(
+            select(ParseRun)
+            .where(ParseRun.status.in_(("queued", "running")))
+            .order_by(ParseRun.acq_run_id.asc(), ParseRun.retry_failed_only.asc(), ParseRun.created_at.desc(), ParseRun.id.desc())
+        ).all()
+        active_by_key: dict[tuple[str, bool], ParseRun] = {}
+        for run in runs:
+            key = (run.acq_run_id, bool(run.retry_failed_only))
+            kept = active_by_key.get(key)
+            if kept is not None:
+                run.status = "failed"
+                run.error_message = f"superseded_by_parse_run:{kept.id}"
+                run.updated_at = datetime.now(UTC)
+                continue
+            active_by_key[key] = run
+            remaining_docs = int(
+                db.scalar(
+                    select(func.count()).select_from(ParsedDocument).where(
+                        ParsedDocument.parse_run_id == run.id,
+                        ParsedDocument.status == "queued",
+                    )
+                )
+                or 0
+            )
+            if remaining_docs <= 0:
+                if run.status != "completed":
+                    run.status = "completed"
+                    run.updated_at = datetime.now(UTC)
+                continue
+            if run.status == "running":
+                run.status = "queued"
+                run.updated_at = datetime.now(UTC)
+            resumed.append(run.id)
+        db.commit()
+    for run_id in resumed:
+        enqueue_parse_run(run_id)
+    return resumed
+
+
 def _extract_artifact_text(artifact: Artifact) -> tuple[str, str, int]:
     path = Path(settings.artifacts_dir) / artifact.path
     if not path.exists():
         raise FileNotFoundError("artifact_file_missing")
     if artifact.kind == "html":
         html = path.read_text(encoding="utf-8", errors="ignore")
-        text, sections = _extract_html_text(html)
+        quality_status = (artifact.quality_status or "").strip()
+        quality_reason = (artifact.quality_reason or "").strip()
+        if quality_status == "html_invalid":
+            raise RuntimeError(f"html_invalid:{quality_reason or 'html_missing_article_signals'}")
+        if not quality_status:
+            quality = classify_html_artifact(html_text=html)
+            if not quality.accepted:
+                raise RuntimeError(f"html_invalid:{quality.reason}")
+        text, sections = extract_html_text(html)
         return text, "html_readability_heuristic", sections
     if artifact.kind == "pdf":
         text, parser_used = _extract_pdf_text(path)
@@ -314,41 +494,6 @@ def _extract_pdf_text_pypdf(path: Path) -> str | None:
         return None
     merged = "\n\n".join(page_texts).strip()
     return merged or None
-
-
-def _extract_html_text(html_text: str) -> tuple[str, int]:
-    # Remove clearly non-content regions.
-    reduced = re.sub(r"<script[\s\S]*?</script>", " ", html_text, flags=re.I)
-    reduced = re.sub(r"<style[\s\S]*?</style>", " ", reduced, flags=re.I)
-    reduced = re.sub(r"<noscript[\s\S]*?</noscript>", " ", reduced, flags=re.I)
-    reduced = re.sub(r"<nav[\s\S]*?</nav>", " ", reduced, flags=re.I)
-    reduced = re.sub(r"<header[\s\S]*?</header>", " ", reduced, flags=re.I)
-    reduced = re.sub(r"<footer[\s\S]*?</footer>", " ", reduced, flags=re.I)
-
-    preferred_blocks = re.findall(r"<(article|main)\b[\s\S]*?</\1>", reduced, flags=re.I)
-    block_html = ""
-    if preferred_blocks:
-        # If any explicit content block exists, prefer the first longest one.
-        candidates = re.findall(r"<(?:article|main)\b[\s\S]*?</(?:article|main)>", reduced, flags=re.I)
-        block_html = max(candidates, key=len, default="")
-    else:
-        # Fallback: choose longest section/div block as readability-like heuristic.
-        candidates = re.findall(r"<(?:section|div)\b[\s\S]*?</(?:section|div)>", reduced, flags=re.I)
-        block_html = max(candidates, key=len, default=reduced)
-
-    heading_count = len(re.findall(r"<h[1-6]\b", block_html, flags=re.I))
-    text = re.sub(r"<[^>]+>", " ", block_html)
-    text = html.unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
-    if len(text) < 200:
-        # Fallback to full-page extraction when chosen block is too small.
-        text = re.sub(r"<[^>]+>", " ", reduced)
-        text = html.unescape(text)
-        text = re.sub(r"\s+", " ", text).strip()
-        heading_count = len(re.findall(r"<h[1-6]\b", reduced, flags=re.I))
-    if not text:
-        raise RuntimeError("html_text_empty")
-    return text, max(1, heading_count)
 
 
 def _estimate_section_count(text: str) -> int:
@@ -417,17 +562,12 @@ def _persist_chunks_for_document(
 def _find_cached_parsed_document(
     db: Session,
     *,
-    acq_run_id: str,
-    source_id: str,
     content_hash: str,
     exclude_parse_run_id: str,
 ) -> ParsedDocument | None:
     return db.scalars(
         select(ParsedDocument)
-        .join(ParseRun, ParseRun.id == ParsedDocument.parse_run_id)
         .where(
-            ParseRun.acq_run_id == acq_run_id,
-            ParsedDocument.source_id == source_id,
             ParsedDocument.content_hash == content_hash,
             ParsedDocument.status == "parsed",
             ParsedDocument.parse_run_id != exclude_parse_run_id,

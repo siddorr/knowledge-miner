@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST="${HOST:-127.0.0.1}"
+HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
-HEALTH_URL="http://${HOST}:${PORT}/healthz"
+HEALTHCHECK_HOST="${HEALTHCHECK_HOST:-127.0.0.1}"
+HEALTH_URL="http://${HEALTHCHECK_HOST}:${PORT}/healthz"
 
 if curl -fsS "$HEALTH_URL"; then
   echo
@@ -17,4 +18,4 @@ if lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Nothing is listening on ${HOST}:${PORT}"
+echo "Nothing is listening on ${HEALTHCHECK_HOST}:${PORT}"

@@ -15,7 +15,7 @@ Knowledge Miner is an end-to-end UPW literature workflow for semiconductor manuf
 8. Event-driven refresh model with SSE plus bounded fallback refresh.
 9. Advanced diagnostics, logs, and technical controls isolated in `Advanced`.
 10. Global bookmarks with bookmark-based research session branching.
-11. Session-scoped paper annotations with freeform tags, approved tags, and AI summaries generated from parsed full text.
+11. Session-scoped paper annotations with freeform tags, approved tags, AI suggested tags, and AI summaries generated from parsed full text.
 
 ## Approved Target UI Contract
 
@@ -43,6 +43,20 @@ Target implementation must migrate toward:
 4. `Advanced` as diagnostics-only.
 
 Current implementation is not the design source of truth; the rewritten `UI_SPEC.md` is.
+
+## Session Context And Citation Expansion
+
+1. Accepted-paper parent selection for citation expansion is session-based and deduplicated by paper identity.
+2. Citation-expansion progress is tracked per saved session-context generation, not only per run.
+3. In the same saved context generation:
+- already-expanded accepted parents are skipped
+- newly accepted session papers remain eligible
+4. After a saved session-context change:
+- citation expansion is renewed for that session
+- all accepted session papers become eligible again in the new context generation
+5. Discovery dedup remains stricter for human-reviewed papers:
+- human-reviewed papers do not re-enter later runs of the same session even if the saved context changes
+- citation-parent renewal after context change does not change that discovery-dedup rule
 
 ## In Scope
 
@@ -73,7 +87,7 @@ Current implementation is not the design source of truth; the rewritten `UI_SPEC
 - global and per-action busy/progress indicators
 - batch manual-upload recovery with auto DOI/title matching
 - bookmark workspace and bookmark-to-session branching
-- per-session library annotations and summary generation
+- per-session library annotations, AI tag suggestion generation, and summary generation
 
 ## Out of Scope
 

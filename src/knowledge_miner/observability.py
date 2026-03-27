@@ -50,6 +50,46 @@ class RunObservability:
         }
         self._log.info(json.dumps(payload, sort_keys=True))
 
+    def record_citation_parent_counts(
+        self,
+        *,
+        run_id: str,
+        iteration: int,
+        query_id: str,
+        parent_source_id: str,
+        parent_title: str | None,
+        parent_doi: str | None,
+        parent_provider: str | None,
+        provider_counts: dict[str, int],
+        provider_direction_counts: dict[str, int],
+        direction_overlap_counts: dict[str, int],
+        direction_deduped_counts: dict[str, int],
+        raw_total: int,
+        deduped_candidates: int,
+        edge_count: int,
+    ) -> None:
+        payload = {
+            "event": "citation_parent_counts",
+            "run_id": run_id,
+            "iteration": iteration,
+            "query_id": query_id,
+            "parent_source_id": parent_source_id,
+            "provider_counts": dict(provider_counts),
+            "provider_direction_counts": dict(provider_direction_counts),
+            "direction_overlap_counts": dict(direction_overlap_counts),
+            "direction_deduped_counts": dict(direction_deduped_counts),
+            "raw_total": raw_total,
+            "deduped_candidates": deduped_candidates,
+            "edge_count": edge_count,
+        }
+        if parent_title:
+            payload["parent_title"] = parent_title
+        if parent_doi:
+            payload["parent_doi"] = parent_doi
+        if parent_provider:
+            payload["parent_provider"] = parent_provider
+        self._log.info(json.dumps(payload, sort_keys=True))
+
     def snapshot(self) -> dict:
         return {
             "counters": dict(self._counters),

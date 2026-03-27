@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -11,10 +12,19 @@ from ..auth import require_api_key
 from ..ai_filter import AIAuthError, AIProviderError, AIRateLimitError, AITimeoutError, generate_query_suggestions
 from ..config import settings
 from ..db import get_db
-from ..discovery import create_run, enqueue_bookmark_seed_run, enqueue_citation_iteration_run, enqueue_run, export_sources_raw, review_source
+from ..discovery import (
+    create_run,
+    enqueue_bookmark_seed_run,
+    enqueue_citation_iteration_run,
+    enqueue_run,
+    export_sources_raw,
+    review_source,
+    session_citation_parent_ids,
+    session_citation_parent_total,
+)
 from ..models import CitationExpansionParent, DiscoveryCitationSeed, DiscoveryRunQuery, Run, Source
 from ..rate_limit import require_rate_limit
-from ..runtime_state import request_run_stop
+from ..runtime_state import clear_run_stop_request, request_run_stop
 from ..schemas import (
     CitationIterationRequest,
     QuerySuggestionsRequest,
@@ -30,23 +40,76 @@ from ..schemas import (
 
 router = APIRouter(tags=["discovery"])
 logger = logging.getLogger("knowledge_miner")
+_FORCE_STOP_STALE_AFTER = timedelta(seconds=60)
+
+
+def _as_utc_timestamp(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _unexpanded_accepted_parent_count(db: Session, run_id: str) -> int:
-    return int(
-        db.scalar(
-            select(func.count())
-            .select_from(Source)
-            .where(
-                Source.run_id == run_id,
-                Source.accepted.is_(True),
-                ~Source.id.in_(
-                    select(CitationExpansionParent.parent_source_id).where(CitationExpansionParent.run_id == run_id)
-                ),
-            )
+    run = db.get(Run, run_id)
+    if run is None:
+        return 0
+    return len(session_citation_parent_ids(db, target_run_id=run_id, session_id=run.session_id))
+
+
+def _latest_citation_query(db: Session, run_id: str) -> DiscoveryRunQuery | None:
+    return db.scalars(
+        select(DiscoveryRunQuery)
+        .where(
+            DiscoveryRunQuery.run_id == run_id,
+            DiscoveryRunQuery.query_text == "citation expansion",
         )
-        or 0
-    )
+        .order_by(DiscoveryRunQuery.position.desc())
+        .limit(1)
+    ).first()
+
+
+def _repair_stale_query_state(run: Run, row: DiscoveryRunQuery) -> bool:
+    changed = False
+    if run.status == "failed" and row.status in {"searching", "ranking_relevance"}:
+        row.status = "failed"
+        changed = True
+        if row.query_text == "citation expansion" and row.checkpoint_state == "running":
+            row.checkpoint_state = "resumable"
+            changed = True
+        if not row.error_message and run.error_message:
+            row.error_message = run.error_message
+            changed = True
+    elif run.status == "completed" and row.status in {"searching", "ranking_relevance"}:
+        row.status = "completed"
+        changed = True
+        if row.query_text == "citation expansion" and row.checkpoint_state == "running":
+            row.checkpoint_state = "completed"
+            changed = True
+    return changed
+
+
+def _repair_stale_run_queries(db: Session, run: Run, rows: list[DiscoveryRunQuery]) -> None:
+    changed = False
+    for row in rows:
+        changed = _repair_stale_query_state(run, row) or changed
+    if changed:
+        db.commit()
+
+
+def _live_query_review_counts(db: Session, row: DiscoveryRunQuery) -> tuple[int, int, int, int]:
+    statuses = db.scalars(
+        select(Source.review_status).where(
+            Source.run_id == row.run_id,
+            Source.query_id == row.id,
+        )
+    ).all()
+    accepted = sum(1 for status in statuses if status in {"auto_accept", "human_accept"})
+    rejected = sum(1 for status in statuses if status in {"auto_reject", "human_reject"})
+    pending = sum(1 for status in statuses if status not in {"auto_accept", "human_accept", "auto_reject", "human_reject", "processing"})
+    processing = 0 if row.status in {"completed", "failed"} else int(row.processing_count or 0)
+    return accepted, rejected, pending, processing
 
 
 def _not_found_diagnostics(db: Session, *, run_id: str | None = None, source_id: str | None = None) -> dict:
@@ -170,9 +233,7 @@ def create_citation_iteration_run(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
     if previous.status == "running":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_already_running")
-    accepted_count = db.scalar(
-        select(func.count()).select_from(Source).where(Source.run_id == run_id, Source.accepted.is_(True))
-    ) or 0
+    accepted_count = session_citation_parent_total(db, target_run_id=run_id, session_id=previous.session_id)
     if accepted_count <= 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -183,6 +244,12 @@ def create_citation_iteration_run(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No new accepted papers are available for citation expansion.",
+        )
+    latest_citation_query = _latest_citation_query(db, previous.id)
+    if latest_citation_query is not None and latest_citation_query.checkpoint_state in {"running", "resumable"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="citation_iteration_resumable_exists_use_resume",
         )
     _enqueue_citation_task(background_tasks, previous.id, previous.id)
     return RunCreateResponse(run_id=previous.id, status=previous.status)
@@ -205,6 +272,8 @@ def resume_citation_iteration_run(
     has_bookmark_seed = db.scalars(
         select(DiscoveryCitationSeed).where(DiscoveryCitationSeed.run_id == run.id).limit(1)
     ).first()
+    clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run.id)
+    clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery", run_id=run.id)
     if has_bookmark_seed is not None:
         _enqueue_bookmark_seed_task(background_tasks, run.id)
     else:
@@ -228,6 +297,12 @@ def stop_discovery_run(
     if run.status == "queued":
         run.status = "failed"
         run.error_message = "stopped_by_user"
+        latest_query = _latest_citation_query(db, run_id)
+        if latest_query is not None:
+            latest_query.status = "failed"
+            latest_query.error_message = "stopped_by_user"
+            if latest_query.query_text == "citation expansion":
+                latest_query.checkpoint_state = "resumable"
         db.commit()
         return {"run_id": run.id, "status": run.status, "message": "Discovery run stopped."}
 
@@ -237,6 +312,26 @@ def stop_discovery_run(
         .order_by(DiscoveryRunQuery.position.desc())
         .limit(1)
     ).first()
+    latest_activity = _as_utc_timestamp(run.updated_at) or _as_utc_timestamp(run.created_at)
+    query_updated_at = _as_utc_timestamp(query.updated_at) if query is not None else None
+    if latest_activity is None:
+        latest_activity = query_updated_at
+    elif query_updated_at is not None:
+        latest_activity = max(latest_activity, query_updated_at)
+    if latest_activity and (datetime.now(UTC) - latest_activity) >= _FORCE_STOP_STALE_AFTER:
+        run.status = "failed"
+        run.error_message = "stopped_by_user"
+        run.updated_at = datetime.now(UTC)
+        if query is not None:
+            query.status = "failed"
+            query.error_message = "stopped_by_user"
+            query.updated_at = datetime.now(UTC)
+            if (query.query_text or "").strip() == "citation expansion":
+                query.checkpoint_state = "resumable"
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery_citation", run_id=run_id)
+        clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="discovery", run_id=run_id)
+        db.commit()
+        return {"run_id": run.id, "status": run.status, "message": "Discovery run force-stopped."}
     phase = "discovery_citation" if query and query.query_text == "citation expansion" else "discovery"
     request_run_stop(base_dir=settings.runtime_state_dir, phase=phase, run_id=run_id)
     return {"run_id": run.id, "status": run.status, "message": "Stop requested."}
@@ -256,6 +351,7 @@ def list_discovery_run_queries(
     rows = db.scalars(
         select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run_id).order_by(DiscoveryRunQuery.position.asc())
     ).all()
+    _repair_stale_run_queries(db, run, rows)
     run_number = None
     if run.session_id:
         ordered_run_ids = db.scalars(
@@ -266,33 +362,41 @@ def list_discovery_run_queries(
     return DiscoveryRunQueriesResponse(
         run_id=run_id,
         queries=[
-            DiscoveryRunQueryOut(
-                run_id=run_id,
-                run_number=run_number,
-                query_step_number=row.position,
-                query_lineage_number=(f"{run_number}.{row.position}" if run_number is not None else None),
-                query=row.query_text,
-                position=row.position,
-                status=row.status,
-                discovered_count=row.discovered_count,
-                openalex_count=row.openalex_count,
-                brave_count=row.brave_count,
-                semantic_scholar_count=row.semantic_scholar_count,
-                accepted_count=row.accepted_count,
-                rejected_count=row.rejected_count,
-                pending_count=row.pending_count,
-                processing_count=row.processing_count,
-                scope_total_parents=row.scope_total_parents,
-                scope_processed_parents=row.scope_processed_parents,
-                checkpoint_state=row.checkpoint_state,
-                has_session_context=bool(isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")),
-                session_context_preview=(
-                    str(row.query_metadata.get("session_context"))[:120]
-                    if isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")
-                    else None
-                ),
-                error_message=row.error_message,
-            )
+            (
+                lambda counts: DiscoveryRunQueryOut(
+                    run_id=run_id,
+                    run_number=run_number,
+                    query_step_number=row.position,
+                    query_lineage_number=(f"{run_number}.{row.position}" if run_number is not None else None),
+                    query=row.query_text,
+                    position=row.position,
+                    status=row.status,
+                    discovered_count=row.discovered_count,
+                    openalex_count=row.openalex_count,
+                    brave_count=row.brave_count,
+                    semantic_scholar_count=row.semantic_scholar_count,
+                    openalex_status=row.openalex_status,
+                    semantic_scholar_status=row.semantic_scholar_status,
+                    brave_status=row.brave_status,
+                    openalex_error_message=row.openalex_error_message,
+                    semantic_scholar_error_message=row.semantic_scholar_error_message,
+                    brave_error_message=row.brave_error_message,
+                    accepted_count=counts[0],
+                    rejected_count=counts[1],
+                    pending_count=counts[2],
+                    processing_count=counts[3],
+                    scope_total_parents=row.scope_total_parents,
+                    scope_processed_parents=row.scope_processed_parents,
+                    checkpoint_state=row.checkpoint_state,
+                    has_session_context=bool(isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")),
+                    session_context_preview=(
+                        str(row.query_metadata.get("session_context"))[:120]
+                        if isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")
+                        else None
+                    ),
+                    error_message=row.error_message,
+                )
+            )(_live_query_review_counts(db, row))
             for row in rows
         ],
     )
@@ -315,40 +419,55 @@ def list_session_discovery_queries(
         .where(Run.session_id == session_id)
         .order_by(Run.created_at.desc(), Run.id.desc(), DiscoveryRunQuery.position.asc())
     ).all()
+    runs_by_id: dict[str, Run] = {}
+    query_rows_by_run: dict[str, list[DiscoveryRunQuery]] = {}
+    for row, run in rows:
+        runs_by_id[run.id] = run
+        query_rows_by_run.setdefault(run.id, []).append(row)
+    for run_id, query_rows in query_rows_by_run.items():
+        _repair_stale_run_queries(db, runs_by_id[run_id], query_rows)
     return SessionDiscoveryQueriesResponse(
         session_id=session_id,
         queries=[
-            DiscoveryRunQueryOut(
-                run_id=run.id,
-                run_number=run_numbers.get(run.id),
-                query_step_number=row.position,
-                query_lineage_number=(
-                    f"{run_numbers.get(run.id)}.{row.position}"
-                    if run_numbers.get(run.id) is not None
-                    else None
-                ),
-                query=row.query_text,
-                position=row.position,
-                status=row.status,
-                discovered_count=row.discovered_count,
-                openalex_count=row.openalex_count,
-                brave_count=row.brave_count,
-                semantic_scholar_count=row.semantic_scholar_count,
-                accepted_count=row.accepted_count,
-                rejected_count=row.rejected_count,
-                pending_count=row.pending_count,
-                processing_count=row.processing_count,
-                scope_total_parents=row.scope_total_parents,
-                scope_processed_parents=row.scope_processed_parents,
-                checkpoint_state=row.checkpoint_state,
-                has_session_context=bool(isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")),
-                session_context_preview=(
-                    str(row.query_metadata.get("session_context"))[:120]
-                    if isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")
-                    else None
-                ),
-                error_message=row.error_message,
-            )
+            (
+                lambda counts: DiscoveryRunQueryOut(
+                    run_id=run.id,
+                    run_number=run_numbers.get(run.id),
+                    query_step_number=row.position,
+                    query_lineage_number=(
+                        f"{run_numbers.get(run.id)}.{row.position}"
+                        if run_numbers.get(run.id) is not None
+                        else None
+                    ),
+                    query=row.query_text,
+                    position=row.position,
+                    status=row.status,
+                    discovered_count=row.discovered_count,
+                    openalex_count=row.openalex_count,
+                    brave_count=row.brave_count,
+                    semantic_scholar_count=row.semantic_scholar_count,
+                    openalex_status=row.openalex_status,
+                    semantic_scholar_status=row.semantic_scholar_status,
+                    brave_status=row.brave_status,
+                    openalex_error_message=row.openalex_error_message,
+                    semantic_scholar_error_message=row.semantic_scholar_error_message,
+                    brave_error_message=row.brave_error_message,
+                    accepted_count=counts[0],
+                    rejected_count=counts[1],
+                    pending_count=counts[2],
+                    processing_count=counts[3],
+                    scope_total_parents=row.scope_total_parents,
+                    scope_processed_parents=row.scope_processed_parents,
+                    checkpoint_state=row.checkpoint_state,
+                    has_session_context=bool(isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")),
+                    session_context_preview=(
+                        str(row.query_metadata.get("session_context"))[:120]
+                        if isinstance(row.query_metadata, dict) and row.query_metadata.get("session_context")
+                        else None
+                    ),
+                    error_message=row.error_message,
+                )
+            )(_live_query_review_counts(db, row))
             for row, run in rows
         ],
     )

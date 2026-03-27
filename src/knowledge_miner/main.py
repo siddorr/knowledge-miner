@@ -5,6 +5,7 @@ import asyncio
 import time
 from collections import defaultdict, deque
 from pathlib import Path
+from threading import Event, Thread
 import csv
 import io
 import base64
@@ -27,20 +28,49 @@ from .acquisition import (
     build_manual_downloads_payload,
     create_acquisition_run,
     enqueue_acquisition_run,
+    find_reusable_artifact,
     mark_manual_complete,
     register_manual_upload,
 )
 from .ai_filter import describe_ai_filter_runtime, describe_query_suggestions_runtime
 from .auth import require_api_key
-from .config import is_sqlite_url, settings
-from .db import Base, SessionLocal, database_readiness, engine, ensure_sqlite_schema_compatibility, get_db
-from .discovery import enqueue_bookmark_seed_run, enqueue_citation_iteration_run, enqueue_run  # compatibility export for tests/patching
+from .config import (
+    classify_database_target,
+    database_target_warning,
+    expected_database_target_for_role,
+    is_sqlite_url,
+    settings,
+)
+from .db import (
+    Base,
+    SessionLocal,
+    database_readiness,
+    engine,
+    ensure_sqlite_schema_compatibility,
+    get_db,
+    create_sqlite_backup,
+    ensure_sqlite_backup_dir,
+    list_sqlite_backup_candidates,
+    prune_sqlite_backups,
+    repair_sqlite_runtime_data,
+    restore_sqlite_backup,
+    sqlite_backup_dir,
+)
+from .discovery import (  # compatibility export for tests/patching
+    enqueue_bookmark_seed_run,
+    enqueue_citation_iteration_run,
+    enqueue_run,
+    mark_interrupted_runs_on_startup,
+    resume_queued_discovery_runs,
+    resume_stale_citation_runs,
+    session_citation_parent_ids,
+)
 from .models import AcquisitionItem, AcquisitionRun, Artifact, CitationExpansionParent, DiscoveryRunQuery, DocumentChunk, ParseRun, ParsedDocument, Run, Source
-from .parse import create_parse_run, enqueue_parse_run
+from .parse import create_parse_run, enqueue_parse_run, resume_queued_parse_runs
 from .rate_limit import require_rate_limit
 from .logging_setup import configure_logging
 from .runtime_state import acquire_instance_lock, cleanup_runtime_state, log_cleanup_result
-from .routes.discovery import router as discovery_router
+from .routes.discovery import _repair_stale_run_queries, router as discovery_router
 from .routes.annotations import router as annotations_router
 from .routes.bookmarks import router as bookmarks_router
 from .routes.hmi import router as hmi_router
@@ -67,6 +97,10 @@ from .schemas import (
     BatchUploadMatchOut,
     DocumentChunksListResponse,
     DocumentChunkOut,
+    DatabaseBackupCreateResponse,
+    DatabaseBackupListResponse,
+    DatabaseRestoreRequest,
+    DatabaseRestoreResponse,
     ParsedDocumentOut,
     ParsedDocumentsListResponse,
     ParsedDocumentTextResponse,
@@ -87,8 +121,11 @@ HOT_READ_LIMIT_COUNT = 120
 HOT_READ_WARN_COUNT = 60
 _hot_read_buckets: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _hot_read_metrics: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "limited": 0})
+_backup_stop_event = Event()
+_backup_thread: Thread | None = None
 _OPERATIONAL_EVENT_TYPES = {
     "provider_call",
+    "citation_parent_counts",
     "run_summary",
     "acquisition_download",
     "acquisition_summary",
@@ -119,6 +156,7 @@ def validate_runtime_config() -> None:
     log_path = configure_logging()
     logger.info("Persistent logging initialized at %s", log_path)
     db_meta = database_readiness()
+    runtime_repair_result = None
     logger.info(
         "startup_db_context pid=%s ppid=%s cwd=%s process_role=%s database_url=%s sqlite_file=%s sqlite_inode=%s sqlite_mtime=%s ready=%s missing_tables=%s",
         os.getpid(),
@@ -132,10 +170,22 @@ def validate_runtime_config() -> None:
         db_meta["ready"],
         ",".join(db_meta["missing_tables"]) if db_meta["missing_tables"] else "-",
     )
-    if (not db_meta["ready"]) and settings.db_auto_migrate_on_start:
+    db_target_kind = classify_database_target(settings.database_url)
+    db_target_warning = database_target_warning(settings.database_url)
+    if db_target_warning:
+        logger.warning(
+            "startup_db_target_warning warning=%s expected=%s actual=%s database_url=%s",
+            db_target_warning,
+            expected_database_target_for_role(),
+            db_target_kind,
+            settings.database_url,
+        )
+    if settings.db_auto_migrate_on_start:
         with suppress(Exception):
-            Base.metadata.create_all(bind=engine)
+            if not db_meta["ready"]:
+                Base.metadata.create_all(bind=engine)
             ensure_sqlite_schema_compatibility()
+            runtime_repair_result = repair_sqlite_runtime_data()
         db_meta = database_readiness()
         logger.info(
             "DB auto-migrate check: enabled=%s ready=%s missing_tables=%s",
@@ -143,26 +193,49 @@ def validate_runtime_config() -> None:
             db_meta["ready"],
             ",".join(db_meta["missing_tables"]) if db_meta["missing_tables"] else "-",
         )
+        if runtime_repair_result is not None:
+            logger.info(
+                "DB runtime repair: repaired_query_rows=%s superseded_runs=%s superseded_query_rows=%s",
+                runtime_repair_result["repaired_query_rows"],
+                runtime_repair_result["superseded_runs"],
+                runtime_repair_result["superseded_query_rows"],
+            )
     if not db_meta["ready"]:
         logger.error(
             "DB schema readiness failed: missing_tables=%s error=%s",
             ",".join(db_meta["missing_tables"]) if db_meta["missing_tables"] else "-",
             db_meta["error"] or "-",
         )
-    elif settings.db_auto_migrate_on_start:
-        with suppress(Exception):
-            ensure_sqlite_schema_compatibility()
     cleanup_result = cleanup_runtime_state(base_dir=settings.runtime_state_dir, enabled=settings.clean_on_startup)
     log_cleanup_result(cleanup_result)
     primary = acquire_instance_lock(base_dir=settings.runtime_state_dir)
     if primary:
         logger.info("Primary runtime instance lock acquired.")
+        interrupted_run_ids = mark_interrupted_runs_on_startup()
+        if interrupted_run_ids:
+            logger.info("Interrupted runs marked on startup: %s", ",".join(interrupted_run_ids))
+        resumed_parse_run_ids = resume_queued_parse_runs()
+        if resumed_parse_run_ids:
+            logger.info("Queued parse runs resumed on startup: %s", ",".join(resumed_parse_run_ids))
+        _start_db_backup_loop()
     else:
-        logger.warning("Secondary runtime instance detected; background run workers are disabled in this process.")
+        logger.error(
+            "Secondary runtime instance detected in HTTP server process; refusing startup so worker-disabled API instances do not serve traffic."
+        )
+        raise RuntimeError("secondary_runtime_instance_cannot_serve_http")
     if settings.app_env.lower() in {"production", "prod"} and is_sqlite_url(settings.database_url):
         logger.warning(
             "Production mode is configured with SQLite. Use PostgreSQL DATABASE_URL for v1 production baseline."
         )
+
+
+@app.on_event("shutdown")
+def stop_background_loops() -> None:
+    _backup_stop_event.set()
+    global _backup_thread
+    if _backup_thread and _backup_thread.is_alive():
+        _backup_thread.join(timeout=1.0)
+    _backup_thread = None
 
 
 @app.exception_handler(OperationalError)
@@ -333,6 +406,10 @@ def _serialize_source(
     *,
     run_number: int | None = None,
     run_source_number: int | None = None,
+    previewable_pdf_artifact_id: str | None = None,
+    artifact_kind: str | None = None,
+    artifact_quality_status: str | None = None,
+    parse_scope_status: str | None = None,
 ) -> SourceOut:
     return SourceOut(
         id=source.id,
@@ -367,7 +444,141 @@ def _serialize_source(
         heuristic_recommendation=source.heuristic_recommendation,
         heuristic_score=float(source.heuristic_score),
         parent_source=source.parent_source_id,
+        previewable_pdf_artifact_id=previewable_pdf_artifact_id,
+        artifact_kind=artifact_kind,
+        artifact_quality_status=artifact_quality_status,
+        parse_scope_status=parse_scope_status,
     )
+
+
+def _effective_artifact_for_source(db: Session, source: Source) -> Artifact | None:
+    artifact = db.scalars(
+        select(Artifact)
+        .where(Artifact.source_id == source.id)
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+        .limit(1)
+    ).first()
+    if artifact is not None:
+        path = Path(settings.artifacts_dir) / artifact.path
+        if path.exists() and path.is_file():
+            return artifact
+    return find_reusable_artifact(db, source)
+
+
+def _source_artifact_state_map(db: Session, sources: list[Source], session_id: str | None) -> dict[str, dict[str, str | None]]:
+    if not sources:
+        return {}
+    source_ids = [source.id for source in sources]
+    latest_artifacts = _latest_artifacts_for_source_ids(db, source_ids)
+    reusable_by_source: dict[str, Artifact] = {}
+    for source in sources:
+        reusable = find_reusable_artifact(db, source)
+        if reusable is not None:
+            reusable_by_source[source.id] = reusable
+    effective_artifacts = {
+        source.id: latest_artifacts.get(source.id) or reusable_by_source.get(source.id)
+        for source in sources
+    }
+    parsed_rows = db.scalars(
+        select(ParsedDocument)
+        .where(
+            ParsedDocument.source_id.in_(source_ids),
+            ParsedDocument.status == "parsed",
+            ParsedDocument.body_text.is_not(None),
+        )
+        .order_by(ParsedDocument.updated_at.desc(), ParsedDocument.created_at.desc(), ParsedDocument.id.desc())
+    ).all()
+    parsed_by_source: dict[str, ParsedDocument] = {}
+    for row in parsed_rows:
+        parsed_by_source.setdefault(row.source_id, row)
+    candidate_artifacts = [artifact for artifact in effective_artifacts.values() if artifact is not None]
+    latest_parse_docs = _latest_parse_docs_for_artifact_ids(db, [artifact.id for artifact in candidate_artifacts])
+    latest_parse_runs = _latest_parse_runs_for_acq_ids(db, [artifact.acq_run_id for artifact in candidate_artifacts])
+    artifact_source_sessions = _source_session_ids(db, [artifact.source_id for artifact in candidate_artifacts])
+    payload: dict[str, dict[str, str | None]] = {}
+    for source in sources:
+        artifact = effective_artifacts.get(source.id)
+        parse_scope_status = None
+        if artifact is not None:
+            artifact_source_session_id = artifact_source_sessions.get(artifact.source_id)
+            parse_doc = latest_parse_docs.get(artifact.id)
+            parse_run = latest_parse_runs.get(artifact.acq_run_id)
+            if parsed_by_source.get(source.id) is not None:
+                parse_scope_status = "parsed"
+            elif session_id and artifact_source_session_id and artifact_source_session_id != session_id:
+                parse_scope_status = "unparsed_other_session"
+            elif parse_doc is not None and parse_doc.status == "failed":
+                parse_scope_status = "parse_failed"
+            elif parse_doc is not None and parse_doc.status == "queued":
+                parse_scope_status = "parse_running"
+            elif parse_run is not None and parse_run.status in {"queued", "running"}:
+                parse_scope_status = "parse_running"
+            else:
+                parse_scope_status = "unparsed_in_active_session"
+        payload[source.id] = {
+            "previewable_pdf_artifact_id": (
+                artifact.id
+                if artifact is not None and artifact.kind == "pdf" and artifact.quality_status == "pdf"
+                else None
+            ),
+            "artifact_kind": artifact.kind if artifact is not None else None,
+            "artifact_quality_status": artifact.quality_status if artifact is not None else None,
+            "parse_scope_status": parse_scope_status,
+        }
+    return payload
+
+
+def _latest_artifacts_for_source_ids(db: Session, source_ids: list[str]) -> dict[str, Artifact]:
+    if not source_ids:
+        return {}
+    rows = db.scalars(
+        select(Artifact)
+        .where(Artifact.source_id.in_(source_ids))
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+    ).all()
+    latest: dict[str, Artifact] = {}
+    for row in rows:
+        latest.setdefault(row.source_id, row)
+    return latest
+
+
+def _latest_parse_runs_for_acq_ids(db: Session, acq_run_ids: list[str]) -> dict[str, ParseRun]:
+    if not acq_run_ids:
+        return {}
+    rows = db.scalars(
+        select(ParseRun)
+        .where(ParseRun.acq_run_id.in_(acq_run_ids))
+        .order_by(ParseRun.created_at.desc(), ParseRun.id.desc())
+    ).all()
+    latest: dict[str, ParseRun] = {}
+    for row in rows:
+        latest.setdefault(row.acq_run_id, row)
+    return latest
+
+
+def _latest_parse_docs_for_artifact_ids(db: Session, artifact_ids: list[str]) -> dict[str, ParsedDocument]:
+    if not artifact_ids:
+        return {}
+    rows = db.scalars(
+        select(ParsedDocument)
+        .where(ParsedDocument.artifact_id.in_(artifact_ids))
+        .order_by(ParsedDocument.updated_at.desc(), ParsedDocument.created_at.desc(), ParsedDocument.id.desc())
+    ).all()
+    latest: dict[str, ParsedDocument] = {}
+    for row in rows:
+        latest.setdefault(row.artifact_id, row)
+    return latest
+
+
+def _source_session_ids(db: Session, source_ids: list[str]) -> dict[str, str | None]:
+    if not source_ids:
+        return {}
+    rows = db.execute(
+        select(Source.id, Run.session_id)
+        .join(Run, Run.id == Source.run_id)
+        .where(Source.id.in_(source_ids))
+    ).all()
+    return {source_id: session_id for source_id, session_id in rows}
 
 
 def _hot_read_client_key(request: Request) -> str:
@@ -525,6 +736,14 @@ def _operation_group(event_row: dict) -> str:
     event_name = event_row.get("event") or "unknown"
     if event_name == "provider_call":
         return f"provider:{payload.get('provider', '-')}/{payload.get('operation', '-')}"
+    if event_name == "citation_parent_counts":
+        parent = str(payload.get("parent_title") or payload.get("parent_source_id") or "-")
+        direction_counts = payload.get("provider_direction_counts") or {}
+        oa_backward = int(direction_counts.get("openalex_backward", 0) or 0)
+        oa_forward = int(direction_counts.get("openalex_forward", 0) or 0)
+        ss_backward = int(direction_counts.get("semantic_scholar_backward", 0) or 0)
+        ss_forward = int(direction_counts.get("semantic_scholar_forward", 0) or 0)
+        return f"citation-parent:{parent} oa(b/f)={oa_backward}/{oa_forward} ss(b/f)={ss_backward}/{ss_forward}"
     if event_name == "acquisition_download":
         return f"download:{payload.get('domain', '-')}"
     if event_name == "acquisition_http_call":
@@ -550,6 +769,50 @@ def _operational_event_summary(events: list[dict]) -> dict:
         "grouped_counts": grouped_items,
         "event_type_counts": event_items,
     }
+
+
+def _backup_loop_enabled() -> bool:
+    interval = max(1, int(settings.db_backup_interval_minutes or 0))
+    return bool(settings.db_backup_enabled) and is_sqlite_url(settings.database_url) and sqlite_backup_dir() is not None and interval > 0
+
+
+def _run_db_backup_cycle() -> None:
+    backup = create_sqlite_backup("auto")
+    prune_result = prune_sqlite_backups()
+    logger.info(
+        "db_backup_created kind=%s backup_name=%s path=%s pruned_auto_backups=%s",
+        backup["kind"],
+        backup["name"],
+        backup["path"],
+        prune_result["pruned_auto_backups"],
+    )
+
+
+def _db_backup_loop() -> None:
+    interval_seconds = max(60, int(settings.db_backup_interval_minutes) * 60)
+    while not _backup_stop_event.wait(interval_seconds):
+        try:
+            _run_db_backup_cycle()
+        except Exception as exc:
+            logger.warning("db_backup_failed error=%s", exc)
+
+
+def _start_db_backup_loop() -> None:
+    global _backup_thread
+    if not _backup_loop_enabled():
+        return
+    ensure_sqlite_backup_dir()
+    if _backup_thread and _backup_thread.is_alive():
+        return
+    _backup_stop_event.clear()
+    _backup_thread = Thread(target=_db_backup_loop, name="km-db-backup", daemon=True)
+    _backup_thread.start()
+    logger.info(
+        "db_backup_scheduler_started backup_dir=%s interval_minutes=%s retention_count=%s",
+        str(sqlite_backup_dir()),
+        max(1, int(settings.db_backup_interval_minutes)),
+        max(0, int(settings.db_backup_retention_count)),
+    )
 
 
 @app.get("/v1/system/status", response_model=SystemStatusResponse)
@@ -599,6 +862,10 @@ def get_system_status(
         database_target=db_meta["sqlite_file_path"] or settings.database_url,
         db_target_url=settings.database_url,
         db_target_resolved_path=db_meta["sqlite_file_path"],
+        db_target_kind=classify_database_target(settings.database_url),
+        db_target_warning=database_target_warning(settings.database_url),
+        db_target_expected_for_role=expected_database_target_for_role(),
+        db_target_matches_server_default=classify_database_target(settings.database_url) == "live_app_db",
         db_schema_ready=bool(db_meta["ready"]),
         db_run_count=run_count,
         process_pid=os.getpid(),
@@ -664,6 +931,76 @@ def get_operational_events(
     }
 
 
+@app.get("/v1/advanced/database-backups", response_model=DatabaseBackupListResponse)
+def get_database_backups(
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+) -> DatabaseBackupListResponse:
+    db_meta = database_readiness()
+    items = list_sqlite_backup_candidates()
+    return DatabaseBackupListResponse(
+        items=items,
+        total=len(items),
+        database_target=db_meta["sqlite_file_path"] or settings.database_url,
+        backup_dir=str(sqlite_backup_dir()) if sqlite_backup_dir() is not None else None,
+        retention_count=max(0, int(settings.db_backup_retention_count)),
+    )
+
+
+@app.post("/v1/advanced/database-backups", response_model=DatabaseBackupCreateResponse)
+def create_database_backup(
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+) -> DatabaseBackupCreateResponse:
+    db_meta = database_readiness()
+    try:
+        backup = create_sqlite_backup("manual")
+        prune_result = prune_sqlite_backups()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    logger.info(
+        "database_backup_created kind=%s backup_name=%s path=%s pruned_auto_backups=%s",
+        backup["kind"],
+        backup["name"],
+        backup["path"],
+        prune_result["pruned_auto_backups"],
+    )
+    return DatabaseBackupCreateResponse(
+        ok=True,
+        backup=backup,
+        database_target=db_meta["sqlite_file_path"] or settings.database_url,
+        backup_dir=str(sqlite_backup_dir()) if sqlite_backup_dir() is not None else None,
+        pruned_auto_backups=prune_result["pruned_auto_backups"],
+    )
+
+
+@app.post("/v1/advanced/database-restore", response_model=DatabaseRestoreResponse)
+def restore_database_backup(
+    payload: DatabaseRestoreRequest,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+) -> DatabaseRestoreResponse:
+    backup_name = payload.backup_name.strip()
+    confirm_name = payload.confirm_backup_name.strip()
+    if not backup_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="backup_name_required")
+    if backup_name != confirm_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="database_restore_confirmation_mismatch")
+    try:
+        result = restore_sqlite_backup(backup_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    logger.info(
+        "database_restore_completed backup_name=%s snapshot_path=%s repaired_query_rows=%s superseded_runs=%s superseded_query_rows=%s",
+        result["restored_backup_name"],
+        result["snapshot_path"],
+        result["repaired_query_rows"],
+        result["superseded_runs"],
+        result["superseded_query_rows"],
+    )
+    return DatabaseRestoreResponse(ok=True, **result)
+
+
 @app.get("/v1/discovery/runs/{run_id}", response_model=RunStatusResponse)
 def get_run_status(
     run_id: str,
@@ -680,20 +1017,13 @@ def get_run_status(
     pending_review = db.scalar(
         select(func.count()).select_from(Source).where(Source.run_id == run_id, Source.review_status == "needs_review")
     ) or 0
-    citation_unexpanded_parent_count = db.scalar(
-        select(func.count())
-        .select_from(Source)
-        .where(
-            Source.run_id == run_id,
-            Source.accepted.is_(True),
-            ~Source.id.in_(
-                select(CitationExpansionParent.parent_source_id).where(CitationExpansionParent.run_id == run_id)
-            ),
-        )
-    ) or 0
+    citation_unexpanded_parent_count = len(
+        session_citation_parent_ids(db, target_run_id=run_id, session_id=run.session_id)
+    )
     query_rows = db.scalars(
         select(DiscoveryRunQuery).where(DiscoveryRunQuery.run_id == run_id).order_by(DiscoveryRunQuery.position.asc())
     ).all()
+    _repair_stale_run_queries(db, run, query_rows)
     has_ranking_phase = any(row.status == "ranking_relevance" for row in query_rows)
     has_search_phase = any(row.status == "searching" for row in query_rows)
     stage_status = _stage_status(run.status)
@@ -795,12 +1125,17 @@ def list_sources(
     run_numbers = _run_numbers_by_session(db, run.session_id)
     source_numbers = _run_source_numbers(db, [run_id])
     page = all_rows[offset : offset + limit]
+    artifact_payloads = _source_artifact_state_map(db, page, run.session_id)
     return SourcesListResponse(
         items=[
             _serialize_source(
                 s,
                 run_number=run_numbers.get(s.run_id),
                 run_source_number=source_numbers.get(s.id),
+                previewable_pdf_artifact_id=artifact_payloads.get(s.id, {}).get("previewable_pdf_artifact_id"),
+                artifact_kind=artifact_payloads.get(s.id, {}).get("artifact_kind"),
+                artifact_quality_status=artifact_payloads.get(s.id, {}).get("artifact_quality_status"),
+                parse_scope_status=artifact_payloads.get(s.id, {}).get("parse_scope_status"),
             )
             for s in page
         ],
@@ -871,12 +1206,17 @@ def list_session_sources(
         reverse=True,
     )
     page = all_rows[offset : offset + limit]
+    artifact_payloads = _source_artifact_state_map(db, page, session_id)
     return SourcesListResponse(
         items=[
             _serialize_source(
                 s,
                 run_number=run_numbers.get(s.run_id),
                 run_source_number=source_numbers.get(s.id),
+                previewable_pdf_artifact_id=artifact_payloads.get(s.id, {}).get("previewable_pdf_artifact_id"),
+                artifact_kind=artifact_payloads.get(s.id, {}).get("artifact_kind"),
+                artifact_quality_status=artifact_payloads.get(s.id, {}).get("artifact_quality_status"),
+                parse_scope_status=artifact_payloads.get(s.id, {}).get("parse_scope_status"),
             )
             for s in page
         ],

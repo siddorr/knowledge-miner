@@ -12,7 +12,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -21,13 +21,15 @@ from ..acquisition import (
     build_manual_downloads_payload,
     create_acquisition_run,
     enqueue_acquisition_run,
+    find_reusable_artifact,
     mark_manual_complete,
     register_manual_upload,
 )
 from ..ai_filter import extract_document_identity
 from ..auth import require_api_key
+from ..config import settings
 from ..db import get_db
-from ..models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
+from ..models import AcquisitionItem, AcquisitionRun, Artifact, ParseRun, ParsedDocument, Run, Source
 from ..rate_limit import require_rate_limit
 from ..runtime_state import request_run_stop
 from ..schemas import (
@@ -232,6 +234,59 @@ def _shorten_log_value(value: str | None, limit: int = 160) -> str:
     return f"{compact[: limit - 3]}..."
 
 
+def _latest_artifacts_for_source_ids(db: Session, source_ids: list[str]) -> dict[str, Artifact]:
+    if not source_ids:
+        return {}
+    rows = db.scalars(
+        select(Artifact)
+        .where(Artifact.source_id.in_(source_ids))
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+    ).all()
+    latest: dict[str, Artifact] = {}
+    for row in rows:
+        latest.setdefault(row.source_id, row)
+    return latest
+
+
+def _latest_parse_docs_for_artifact_ids(db: Session, artifact_ids: list[str]) -> dict[str, ParsedDocument]:
+    if not artifact_ids:
+        return {}
+    rows = db.scalars(
+        select(ParsedDocument)
+        .where(ParsedDocument.artifact_id.in_(artifact_ids))
+        .order_by(ParsedDocument.updated_at.desc(), ParsedDocument.created_at.desc(), ParsedDocument.id.desc())
+    ).all()
+    latest: dict[str, ParsedDocument] = {}
+    for row in rows:
+        latest.setdefault(row.artifact_id, row)
+    return latest
+
+
+def _latest_parse_runs_for_acq_ids(db: Session, acq_run_ids: list[str]) -> dict[str, ParseRun]:
+    if not acq_run_ids:
+        return {}
+    rows = db.scalars(
+        select(ParseRun)
+        .where(ParseRun.acq_run_id.in_(acq_run_ids))
+        .order_by(ParseRun.created_at.desc(), ParseRun.id.desc())
+    ).all()
+    latest: dict[str, ParseRun] = {}
+    for row in rows:
+        latest.setdefault(row.acq_run_id, row)
+    return latest
+
+
+def _source_session_ids(db: Session, source_ids: list[str]) -> dict[str, str | None]:
+    if not source_ids:
+        return {}
+    rows = db.execute(
+        select(Source.id, Run.session_id)
+        .join(Run, Run.id == Source.run_id)
+        .where(Source.id.in_(source_ids))
+    ).all()
+    return {source_id: session_id for source_id, session_id in rows}
+
+
 def _enqueue_acquisition_task(background_tasks: BackgroundTasks, acq_run_id: str) -> None:
     try:
         from .. import main as main_module
@@ -393,6 +448,7 @@ def list_acq_items(
             AcquisitionItemOut(
                 item_id=i.id,
                 source_id=i.source_id,
+                acq_run_id=i.acq_run_id,
                 status=i.status,
                 attempt_count=i.attempt_count,
                 selected_url=i.selected_url,
@@ -417,6 +473,12 @@ def list_session_latest_acq_items(
     db: Session = Depends(get_db),
 ) -> AcquisitionItemsListResponse:
     _guard_hot_read(request, "session_acquisition_items_latest")
+    accepted_sources = db.scalars(
+        select(Source)
+        .join(Run, Run.id == Source.run_id)
+        .where(Run.session_id == session_id, Source.accepted.is_(True))
+        .order_by(Source.updated_at.desc(), Source.created_at.desc(), Source.id.desc())
+    ).all()
     rows = db.execute(
         select(AcquisitionItem, AcquisitionRun, Source, Run)
         .join(Source, Source.id == AcquisitionItem.source_id)
@@ -434,21 +496,122 @@ def list_session_latest_acq_items(
     latest_by_source: dict[str, AcquisitionItem] = {}
     for item, _acq_run, _source, _run in rows:
         latest_by_source.setdefault(item.source_id, item)
-    items = list(latest_by_source.values())
-    page = items[offset : offset + limit]
-    return AcquisitionItemsListResponse(
-        items=[
-            AcquisitionItemOut(
-                item_id=item.id,
-                source_id=item.source_id,
-                status=item.status,
-                attempt_count=item.attempt_count,
-                selected_url=item.selected_url,
-                last_error=item.last_error,
+    source_ids = [source.id for source in accepted_sources]
+    parsed_rows = db.scalars(
+        select(ParsedDocument)
+        .where(
+            ParsedDocument.source_id.in_(source_ids),
+            ParsedDocument.status == "parsed",
+            ParsedDocument.body_text.is_not(None),
+        )
+        .order_by(ParsedDocument.updated_at.desc(), ParsedDocument.created_at.desc(), ParsedDocument.id.desc())
+    ).all()
+    parsed_by_source: dict[str, ParsedDocument] = {}
+    for row in parsed_rows:
+        parsed_by_source.setdefault(row.source_id, row)
+    latest_artifacts = _latest_artifacts_for_source_ids(db, source_ids)
+    reusable_by_source: dict[str, Artifact] = {}
+    for source in accepted_sources:
+        reusable = find_reusable_artifact(db, source)
+        if reusable is not None:
+            reusable_by_source[source.id] = reusable
+    candidate_artifacts = list(latest_artifacts.values()) + list(reusable_by_source.values())
+    latest_parse_docs = _latest_parse_docs_for_artifact_ids(db, [artifact.id for artifact in candidate_artifacts])
+    latest_parse_runs = _latest_parse_runs_for_acq_ids(db, [artifact.acq_run_id for artifact in candidate_artifacts])
+    artifact_source_sessions = _source_session_ids(db, [artifact.source_id for artifact in candidate_artifacts])
+    effective_items: list[AcquisitionItemOut] = []
+    for source in accepted_sources:
+        item = latest_by_source.get(source.id)
+        artifact = latest_artifacts.get(source.id) or reusable_by_source.get(source.id)
+        artifact_source_session_id = artifact_source_sessions.get(artifact.source_id) if artifact is not None else None
+        parse_doc = latest_parse_docs.get(artifact.id) if artifact is not None else None
+        parse_run = latest_parse_runs.get(artifact.acq_run_id) if artifact is not None else None
+        parse_scope_status = "no_artifact"
+        parse_status_detail = None
+        parse_run_id = parse_run.id if parse_run is not None else None
+        if parsed_by_source.get(source.id) is not None:
+            parse_scope_status = "parsed"
+        elif artifact is not None and artifact_source_session_id and artifact_source_session_id != session_id:
+            parse_scope_status = "unparsed_other_session"
+        elif parse_doc is not None and parse_doc.status == "failed":
+            parse_scope_status = "parse_failed"
+            parse_status_detail = parse_doc.last_error
+        elif parse_doc is not None and parse_doc.status == "queued":
+            parse_scope_status = "parse_running"
+        elif parse_run is not None and parse_run.status in {"queued", "running"}:
+            parse_scope_status = "parse_running"
+        elif artifact is not None:
+            parse_scope_status = "unparsed_in_active_session"
+        if item is not None and item.status in {"downloaded", "partial", "skipped"}:
+            effective_items.append(
+                AcquisitionItemOut(
+                    item_id=item.id,
+                    source_id=item.source_id,
+                    acq_run_id=item.acq_run_id,
+                    artifact_id=artifact.id if artifact is not None else None,
+                    artifact_kind=artifact.kind if artifact is not None else None,
+                    artifact_mime_type=artifact.mime_type if artifact is not None else None,
+                    artifact_quality_status=artifact.quality_status if artifact is not None else None,
+                    artifact_quality_reason=artifact.quality_reason if artifact is not None else None,
+                    status=item.status,
+                    attempt_count=item.attempt_count,
+                    selected_url=item.selected_url,
+                    last_error=item.last_error,
+                    artifact_source_session_id=artifact_source_session_id,
+                    parse_scope_status=parse_scope_status,
+                    parse_status_detail=parse_status_detail,
+                    parse_run_id=parse_run_id,
+                )
             )
-            for item in page
-        ],
-        total=len(items),
+            continue
+        reusable_artifact = reusable_by_source.get(source.id)
+        if reusable_artifact is not None:
+            effective_items.append(
+                AcquisitionItemOut(
+                    item_id=f"artifact_reuse:{reusable_artifact.id}:{source.id}",
+                    source_id=source.id,
+                    acq_run_id=reusable_artifact.acq_run_id,
+                    artifact_id=reusable_artifact.id,
+                    artifact_kind=reusable_artifact.kind,
+                    artifact_mime_type=reusable_artifact.mime_type,
+                    artifact_quality_status=reusable_artifact.quality_status,
+                    artifact_quality_reason=reusable_artifact.quality_reason,
+                    status="downloaded",
+                    attempt_count=0,
+                    selected_url=source.url,
+                    last_error=None,
+                    artifact_source_session_id=artifact_source_session_id,
+                    parse_scope_status=parse_scope_status,
+                    parse_status_detail=parse_status_detail,
+                    parse_run_id=parse_run_id,
+                )
+            )
+            continue
+        if item is not None:
+            effective_items.append(
+                AcquisitionItemOut(
+                    item_id=item.id,
+                    source_id=item.source_id,
+                    acq_run_id=item.acq_run_id,
+                    artifact_id=artifact.id if artifact is not None else None,
+                    artifact_kind=artifact.kind if artifact is not None else None,
+                    artifact_mime_type=artifact.mime_type if artifact is not None else None,
+                    artifact_quality_status=artifact.quality_status if artifact is not None else None,
+                    artifact_quality_reason=artifact.quality_reason if artifact is not None else None,
+                    status=item.status,
+                    attempt_count=item.attempt_count,
+                    selected_url=item.selected_url,
+                    last_error=item.last_error,
+                    artifact_source_session_id=artifact_source_session_id,
+                    parse_scope_status=parse_scope_status,
+                    parse_status_detail=parse_status_detail,
+                    parse_run_id=parse_run_id,
+                )
+            )
+    page = effective_items[offset : offset + limit]
+    return AcquisitionItemsListResponse(
+        items=page,
+        total=len(effective_items),
         limit=limit,
         offset=offset,
     )
@@ -595,17 +758,22 @@ def manual_upload_batch(
     rows = db.execute(
         select(AcquisitionItem, Source)
         .join(Source, Source.id == AcquisitionItem.source_id)
-        .where(AcquisitionItem.acq_run_id == acq_run_id, AcquisitionItem.status != "downloaded")
+        .where(AcquisitionItem.acq_run_id == acq_run_id)
+        .order_by(AcquisitionItem.updated_at.desc(), AcquisitionItem.id.desc())
     ).all()
-    candidates = [
-        {
-            "source_id": source.id,
-            "title": source.title or "",
-            "doi": (source.doi or "").lower().strip(),
-            "tokens": _title_tokens(source.title or ""),
-        }
-        for item, source in rows
-    ]
+    candidates_by_source: dict[str, dict] = {}
+    for item, source in rows:
+        candidates_by_source.setdefault(
+            source.id,
+            {
+                "source_id": source.id,
+                "title": source.title or "",
+                "doi": (source.doi or "").lower().strip(),
+                "tokens": _title_tokens(source.title or ""),
+                "item_status": item.status,
+            },
+        )
+    candidates = list(candidates_by_source.values())
     items: list[BatchUploadMatchOut] = []
     matched = 0
     unmatched = 0
@@ -983,6 +1151,25 @@ def get_artifact(
         size_bytes=artifact.size_bytes,
         mime_type=artifact.mime_type,
     )
+
+
+@router.get("/v1/acquisition/artifacts/{artifact_id}/content")
+def get_artifact_content(
+    artifact_id: str,
+    _: str = Depends(require_api_key),
+    __: None = Depends(require_rate_limit),
+    db: Session = Depends(get_db),
+):
+    artifact = db.get(Artifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="artifact_not_found")
+    path = Path(settings.artifacts_dir) / artifact.path
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="artifact_file_missing")
+    suffix = ".pdf" if artifact.kind == "pdf" else ".html" if artifact.kind == "html" else ""
+    filename = f"{artifact.source_id.replace(':', '_')}{suffix}"
+    media_type = artifact.mime_type or ("application/pdf" if artifact.kind == "pdf" else "application/octet-stream")
+    return FileResponse(path=path, media_type=media_type, filename=filename, content_disposition_type="inline")
 
 
 @router.get("/v1/acquisition/runs/{acq_run_id}/manifest", response_model=AcquisitionManifestResponse)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 import random
+import threading
+import time
 from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
@@ -12,8 +15,20 @@ if TYPE_CHECKING:
     from .models import Source
 
 
+logger = logging.getLogger("knowledge_miner")
+
+
 class RetryableProviderError(Exception):
     pass
+
+
+_SEMANTIC_SCHOLAR_STATE_LOCK = threading.Lock()
+_SEMANTIC_SCHOLAR_NEXT_REQUEST_AT = 0.0
+_SEMANTIC_SCHOLAR_COOLDOWN_UNTIL = 0.0
+_SEMANTIC_SCHOLAR_CACHE: dict[
+    tuple[str, str, tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]],
+    tuple[float, dict[str, Any]],
+] = {}
 
 
 class Connector(Protocol):
@@ -178,7 +193,7 @@ class OpenAlexConnector:
                 backward.append(c)
 
         forward: list[dict] = []
-        cited_by_api_url = work.get("cited_by_api_url")
+        cited_by_api_url = work.get("cited_by_api_url") or _openalex_cited_by_api_url(work)
         if cited_by_api_url:
             if per_direction_limit > 0:
                 sep = "&" if "?" in cited_by_api_url else "?"
@@ -215,7 +230,7 @@ class SemanticScholarConnector:
 
     def search(self, query: str, *, run_id: str, iteration: int) -> list[dict]:
         del run_id
-        url = f"{settings.semantic_scholar_base_url.rstrip('/')}/paper/search"
+        url = f"{settings.semantic_scholar_base_url.rstrip('/')}/paper/search/bulk"
         configured_limit = 25 if self.search_limit is None else self.search_limit
         params = {
             "query": query,
@@ -225,7 +240,7 @@ class SemanticScholarConnector:
         headers: dict[str, str] = {}
         if settings.semantic_scholar_api_key:
             headers["x-api-key"] = settings.semantic_scholar_api_key
-        response = _request_json("GET", url, params=params, headers=headers)
+        response = _semantic_scholar_request_json("GET", url, params=params, headers=headers)
         rows = response.get("data", [])
         out: list[dict] = []
         for row in rows:
@@ -260,27 +275,52 @@ class SemanticScholarConnector:
 
     def expand_citations(self, source: "Source", *, per_direction_limit: int, iteration: int) -> tuple[list[dict], list[dict]]:
         del iteration
+        forward = _semantic_scholar_fetch_forward_citations_by_doi(source, per_direction_limit=per_direction_limit)
         paper = _semantic_scholar_fetch_paper(source)
         if not paper:
-            return [], []
+            return [], forward
 
         backward_rows = list(paper.get("references") or [])
-        forward_rows = list(paper.get("citations") or [])
+        forward_rows = [] if forward else list(paper.get("citations") or [])
         if per_direction_limit > 0:
             backward_rows = backward_rows[: max(0, per_direction_limit)]
             forward_rows = forward_rows[: max(0, per_direction_limit)]
 
         backward: list[dict] = []
+        backward_dropped_missing_title = 0
         for row in backward_rows:
             c = _semantic_scholar_paper_to_candidate(
                 row,
                 discovery_method="backward_citation",
                 parent_source_id=source.id,
             )
-            if c is not None:
-                backward.append(c)
+            if c is None:
+                backward_dropped_missing_title += 1
+                continue
+            backward.append(c)
 
-        forward: list[dict] = []
+        if backward_rows or forward or forward_rows:
+            first_backward = backward_rows[0] if backward_rows else {}
+            nested_backward = {}
+            if isinstance(first_backward, dict):
+                nested_backward = first_backward.get("citedPaper") or first_backward.get("citingPaper") or {}
+            logger.info(
+                "semantic_scholar_backward_debug doi=%s source_id=%s raw_backward=%s mapped_backward=%s dropped_backward=%s raw_forward_embedded=%s direct_forward=%s first_backward_keys=%s nested_keys=%s",
+                getattr(source, "doi", None),
+                getattr(source, "id", None),
+                len(backward_rows),
+                len(backward),
+                backward_dropped_missing_title,
+                len(forward_rows),
+                len(forward),
+                sorted(first_backward.keys()) if isinstance(first_backward, dict) else [],
+                sorted(nested_backward.keys()) if isinstance(nested_backward, dict) else [],
+            )
+
+        if forward:
+            return backward, forward[: max(0, per_direction_limit)] if per_direction_limit > 0 else forward
+
+        fallback_forward: list[dict] = []
         for row in forward_rows:
             c = _semantic_scholar_paper_to_candidate(
                 row,
@@ -288,8 +328,8 @@ class SemanticScholarConnector:
                 parent_source_id=source.id,
             )
             if c is not None:
-                forward.append(c)
-        return backward, forward
+                fallback_forward.append(c)
+        return backward, fallback_forward
 
 
 class BraveConnector:
@@ -457,6 +497,19 @@ def _openalex_fetch_work(source: "Source") -> dict[str, Any]:
     return _request_json("GET", f"{settings.openalex_base_url.rstrip('/')}/works/{work_id}")
 
 
+def _openalex_cited_by_api_url(work: dict[str, Any]) -> str | None:
+    existing = work.get("cited_by_api_url")
+    if isinstance(existing, str) and existing.strip():
+        return existing
+    work_id = str(work.get("id") or "").strip()
+    if not work_id:
+        return None
+    short_id = work_id.rsplit("/", 1)[-1]
+    if not short_id:
+        return None
+    return f"{settings.openalex_base_url.rstrip('/')}/works?filter=cites:{short_id}"
+
+
 def _openalex_work_to_candidate(row: dict[str, Any], *, discovery_method: str, parent_source_id: str) -> dict | None:
     title = row.get("title")
     if not title:
@@ -487,49 +540,170 @@ def _openalex_work_to_candidate(row: dict[str, Any], *, discovery_method: str, p
     }
 
 
-def _semantic_scholar_fetch_paper(source: "Source") -> dict[str, Any]:
-    base = settings.semantic_scholar_base_url.rstrip("/")
-    paper_id = source.source_native_id
-    if not paper_id and source.doi:
-        paper_id = f"DOI:{source.doi}"
-    if not paper_id:
-        return {}
+def _semantic_scholar_doi_variants(doi: str | None) -> list[str]:
+    if not doi:
+        return []
+    value = str(doi).strip()
+    if not value:
+        return []
+    variants = [value]
+    upper_value = value.upper()
+    if upper_value not in variants:
+        variants.append(upper_value)
+    return variants
 
-    fields = ",".join(
+
+def _semantic_scholar_citation_fields() -> str:
+    return ",".join(
         [
             "paperId",
             "title",
             "year",
             "url",
-            "abstract",
             "externalIds",
-            "venue",
-            "authors.name",
             "citationCount",
             "references.paperId",
             "references.title",
             "references.year",
             "references.url",
-            "references.abstract",
             "references.externalIds",
-            "references.venue",
-            "references.authors.name",
             "references.citationCount",
             "citations.paperId",
             "citations.title",
             "citations.year",
             "citations.url",
-            "citations.abstract",
             "citations.externalIds",
-            "citations.venue",
-            "citations.authors.name",
             "citations.citationCount",
         ]
     )
+
+
+def _semantic_scholar_forward_citation_fields() -> str:
+    return ",".join(
+        [
+            "citingPaper.paperId",
+            "citingPaper.title",
+            "citingPaper.year",
+            "citingPaper.url",
+            "citingPaper.externalIds",
+            "citingPaper.authors",
+            "citingPaper.citationCount",
+        ]
+    )
+
+
+def _semantic_scholar_fetch_forward_citations_by_doi(source: "Source", *, per_direction_limit: int) -> list[dict[str, Any]]:
+    base = settings.semantic_scholar_base_url.rstrip("/")
     headers: dict[str, str] = {}
     if settings.semantic_scholar_api_key:
         headers["x-api-key"] = settings.semantic_scholar_api_key
-    return _request_json("GET", f"{base}/paper/{paper_id}", params={"fields": fields}, headers=headers)
+    page_limit = max(1, min(int(settings.semantic_scholar_citations_page_limit), 9999))
+    max_pages = max(1, int(settings.semantic_scholar_citations_max_pages))
+    max_results = max(1, int(settings.semantic_scholar_citations_max_results))
+    if per_direction_limit > 0:
+        max_results = min(max_results, per_direction_limit)
+    fields = _semantic_scholar_forward_citation_fields()
+    forward_rows: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    for doi_value in _semantic_scholar_doi_variants(getattr(source, "doi", None)):
+        paper_id = f"DOI:{doi_value}"
+        for mode in ("get_params", "post_json", "post_params"):
+            pagination: dict[str, Any] = {}
+            mode_rows: list[dict[str, Any]] = []
+            for _page_index in range(max_pages):
+                remaining = max_results - len(mode_rows)
+                if remaining <= 0:
+                    break
+                response = _semantic_scholar_forward_citations_request(
+                    base=base,
+                    paper_id=paper_id,
+                    fields=fields,
+                    page_limit=min(page_limit, remaining),
+                    pagination=pagination,
+                    headers=headers,
+                    mode=mode,
+                )
+                rows = response.get("data") or []
+                if not rows:
+                    break
+                for row in rows:
+                    candidate = _semantic_scholar_citing_paper_to_candidate(row, parent_source_id=source.id)
+                    if candidate is None:
+                        continue
+                    key = _semantic_scholar_candidate_identity_key(candidate)
+                    if key in seen_keys:
+                        continue
+                    mode_rows.append(candidate)
+                    seen_keys.add(key)
+                    if len(mode_rows) >= max_results:
+                        break
+                if len(mode_rows) >= max_results:
+                    break
+                next_page = _semantic_scholar_extract_pagination_token(response)
+                if not next_page:
+                    break
+                pagination = next_page
+            if mode_rows:
+                forward_rows.extend(mode_rows)
+                break
+        if forward_rows:
+            return forward_rows
+    return []
+
+
+def _semantic_scholar_fetch_paper(source: "Source") -> dict[str, Any]:
+    base = settings.semantic_scholar_base_url.rstrip("/")
+    doi = getattr(source, "doi", None)
+    title = getattr(source, "title", None)
+    semantic_scholar_id = getattr(source, "semantic_scholar_id", None)
+    source_name = getattr(source, "source", None)
+    source_native_id = getattr(source, "source_native_id", None)
+    openalex_id = getattr(source, "openalex_id", None)
+    url = getattr(source, "url", None)
+    paper_ids: list[str] = []
+    for doi_value in _semantic_scholar_doi_variants(doi):
+        paper_ids.append(f"DOI:{doi_value}")
+    if semantic_scholar_id:
+        paper_ids.append(str(semantic_scholar_id))
+    if source_name == "semantic_scholar" and source_native_id:
+        paper_ids.append(str(source_native_id))
+    if openalex_id:
+        paper_ids.append(str(openalex_id))
+    elif source_name == "openalex" and source_native_id:
+        paper_ids.append(str(source_native_id))
+    if url:
+        paper_ids.append(str(url))
+    if source_native_id:
+        paper_ids.append(str(source_native_id))
+    paper_ids = [paper_id for idx, paper_id in enumerate(paper_ids) if paper_id and paper_id not in paper_ids[:idx]]
+    if not paper_ids:
+        return {}
+
+    fields = _semantic_scholar_citation_fields()
+    headers: dict[str, str] = {}
+    if settings.semantic_scholar_api_key:
+        headers["x-api-key"] = settings.semantic_scholar_api_key
+    for paper_id in paper_ids:
+        paper = _semantic_scholar_request_json(
+            "GET",
+            f"{base}/paper/{paper_id}",
+            params={"fields": fields},
+            headers=headers,
+        )
+        if paper:
+            return paper
+    if title:
+        response = _semantic_scholar_request_json(
+            "GET",
+            f"{base}/paper/search",
+            params={"query": str(title), "limit": 1, "fields": fields},
+            headers=headers,
+        )
+        rows = response.get("data") or []
+        if rows:
+            return rows[0]
+    return {}
 
 
 def _semantic_scholar_paper_to_candidate(
@@ -538,6 +712,9 @@ def _semantic_scholar_paper_to_candidate(
     discovery_method: str,
     parent_source_id: str,
 ) -> dict | None:
+    nested_paper = row.get("citedPaper") or row.get("citingPaper")
+    if isinstance(nested_paper, dict) and nested_paper:
+        row = nested_paper
     title = row.get("title")
     if not title:
         return None
@@ -565,6 +742,35 @@ def _semantic_scholar_paper_to_candidate(
     }
 
 
+def _semantic_scholar_citing_paper_to_candidate(row: dict[str, Any], *, parent_source_id: str) -> dict | None:
+    paper = row.get("citingPaper") or {}
+    title = paper.get("title")
+    if not title:
+        return None
+    paper_id = paper.get("paperId")
+    external_ids = paper.get("externalIds") or {}
+    doi = external_ids.get("DOI")
+    return {
+        "title": title,
+        "year": paper.get("year") if isinstance(paper.get("year"), int) else None,
+        "url": paper.get("url"),
+        "doi": doi,
+        "abstract": None,
+        "journal": _semantic_scholar_journal(paper),
+        "authors": _semantic_scholar_authors(paper),
+        "citation_count": _semantic_scholar_citation_count(paper),
+        "source": "semantic_scholar",
+        "source_native_id": paper_id,
+        "openalex_id": None,
+        "semantic_scholar_id": paper_id,
+        "patent_office": None,
+        "patent_number": None,
+        "type": "academic",
+        "discovery_method": "forward_citation",
+        "parent_source_id": parent_source_id,
+    }
+
+
 def _semantic_scholar_journal(row: dict[str, Any]) -> str | None:
     venue = row.get("venue")
     return venue if isinstance(venue, str) and venue.strip() else None
@@ -577,6 +783,164 @@ def _semantic_scholar_authors(row: dict[str, Any]) -> list[str]:
         if isinstance(name, str) and name.strip():
             out.append(name)
     return out
+
+
+def _cache_key(
+    method: str,
+    url: str,
+    params: dict[str, Any] | None,
+    json_body: dict[str, Any] | None,
+) -> tuple[str, str, tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    items: tuple[tuple[str, str], ...] = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
+    body_items: tuple[tuple[str, str], ...] = tuple(sorted((str(k), str(v)) for k, v in (json_body or {}).items()))
+    return (method.upper(), url, items, body_items)
+
+
+def _semantic_scholar_request_json(
+    method: str,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    json_body: dict[str, Any] | None = None,
+    retry_multiplier: float = 1.0,
+) -> dict[str, Any]:
+    global _SEMANTIC_SCHOLAR_NEXT_REQUEST_AT, _SEMANTIC_SCHOLAR_COOLDOWN_UNTIL
+    cache_key = _cache_key(method, url, params, json_body)
+    now = time.monotonic()
+    with _SEMANTIC_SCHOLAR_STATE_LOCK:
+        cached = _SEMANTIC_SCHOLAR_CACHE.get(cache_key)
+        if cached is not None and now - cached[0] <= max(0.0, settings.semantic_scholar_cache_ttl_seconds):
+            return dict(cached[1])
+        if _SEMANTIC_SCHOLAR_COOLDOWN_UNTIL > now:
+            raise RetryableProviderError("provider_transient_http_429_cooldown")
+        wait_seconds = max(0.0, _SEMANTIC_SCHOLAR_NEXT_REQUEST_AT - now)
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        _SEMANTIC_SCHOLAR_NEXT_REQUEST_AT = time.monotonic() + max(0.0, settings.semantic_scholar_min_interval_seconds)
+
+    max_attempts = max(1, int(round(max(1.0, float(settings.semantic_scholar_max_retries) * max(1.0, retry_multiplier)))))
+    for attempt in range(max_attempts):
+        retry_after_seconds: float | None = None
+        try:
+            with httpx.Client(timeout=settings.semantic_scholar_timeout_seconds) as client:
+                resp = client.request(method, url, params=params, headers=headers, json=json_body)
+        except httpx.TimeoutException as exc:
+            if attempt >= max_attempts - 1:
+                raise RetryableProviderError("provider_timeout") from exc
+            time.sleep(_semantic_scholar_backoff_seconds(attempt))
+            continue
+        except httpx.RequestError as exc:
+            if attempt >= max_attempts - 1:
+                raise RetryableProviderError(str(exc)) from exc
+            time.sleep(_semantic_scholar_backoff_seconds(attempt))
+            continue
+
+        if resp.status_code == 429:
+            retry_after_seconds = _retry_after_seconds(resp.headers.get("Retry-After"))
+            cooldown_seconds = retry_after_seconds or max(0.0, settings.semantic_scholar_cooldown_seconds)
+            with _SEMANTIC_SCHOLAR_STATE_LOCK:
+                _SEMANTIC_SCHOLAR_COOLDOWN_UNTIL = max(_SEMANTIC_SCHOLAR_COOLDOWN_UNTIL, time.monotonic() + cooldown_seconds)
+            if attempt >= max_attempts - 1:
+                raise RetryableProviderError("provider_transient_http_429")
+            time.sleep(retry_after_seconds or _semantic_scholar_backoff_seconds(attempt))
+            continue
+
+        if 500 <= resp.status_code <= 599:
+            if attempt >= max_attempts - 1:
+                raise RetryableProviderError(f"provider_transient_http_{resp.status_code}")
+            time.sleep(_semantic_scholar_backoff_seconds(attempt))
+            continue
+
+        if resp.status_code >= 400:
+            return {}
+
+        payload = resp.json()
+        with _SEMANTIC_SCHOLAR_STATE_LOCK:
+            _SEMANTIC_SCHOLAR_CACHE[cache_key] = (time.monotonic(), payload)
+        return payload
+
+    raise RetryableProviderError("provider_transient_http_429")
+
+
+def _semantic_scholar_backoff_seconds(attempt: int) -> float:
+    base = [2.0, 5.0, 10.0]
+    index = min(max(attempt, 0), len(base) - 1)
+    return random.uniform(0.0, base[index])
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if value is None:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return None
+    return max(0.0, parsed)
+
+
+def _semantic_scholar_extract_pagination_token(response: dict[str, Any]) -> dict[str, Any] | None:
+    token = response.get("next") or response.get("nextPageToken") or response.get("token")
+    if token:
+        return {"token": token}
+    offset = response.get("offset")
+    next_offset = response.get("nextOffset")
+    if isinstance(next_offset, int):
+        return {"offset": next_offset}
+    if isinstance(offset, int) and response.get("data"):
+        limit = response.get("limit")
+        if isinstance(limit, int) and limit > 0:
+            return {"offset": offset + limit}
+    return None
+
+
+def _semantic_scholar_candidate_identity_key(candidate: dict[str, Any]) -> tuple[str, str]:
+    if candidate.get("semantic_scholar_id"):
+        return ("paper_id", str(candidate["semantic_scholar_id"]).strip())
+    if candidate.get("doi"):
+        return ("doi", str(candidate["doi"]).strip().lower())
+    normalized_title = " ".join(str(candidate.get("title") or "").strip().lower().split())
+    return ("title", f"{normalized_title}|{candidate.get('year') or ''}")
+
+
+def _semantic_scholar_forward_citations_request(
+    *,
+    base: str,
+    paper_id: str,
+    fields: str,
+    page_limit: int,
+    pagination: dict[str, Any],
+    headers: dict[str, str],
+    mode: str,
+) -> dict[str, Any]:
+    url = f"{base}/paper/{paper_id}/citations"
+    payload = {"fields": fields, "limit": page_limit, **pagination}
+    if mode == "post_json":
+        return _semantic_scholar_request_json(
+            "POST",
+            url,
+            headers=headers,
+            json_body=payload,
+            retry_multiplier=settings.semantic_scholar_citations_retry_multiplier,
+        )
+    if mode == "post_params":
+        return _semantic_scholar_request_json(
+            "POST",
+            url,
+            headers=headers,
+            params=payload,
+            retry_multiplier=settings.semantic_scholar_citations_retry_multiplier,
+        )
+    return _semantic_scholar_request_json(
+        "GET",
+        url,
+        headers=headers,
+        params=payload,
+        retry_multiplier=settings.semantic_scholar_citations_retry_multiplier,
+    )
 
 
 def _semantic_scholar_citation_count(row: dict[str, Any]) -> int | None:

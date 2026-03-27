@@ -87,6 +87,7 @@ def test_hmi2_shell_route_and_navigation():
     assert 'data-library-sort="citation_count"' in body
     assert 'data-library-sort="title"' in body
     assert 'id="libraryGenerateVisibleSummariesBtn"' in body
+    assert 'id="libraryGenerateVisibleTagsBtn"' in body
     assert 'id="libraryPromptToggleBtn"' in body
     assert 'id="libraryApprovedTagsToggleBtn"' in body
     assert 'id="librarySummaryPromptInput"' in body
@@ -97,6 +98,10 @@ def test_hmi2_shell_route_and_navigation():
     assert 'id="librarySummaryText"' in body
     assert 'id="libraryGenerateSummaryBtn"' in body
     assert 'id="libraryRegenerateSummaryBtn"' in body
+    assert 'id="librarySuggestedTagsStatus"' in body
+    assert 'id="librarySuggestedTags"' in body
+    assert 'id="libraryGenerateTagsBtn"' in body
+    assert 'id="libraryRegenerateTagsBtn"' in body
     assert "Search matches title, abstract, and tags." in body
     assert "Download Selected" in body
     assert "Export ZIP with PDFs" in body
@@ -116,6 +121,17 @@ def test_hmi2_shell_route_and_navigation():
     assert "ChatGPT model" in body
     assert 'id="aiModelSelect"' in body
     assert "Save AI Settings" in body
+    assert "Database Restore" in body
+    assert 'id="createDatabaseBackupBtn"' in body
+    assert 'id="refreshDatabaseBackupsBtn"' in body
+    assert 'id="databaseTargetWarning"' in body
+    assert 'id="databaseRestoreTarget"' in body
+    assert 'id="databaseBackupDir"' in body
+    assert 'id="databaseBackupPolicy"' in body
+    assert 'id="databaseBackupSelect"' in body
+    assert 'id="databaseRestoreConfirmInput"' in body
+    assert 'id="restoreDatabaseBtn"' in body
+    assert 'id="databaseBackupList"' in body
     assert "Operational Events" in body
     assert "Autoscroll: On" in body
     assert "<h2>Discover</h2>" not in body

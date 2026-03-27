@@ -27,12 +27,12 @@ pkill -f "[u]vicorn knowledge_miner.main:app" || true
 ## 4) Start server (live session, recommended)
 
 ```bash
-python -m uvicorn knowledge_miner.main:app --reload
+python -m uvicorn knowledge_miner.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Expected line:
 
-`Uvicorn running on http://127.0.0.1:8000`
+`Uvicorn running on http://0.0.0.0:8000`
 
 ## 5) Verify health in another terminal
 

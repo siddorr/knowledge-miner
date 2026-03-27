@@ -44,6 +44,12 @@ class AIDocumentIdentityResult:
 @dataclass
 class AIPaperSummaryResult:
     summary: str
+    artifact_json: dict[str, object]
+
+
+@dataclass
+class AIPaperTagsResult:
+    tags: list[str]
 
 
 def describe_ai_filter_runtime(*, use_ai_filter: bool, api_key: str | None) -> tuple[bool, str | None]:
@@ -60,6 +66,48 @@ def describe_query_suggestions_runtime(*, api_key: str | None, base_url: str | N
     if not str(base_url or "").strip():
         return False, "ai_base_url_missing"
     return True, None
+
+
+def _query_word_count(text: str) -> int:
+    return len([part for part in text.strip().split() if part])
+
+
+def _limit_query_suggestions_by_length(suggestions: list[str], *, max_suggestions: int) -> list[str]:
+    short: list[str] = []
+    medium: list[str] = []
+    long: list[str] = []
+    overflow: list[str] = []
+    for suggestion in suggestions:
+        words = _query_word_count(suggestion)
+        if words <= 3:
+            short.append(suggestion)
+        elif words == 4:
+            medium.append(suggestion)
+        elif words >= 5:
+            long.append(suggestion)
+        else:
+            overflow.append(suggestion)
+
+    remaining = max(0, int(max_suggestions))
+    picked: list[str] = []
+
+    short_cap = min(5, remaining)
+    picked.extend(short[:short_cap])
+    remaining -= len(picked)
+
+    medium_cap = min(3, remaining)
+    picked.extend(medium[:medium_cap])
+    remaining = max(0, int(max_suggestions) - len(picked))
+
+    long_cap = min(2, remaining)
+    picked.extend(long[:long_cap])
+    remaining = max(0, int(max_suggestions) - len(picked))
+
+    if remaining > 0:
+        leftovers = short[short_cap:] + medium[medium_cap:] + long[long_cap:] + overflow
+        picked.extend(leftovers[:remaining])
+
+    return picked[:max_suggestions]
 
 
 class AIRelevanceFilter:
@@ -127,6 +175,9 @@ class AIRelevanceFilter:
         category = self._last_error_category
         self._last_error_category = None
         return category
+
+    def mark_timeout(self) -> None:
+        self._last_error_category = "timeout"
 
     def consume_runtime_warning(self) -> str | None:
         if not self._runtime_warning_ready:
@@ -257,6 +308,11 @@ def generate_query_suggestions(
                             "avoid_trivial_rephrasings_of_existing_queries": True,
                             "avoid_explanations": True,
                             "avoid_quotes_unless_essential": True,
+                            "length_mix": {
+                                "three_or_less_words": 5,
+                                "four_words": 3,
+                                "five_or_more_words": 2,
+                            },
                         },
                         "input": {
                             "session_context": session_context,
@@ -299,7 +355,7 @@ def generate_query_suggestions(
         suggestions.append(text)
         if len(suggestions) >= max_suggestions:
             break
-    return suggestions
+    return _limit_query_suggestions_by_length(suggestions, max_suggestions=max_suggestions)
 
 
 def extract_document_identity(
@@ -432,6 +488,41 @@ def generate_paper_summary(
                         },
                         "required_output": {
                             "summary": "string",
+                            "wastewater_source": {
+                                "fab_area": "string|null",
+                                "process_step": "string|null",
+                                "tool_or_equipment": "string|null",
+                                "waste_stream_name": "string|null",
+                                "real_or_synthetic_water": "real|synthetic|both|unclear|null",
+                                "water_source_details": "string|null",
+                            },
+                            "water_composition": {
+                                "components": [
+                                    {"component": "string|null", "value": "string|null", "unit": "string|null", "context": "string|null"}
+                                ],
+                                "water_quality_parameters": [
+                                    {"parameter": "string|null", "value": "string|null", "unit": "string|null", "context": "string|null"}
+                                ],
+                            },
+                            "treatment_target": {
+                                "target_contaminants_or_parameters": ["string"]
+                            },
+                            "treatment_technology": {
+                                "technology_name": "string|null",
+                                "technology_category": "physical|chemical|physicochemical|biological|membrane|electrochemical|adsorption|hybrid|other|unclear|null",
+                            },
+                            "experiments": {
+                                "used_real_wastewater": "boolean|null",
+                                "used_synthetic_wastewater": "boolean|null",
+                                "experimental_scale": "lab|pilot|full-scale|unclear|null",
+                            },
+                            "performance": {
+                                "removal_results": [
+                                    {"target": "string|null", "metric": "string|null", "value": "string|null", "unit": "string|null", "conditions": "string|null"}
+                                ],
+                                "key_findings": ["string"],
+                                "limitations": ["string"],
+                            },
                         },
                     }
                 ),
@@ -455,4 +546,87 @@ def generate_paper_summary(
     summary = str(parsed.get("summary", "")).strip()
     if not summary:
         raise ValueError("paper_summary_empty")
-    return AIPaperSummaryResult(summary=summary)
+    return AIPaperSummaryResult(summary=summary, artifact_json=parsed)
+
+
+def generate_paper_tags(
+    *,
+    session_context: str,
+    title: str,
+    body_text: str,
+    doi: str | None = None,
+    year: int | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float | None = None,
+) -> AIPaperTagsResult:
+    resolved_api_key = settings.ai_api_key if api_key is None else api_key
+    if not resolved_api_key:
+        raise AIAuthError("paper_tags_missing_api_key")
+    resolved_model = settings.ai_model if model is None else model
+    resolved_base_url = settings.ai_base_url if base_url is None else base_url
+    resolved_timeout = settings.ai_timeout_seconds if timeout_seconds is None else timeout_seconds
+    url = f"{resolved_base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": resolved_model,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You generate concise reusable research tags for scientific papers. "
+                    "Return strict JSON only."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "Suggest concise reusable tags for this paper in the current research session.",
+                        "instructions": [
+                            "Return 3 to 10 tags.",
+                            "Use short noun phrases, not sentences.",
+                            "Prefer process, material, contaminant, method, and outcome tags.",
+                            "Avoid generic tags like paper, study, research, experiment.",
+                            "Deduplicate near-duplicates.",
+                        ],
+                        "session_context": session_context,
+                        "paper": {
+                            "title": title,
+                            "doi": doi or "",
+                            "year": year,
+                            "body_text": body_text[:30000],
+                        },
+                        "required_output": {
+                            "tags": ["string"],
+                        },
+                    }
+                ),
+            },
+        ],
+    }
+    try:
+        with httpx.Client(timeout=resolved_timeout) as client:
+            response = client.post(url, headers=headers, json=payload)
+            if response.status_code in {401, 403}:
+                raise AIAuthError(f"paper_tags_http_{response.status_code}")
+            if response.status_code == 429:
+                raise AIRateLimitError("paper_tags_http_429")
+            if response.status_code >= 400:
+                raise AIProviderError(f"paper_tags_http_{response.status_code}")
+            body = response.json()
+    except httpx.TimeoutException as exc:
+        raise AITimeoutError("paper_tags_timeout") from exc
+    content = body["choices"][0]["message"]["content"]
+    parsed = json.loads(content)
+    raw_tags = parsed.get("tags")
+    if not isinstance(raw_tags, list):
+        raise ValueError("paper_tags_invalid")
+    tags = [" ".join(str(item or "").strip().split()) for item in raw_tags]
+    tags = [item for item in tags if item]
+    if not tags:
+        raise ValueError("paper_tags_empty")
+    return AIPaperTagsResult(tags=tags)

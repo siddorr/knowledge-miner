@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..acquisition import find_reusable_artifact
 from ..auth import require_api_key
 from ..config import settings
 from ..db import get_db
@@ -58,6 +59,18 @@ def _latest_acquisition_run(db: Session, run_id: str) -> AcquisitionRun | None:
         .order_by(AcquisitionRun.created_at.desc(), AcquisitionRun.id.desc())
         .limit(1)
     ).first()
+
+
+def _effective_artifact_for_source(db: Session, source: Source) -> Artifact | None:
+    artifact = db.scalars(
+        select(Artifact)
+        .where(Artifact.source_id == source.id)
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+        .limit(1)
+    ).first()
+    if artifact is not None and _artifact_file_path(artifact.path).exists():
+        return artifact
+    return find_reusable_artifact(db, source)
 
 
 def _source_link(source: Source) -> str:
@@ -131,7 +144,7 @@ def export_library_metadata_csv(
                 "journal": source.journal or "",
                 "citations": source.citation_count if source.citation_count is not None else "",
                 "ai_score": f"{float(source.relevance_score):.2f}",
-                "status": item_status_by_source.get(source.id, "pending"),
+                "status": item_status_by_source.get(source.id, "downloaded" if _effective_artifact_for_source(db, source) is not None else "pending"),
                 "freeform_tags": "; ".join((annotation_by_source.get(source.id).freeform_tags_json if annotation_by_source.get(source.id) else []) or []),
                 "approved_tags": "; ".join((annotation_by_source.get(source.id).approved_tags_json if annotation_by_source.get(source.id) else []) or []),
                 "ai_summary": (annotation_by_source.get(source.id).ai_summary if annotation_by_source.get(source.id) else "") or "",
@@ -156,22 +169,13 @@ def export_library_pdfs_zip(
 ) -> Response:
     _load_export_run(db, run_id)
     sources = _accepted_sources(db, run_id, source_id)
-    latest_acq = _latest_acquisition_run(db, run_id)
-    if latest_acq is None:
-        raise HTTPException(status_code=409, detail="no_acquisition_run")
-
     wanted = {source.id: source for source in sources}
-    artifacts = db.scalars(
-        select(Artifact)
-        .where(Artifact.acq_run_id == latest_acq.id, Artifact.source_id.in_(list(wanted.keys())))
-        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
-    ).all()
-
     best_pdf_by_source: dict[str, Artifact] = {}
-    for artifact in artifacts:
-        if artifact.kind != "pdf":
+    for source in sources:
+        artifact = _effective_artifact_for_source(db, source)
+        if artifact is None or artifact.kind != "pdf":
             continue
-        best_pdf_by_source.setdefault(artifact.source_id, artifact)
+        best_pdf_by_source[source.id] = artifact
 
     if not best_pdf_by_source:
         raise HTTPException(status_code=409, detail="no_pdf_artifacts")

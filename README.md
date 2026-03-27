@@ -17,10 +17,40 @@ Current product includes:
 10. Session-scoped paper annotations in `Library Export`:
    - freeform tags
    - approved tags
+   - AI suggested tags generated from parsed full text and kept separate until promoted
    - AI paper summaries from parsed full text
 11. Run-context controls are kept in Advanced; task pages run on active session context.
 12. UI design authority now follows the in-repo `UI_SPEC.md`.
 13. Discover requires per-session research context; AI ranking and summaries use this context and store snapshots per session/run where applicable.
+
+## Session And Citation Logic
+
+Discovery and citation expansion follow different reuse rules inside a session:
+
+1. Discovery dedup:
+   - Human-reviewed papers (`accept`, `reject`, `later`) are remembered across the whole session, even if the saved session context changes.
+   - Non-human-reviewed papers are deduplicated within the same saved session-context generation and may re-enter after a saved context change.
+2. Citation expansion parent pool:
+   - Parent candidates are selected from accepted papers across the whole session and deduplicated by paper identity.
+   - Within one unchanged saved session context, citation expansion is incremental: already-expanded parents in that context are skipped and only newly eligible accepted papers remain.
+   - After saving a changed session context, citation expansion is renewed for the new context generation and all accepted session papers become eligible again.
+3. Operator expectation:
+   - If you do not change the saved session context, repeated citation-expansion runs continue from the remaining unexpanded accepted papers.
+   - If you save a changed session context, citation expansion starts fresh against the accepted session paper set for that new context.
+
+## Library Tagging Logic
+
+1. Manual tags remain authoritative:
+   - `Freeform Tags` and `Approved Tags` change only through explicit operator actions.
+2. AI suggested tags:
+   - are generated from parsed full text in `Library`
+   - stay separate from manual tags
+   - do not auto-edit freeform or approved tags
+3. Promotion:
+   - suggested tags can be promoted to freeform tags one by one
+   - suggested tags can be promoted to approved tags only if the tag already exists in the session approved-tag catalog
+4. Session scope:
+   - suggested AI tags, manual tags, and summaries are session-scoped annotation state
 
 ## Quick Start
 
@@ -29,7 +59,7 @@ cd /home/garik/Documents/git/knowledge-miner
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-uvicorn knowledge_miner.main:app --reload
+./run_server.sh
 ```
 
 Open:
@@ -37,13 +67,30 @@ Open:
 2. HMI2: `http://127.0.0.1:8000/hmi2`
 3. Legacy `/hmi` route redirects to `/hmi2`
 
+Default bind behavior:
+1. `./run_server.sh` binds to `0.0.0.0:8000` so the app is reachable from your LAN by default.
+2. Local health checks still use `127.0.0.1:8000`.
+
 Static asset cache strategy:
 1. `/hmi2` injects a version query param (`?v=<build stamp>`) for `gui.js` and `gui.css`.
 2. After restart/deploy, browsers fetch the updated frontend bundle automatically.
 
+SQLite local repair behavior:
+1. Local startup with `DB_AUTO_MIGRATE_ON_START=true` auto-creates missing feature tables such as bookmarks and paper annotations.
+2. Startup also backfills known incorrect persisted discovery query counters in SQLite local/dev databases.
+3. Automatic SQLite backups are stored under `./db_backups/` hourly for the live app database, keeping the latest 48 automatic snapshots by default.
+4. `Advanced -> Database Restore` can create a manual backup on demand, list managed backups plus legacy backup files, snapshot the current DB before restore, and restore a selected backup in place.
+5. The running server should use `knowledge_miner.db`; `pytest` must not target that file, and direct `python -c` or heredoc inspection now requires an explicit `DATABASE_URL`.
+6. To inspect the currently resolved DB target safely, use:
+
+```bash
+cd /home/garik/Documents/git/knowledge-miner
+.venv/bin/python scripts/show_db_target.py
+```
+
 ## LAN Access (Another PC on Same Network)
 
-Start server bound to all interfaces:
+Default `./run_server.sh` already binds to all interfaces. Equivalent manual start:
 
 ```bash
 cd /home/garik/Documents/git/knowledge-miner
@@ -140,7 +187,7 @@ Typical settings:
 
 1. Persistent logs default to `./logs/knowledge_miner.log`.
 2. Runtime lock files are stored under `./runtime/`.
-3. Artifacts are stored under `./artifacts/`.
+3. Artifacts are stored under `./artifacts/` and reused across sessions by DOI first, then source URL when available.
 
 ## Maintainability Guardrails
 

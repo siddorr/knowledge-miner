@@ -7,8 +7,27 @@ const DEFAULT_PROVIDER_LIMITS = Object.freeze({ openalex: 25, semantic_scholar: 
 const AI_MODEL_PRESETS = Object.freeze(["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"]);
 const OFFLINE_HEALTH_POLL_MS = 4000;
 const OFFLINE_FAILURE_THRESHOLD = 2;
-const API_FETCH_PAGE_SIZE = 500;
+const API_FETCH_PAGE_SIZE = 100;
+const REVIEW_FETCH_LIMIT = 100;
+const LIBRARY_ANNOTATION_BATCH_SIZE = 25;
+const ACQUISITION_FETCH_PAGE_SIZE = 100;
 const DOCUMENTS_PAGE_SIZE = 50;
+const DEFAULT_SUMMARY_PROMPT = `You are a strict JSON extraction engine.
+
+Extract data from the provided full scientific paper text about wastewater treatment in semiconductor fabrication facilities.
+
+Return exactly one valid JSON object and nothing else.
+
+Use exactly this schema and no other keys:
+{"summary":"string","wastewater_source":{"fab_area":null,"process_step":null,"tool_or_equipment":null,"waste_stream_name":null,"real_or_synthetic_water":null,"water_source_details":null},"water_composition":{"components":[],"water_quality_parameters":[]},"treatment_target":{"target_contaminants_or_parameters":[]},"treatment_technology":{"technology_name":null,"technology_category":null},"experiments":{"used_real_wastewater":null,"used_synthetic_wastewater":null,"experimental_scale":null},"performance":{"removal_results":[],"key_findings":[],"limitations":[]}}
+
+Rules:
+- Extract only facts explicitly stated in the text.
+- Do not use outside knowledge.
+- Keep values short and factual.
+- If a field is missing, use null or [].
+- "summary" must be a concise human-readable summary of the paper for this research session.
+- Return JSON only.`;
 const REVIEW_STATUS_TO_API = {
   pending: "needs_review",
   accepted: "accepted",
@@ -30,9 +49,10 @@ const state = {
   showNewSessionForm: false,
   reviewQueue: "pending",
   reviewSort: { key: "lineage", dir: "desc" },
-  documentsSort: { key: "rank", dir: "asc" },
+  documentsSort: { key: "lineage", dir: "asc" },
   documentsPage: 0,
-  librarySort: { key: "rank", dir: "asc" },
+  librarySort: { key: "lineage", dir: "asc" },
+  libraryDetailTab: "details",
   latest: { discovery: "", discoverySession: "", acquisition: "", parse: "" },
   reviewItems: [],
   reviewIndex: -1,
@@ -49,6 +69,7 @@ const state = {
   busyLabel: "",
   currentDiscoveryStatus: null,
   currentAcquisitionStatus: null,
+  currentParseStatus: null,
   liveRefreshTimer: null,
   discoverPollTimer: null,
   internalRepositoryBaseUrl: localStorage.getItem(INTERNAL_REPO_URL_KEY) || "",
@@ -58,6 +79,11 @@ const state = {
   advancedEventRows: [],
   advancedEventGroupedCounts: [],
   advancedEventPollTimer: null,
+  advancedDatabaseBackups: [],
+  advancedDatabaseTarget: "",
+  advancedDatabaseBackupDir: "",
+  advancedDatabaseRetentionCount: 0,
+  databaseTargetWarning: "",
   healthPollTimer: null,
   healthFailureCount: 0,
   serverOffline: false,
@@ -69,6 +95,10 @@ const state = {
   sessionApprovedTags: [],
   sessionSummaryPrompt: "",
   summaryPollTimer: null,
+  reviewLoadInFlight: false,
+  reviewReloadQueued: false,
+  libraryStatusStickyUntil: 0,
+  advancedParseStatusStickyUntil: 0,
   newSessionDraftName: "",
   newSessionDraftContext: "",
   suggestionStateSticky: false,
@@ -156,18 +186,22 @@ function readDom() {
     "documentsDownloaded", "documentsFailed", "documentsManual", "documentsPending", "documentsRows", "documentsPrevBtn", "documentsNextBtn", "documentsPageState",
     "downloadMissingBtn", "retryFailedBtn", "documentsExportCsvBtn", "batchUploadForm", "batchUploadFiles",
     "batchUploadResults", "documentsState", "documentsBadge", "documentsDetailTitle", "documentsDetailSummary",
-    "documentsDetailMetadata", "documentsRowActionBtn", "documentsBookmarkBtn", "internalRepoUrlInput", "saveInternalRepoUrlBtn", "internalRepoUrlState",
-    "libraryMatches", "libraryHighest", "libraryLowest", "libraryQuery", "libraryExportSize", "libraryRows",
+    "documentsDetailMetadata", "documentsRowActionBtn", "documentsOpenPdfBtn", "documentsBookmarkBtn", "internalRepoUrlInput", "saveInternalRepoUrlBtn", "internalRepoUrlState",
+    "libraryMatches", "libraryHighest", "libraryLowest", "libraryQuery", "libraryParsedOnlyCheckbox", "libraryPdfOnlyCheckbox", "librarySummaryCurrentOnlyCheckbox", "libraryExportSize", "libraryRows",
     "libraryTitle", "libraryAbstract", "libraryMetadata", "libraryAddBtn", "libraryRemoveBtn", "libraryBookmarkBtn", "libraryZipBtn",
-    "libraryMetadataBtn", "libraryState", "libraryGenerateVisibleSummariesBtn", "libraryPromptToggleBtn", "libraryApprovedTagsToggleBtn",
-    "librarySummaryPromptPanel", "librarySummaryPromptInput", "librarySaveSummaryPromptBtn", "librarySummaryPromptState",
+    "libraryMetadataBtn", "libraryState", "libraryGenerateVisibleSummariesBtn", "libraryGenerateVisibleTagsBtn", "libraryPromptToggleBtn", "libraryApprovedTagsToggleBtn",
+    "librarySummaryPromptPanel", "librarySummaryPromptInput", "librarySaveSummaryPromptBtn", "libraryResetSummaryPromptBtn", "librarySummaryPromptState",
     "libraryApprovedTagsPanel", "libraryApprovedTagsInput", "librarySaveApprovedTagsBtn", "libraryApprovedTagsState",
     "libraryFilterHelp", "libraryFreeformTags", "libraryFreeformTagInput", "libraryAddFreeformTagBtn",
     "libraryApprovedTags", "libraryApprovedTagSelect", "libraryAddApprovedTagBtn",
+    "libraryDetailsTabBtn", "librarySummaryPreviewTabBtn", "libraryDetailsPanel", "librarySummaryPreviewPanel",
     "librarySummaryStatus", "librarySummaryText", "libraryGenerateSummaryBtn", "libraryRegenerateSummaryBtn",
-    "apiKeyInput", "saveApiKeyBtn", "apiKeyState", "aiModelSelect", "saveAiSettingsBtn", "aiSettingsState", "latestDiscoveryId", "latestAcquisitionId", "latestParseId",
+    "librarySummaryPreviewStatus", "librarySummaryPreviewText", "librarySummaryStructuredText", "librarySummaryPreviewOpenPdfBtn", "libraryCopySummaryBtn", "librarySummaryPreviewGenerateBtn", "librarySummaryPreviewRegenerateBtn",
+    "librarySuggestedTagsStatus", "librarySuggestedTags", "libraryGenerateTagsBtn", "libraryRegenerateTagsBtn",
+    "apiKeyInput", "saveApiKeyBtn", "apiKeyState", "aiModelSelect", "saveAiSettingsBtn", "aiSettingsState", "latestDiscoveryId", "latestAcquisitionId", "latestParseId", "startParseBtn", "advancedParseState",
     "openalexLimitInput", "braveCountInput", "braveAllowlistCheckbox", "saveProviderSettingsBtn", "providerSettingsState",
     "globalSearchInput", "globalSearchBtn", "globalSearchResults", "runLookupInput", "runLookupBtn", "runLookupResult",
+    "createDatabaseBackupBtn", "refreshDatabaseBackupsBtn", "databaseRestoreState", "databaseTargetWarning", "databaseRestoreTarget", "databaseBackupDir", "databaseBackupPolicy", "databaseBackupSelect", "databaseRestoreConfirmInput", "restoreDatabaseBtn", "databaseBackupList",
     "advancedEventsPauseBtn", "advancedEventsAutoscrollBtn", "advancedEventsState", "advancedEventCounters", "advancedEventsLog",
     "footerSystem", "footerAi", "footerDb", "footerUpdated",
     "bookmarksRows", "bookmarksTitle", "bookmarksAbstract", "bookmarksMetadata", "bookmarksCreateSessionBtn", "bookmarksRemoveBtn", "bookmarksState",
@@ -232,6 +266,17 @@ function createBlankSession() {
   return normalizeSession({});
 }
 
+function isLocalDraftSession(session) {
+  if (!session) {
+    return false;
+  }
+  const hasBoundRun = Boolean(discoverRunId(session) || resultsRunId(session) || (session.acquisitionRunId || "").trim());
+  const hasSavedContext = Boolean(
+    normalizeSessionContext(session.savedSessionContext || "") || String(session.savedSessionContextUpdatedAt || "").trim(),
+  );
+  return !hasBoundRun && !hasSavedContext;
+}
+
 function loadSessions() {
   try {
     state.sessions = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || "[]").map(normalizeSession);
@@ -254,7 +299,13 @@ async function syncSessionsFromServer() {
   try {
     const result = await api("/v1/sessions");
     const items = Array.isArray(result.data?.items) ? result.data.items : [];
-    const merged = new Map(state.sessions.map((session) => [session.id, normalizeSession(session)]));
+    const serverSessionIds = new Set(items.map((item) => item.session_id));
+    const merged = new Map(
+      state.sessions
+        .map((session) => normalizeSession(session))
+        .filter((session) => serverSessionIds.has(session.id) || isLocalDraftSession(session))
+        .map((session) => [session.id, session]),
+    );
     items.forEach((item) => {
       const existing = merged.get(item.session_id);
       const normalized = normalizeSession({
@@ -309,6 +360,30 @@ function defaultSessionContextState(session = activeSession()) {
   return "Session context saved.";
 }
 
+function updateSessionContextControls(session = activeSession()) {
+  if (!els.saveSessionContextBtn || !els.sessionContextInput) {
+    return;
+  }
+  const context = normalizeSessionContext(els.sessionContextInput.value);
+  if (state.serverOffline) {
+    els.saveSessionContextBtn.disabled = true;
+    els.saveSessionContextBtn.textContent = "Offline";
+    return;
+  }
+  if (!context) {
+    els.saveSessionContextBtn.disabled = true;
+    els.saveSessionContextBtn.textContent = "Save Context";
+    return;
+  }
+  if (hasUnsavedSessionContext(session)) {
+    els.saveSessionContextBtn.disabled = false;
+    els.saveSessionContextBtn.textContent = "Save Context";
+    return;
+  }
+  els.saveSessionContextBtn.disabled = true;
+  els.saveSessionContextBtn.textContent = "Saved";
+}
+
 function querySuggestionsUnavailableText(reason) {
   if (reason === "ai_api_key_missing") {
     return "AI query suggestions are unavailable: AI API key is not configured.";
@@ -345,7 +420,10 @@ function updateSuggestionAvailability() {
   }
   const context = normalizeSessionContext(activeSession()?.sessionContext || els.sessionContextInput?.value || "");
   const systemStatus = state.systemStatus || {};
-  const available = Boolean(systemStatus.query_suggestions_available);
+  const hasExplicitSuggestionAvailability = typeof systemStatus.query_suggestions_available === "boolean";
+  const available = hasExplicitSuggestionAvailability
+    ? systemStatus.query_suggestions_available
+    : Boolean(systemStatus.ai_filter_active);
   let disabled = false;
   let message = "";
   if (!context) {
@@ -353,7 +431,9 @@ function updateSuggestionAvailability() {
     message = "Session context is required before generating suggestions.";
   } else if (!available) {
     disabled = true;
-    message = querySuggestionsUnavailableText(systemStatus.query_suggestions_reason);
+    message = hasExplicitSuggestionAvailability
+      ? querySuggestionsUnavailableText(systemStatus.query_suggestions_reason)
+      : "AI query suggestions are unavailable in current settings.";
   }
   if (state.serverOffline) {
     disabled = true;
@@ -386,18 +466,32 @@ function annotationForSource(sourceId) {
     source_id: sourceId,
     freeform_tags: [],
     approved_tags: [],
+    ai_suggested_tags: [],
     ai_summary: null,
+    ai_summary_json: null,
+    summary_prompt_snapshot: null,
     summary_status: "none",
+    tag_suggestion_status: "none",
     summary_generated_at: null,
+    tag_suggestion_generated_at: null,
     summary_error: null,
+    tag_suggestion_error: null,
     can_generate_summary: false,
     summary_block_reason: "parsed_text_required",
+    can_generate_tags: false,
+    tag_suggestion_block_reason: "parsed_text_required",
   };
+}
+
+function isParsedReady(sourceId) {
+  const annotation = annotationForSource(sourceId);
+  return annotation.summary_block_reason !== "parsed_text_required"
+    || annotation.tag_suggestion_block_reason !== "parsed_text_required";
 }
 
 function tagSearchBlob(sourceId) {
   const annotation = annotationForSource(sourceId);
-  return `${(annotation.freeform_tags || []).join(" ")} ${(annotation.approved_tags || []).join(" ")}`.toLowerCase();
+  return `${(annotation.freeform_tags || []).join(" ")} ${(annotation.approved_tags || []).join(" ")} ${(annotation.ai_suggested_tags || []).join(" ")}`.toLowerCase();
 }
 
 function discoverRunId(session = activeSession()) {
@@ -530,11 +624,119 @@ function pagedRows(rows, page, pageSize) {
   return rows.slice(start, start + pageSize);
 }
 
+function uniqueIds(values) {
+  return Array.from(new Set((values || []).filter(Boolean)));
+}
+
+async function openPdfArtifactPreview(artifactId) {
+  if (!artifactId) {
+    return { ok: false, reason: "missing_artifact" };
+  }
+  const previewWindow = window.open("", "_blank");
+  if (!previewWindow) {
+    return { ok: false, reason: "popup_blocked" };
+  }
+  try {
+    previewWindow.document.title = "Loading PDF...";
+    previewWindow.document.body.innerHTML = `
+      <main style="font-family: sans-serif; padding: 24px; line-height: 1.5;">
+        <h1 style="font-size: 1.1rem; margin: 0 0 12px;">Loading PDF preview...</h1>
+        <p style="margin: 0; color: #555;">The document is being fetched now.</p>
+      </main>
+    `;
+  } catch {
+    // Ignore cross-window DOM write issues and continue with fetch/load.
+  }
+  let result;
+  try {
+    result = await api(`/v1/acquisition/artifacts/${encodeURIComponent(artifactId)}/content`);
+  } catch (error) {
+    const message = errorDetail(error) || "request_failed";
+    try {
+      previewWindow.document.title = "PDF Preview Failed";
+      previewWindow.document.body.innerHTML = `
+        <main style="font-family: sans-serif; padding: 24px; line-height: 1.5;">
+          <h1 style="font-size: 1.1rem; margin: 0 0 12px;">Unable to load PDF preview.</h1>
+          <p style="margin: 0; color: #555;">${escapeHtml(message)}</p>
+        </main>
+      `;
+    } catch {
+      // Ignore and still return the fetch error state.
+    }
+    return { ok: false, reason: "fetch_failed", message };
+  }
+  const blob = result.data;
+  if (!(blob instanceof Blob)) {
+    try {
+      previewWindow.document.title = "PDF Preview Failed";
+      previewWindow.document.body.innerHTML = `
+        <main style="font-family: sans-serif; padding: 24px; line-height: 1.5;">
+          <h1 style="font-size: 1.1rem; margin: 0 0 12px;">Unable to load PDF preview.</h1>
+          <p style="margin: 0; color: #555;">Preview content was not a valid PDF response.</p>
+        </main>
+      `;
+    } catch {
+      // Ignore and still return invalid content state.
+    }
+    return { ok: false, reason: "invalid_blob" };
+  }
+  const blobUrl = URL.createObjectURL(blob);
+  previewWindow.location.replace(blobUrl);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  return { ok: true };
+}
+
+function pdfPreviewStatusMessage(result, title) {
+  if (result?.ok) {
+    return `Opened PDF preview: ${title}`;
+  }
+  if (result?.reason === "popup_blocked") {
+    return "Browser blocked the PDF preview tab. Allow popups for this site and try again.";
+  }
+  if (result?.reason === "fetch_failed") {
+    return `Unable to load PDF preview: ${result.message || "request_failed"}`;
+  }
+  if (result?.reason === "invalid_blob") {
+    return "Unable to load PDF preview: invalid PDF response.";
+  }
+  return "Unable to open PDF preview.";
+}
+
+function libraryAnnotationTargetIds(rows = state.libraryRows) {
+  const candidates = state.libraryFilteredRows.length ? state.libraryFilteredRows : rows;
+  const visible = candidates.slice(0, LIBRARY_ANNOTATION_BATCH_SIZE).map((item) => item.id);
+  return uniqueIds([state.selectedLibrarySourceId, ...visible]);
+}
+
 function errorDetail(error) {
   if (!(error instanceof Error)) {
     return String(error || "");
   }
   return error.message || "";
+}
+
+function setLibraryState(message, stickyMs = 0) {
+  if (!els.libraryState) {
+    return;
+  }
+  els.libraryState.textContent = message;
+  state.libraryStatusStickyUntil = stickyMs > 0 ? Date.now() + stickyMs : 0;
+}
+
+function canOverwriteLibraryState() {
+  return Date.now() >= Number(state.libraryStatusStickyUntil || 0);
+}
+
+function setAdvancedParseState(message, stickyMs = 0) {
+  if (!els.advancedParseState) {
+    return;
+  }
+  els.advancedParseState.textContent = message;
+  state.advancedParseStatusStickyUntil = stickyMs > 0 ? Date.now() + stickyMs : 0;
+}
+
+function canOverwriteAdvancedParseState() {
+  return Date.now() >= Number(state.advancedParseStatusStickyUntil || 0);
 }
 
 function isRunNotFoundError(error) {
@@ -782,10 +984,21 @@ function applyOfflineActionState() {
       }
     }
   });
+  const hasSelectedReviewItem = state.reviewIndex >= 0 && state.reviewIndex < state.reviewItems.length;
+  if (els.reviewAcceptBtn) {
+    els.reviewAcceptBtn.disabled = state.serverOffline || !hasSelectedReviewItem;
+  }
+  if (els.reviewRejectBtn) {
+    els.reviewRejectBtn.disabled = state.serverOffline || !hasSelectedReviewItem;
+  }
+  if (els.reviewLaterBtn) {
+    els.reviewLaterBtn.disabled = state.serverOffline || !hasSelectedReviewItem;
+  }
   const uploadButton = els.batchUploadForm?.querySelector('button[type="submit"]');
   if (uploadButton && state.serverOffline) {
     uploadButton.disabled = true;
   }
+  updateSessionContextControls(activeSession());
 }
 
 function renderReviewFilterChips() {
@@ -805,14 +1018,14 @@ function defaultReviewSortDir(key) {
   if (key === "lineage") {
     return "desc";
   }
-  if (key === "title") {
+  if (key === "title" || key === "review_status") {
     return "asc";
   }
   return "desc";
 }
 
 function defaultDocumentsSortDir(key) {
-  if (key === "rank" || key === "title" || key === "status" || key === "lineage") {
+  if (key === "rank" || key === "title" || key === "status" || key === "lineage" || key === "doi") {
     return "asc";
   }
   return "desc";
@@ -832,6 +1045,14 @@ function compareReviewItems(a, b) {
     if (lineageCompare !== 0) {
       return lineageCompare;
     }
+  } else if (key === "title" || key === "review_status") {
+    const factor = dir === "asc" ? 1 : -1;
+    const textA = key === "review_status" ? String(a.review_status || "") : String(a.title || "");
+    const textB = key === "review_status" ? String(b.review_status || "") : String(b.title || "");
+    const textCompare = textA.localeCompare(textB) * factor;
+    if (textCompare !== 0) {
+      return textCompare;
+    }
   } else {
     const factor = dir === "asc" ? 1 : -1;
     const valueA = Number(a[key] ?? 0);
@@ -848,16 +1069,19 @@ function renderReviewSortButtons() {
     return;
   }
   els.reviewSortButtons.forEach((button) => {
-    const active = button.dataset.reviewSort === state.reviewSort.key;
+    const key = button.dataset.reviewSort;
+    const active = key === state.reviewSort.key;
     button.classList.toggle("active", active);
+    if (button.classList.contains("icon-sort-btn")) {
+      button.dataset.sortDir = active ? state.reviewSort.dir : "";
+      return;
+    }
     const suffix = active ? (state.reviewSort.dir === "asc" ? " ▲" : " ▼") : "";
-    const base = button.dataset.reviewSort === "lineage"
-      ? "#"
-      : button.dataset.reviewSort === "year"
-          ? "Year"
-          : button.dataset.reviewSort === "citation_count"
-            ? "Cit"
-            : "Score";
+    const labels = {
+      review_status: "Status",
+      title: "Title",
+    };
+    const base = labels[key] || "Sort";
     button.textContent = `${base}${suffix}`;
   });
 }
@@ -868,17 +1092,21 @@ function renderDocumentsSortButtons() {
   }
   const labels = {
     lineage: "#",
-    rank: "Rank",
     score: "Score",
     year: "Year",
     citations: "Cit",
     title: "Title",
+    doi: "DOI",
     status: "Status",
   };
   els.documentsSortButtons.forEach((button) => {
     const key = button.dataset.documentsSort;
     const active = key === state.documentsSort.key;
     button.classList.toggle("active", active);
+    if (button.classList.contains("icon-sort-btn")) {
+      button.dataset.sortDir = active ? state.documentsSort.dir : "";
+      return;
+    }
     const suffix = active ? (state.documentsSort.dir === "asc" ? " ▲" : " ▼") : "";
     button.textContent = `${labels[key] || "Sort"}${suffix}`;
   });
@@ -905,17 +1133,16 @@ function renderLibrarySortButtons() {
     return;
   }
   const labels = {
-    lineage: "#",
-    rank: "Rank",
-    relevance_score: "AI Score",
-    year: "Year",
-    citation_count: "Citations",
     title: "Title",
   };
   els.librarySortButtons.forEach((button) => {
     const key = button.dataset.librarySort;
     const active = key === state.librarySort.key;
     button.classList.toggle("active", active);
+    if (button.classList.contains("icon-sort-btn")) {
+      button.dataset.sortDir = active ? state.librarySort.dir : "";
+      return;
+    }
     const suffix = active ? (state.librarySort.dir === "asc" ? " ▲" : " ▼") : "";
     button.textContent = `${labels[key] || "Sort"}${suffix}`;
   });
@@ -935,6 +1162,9 @@ function sortedDocumentRows() {
     }
     if (key === "title" || key === "status") {
       return String(left[key] || "").localeCompare(String(right[key] || "")) * factor;
+    }
+    if (key === "doi") {
+      return String(left.source?.doi || "").localeCompare(String(right.source?.doi || "")) * factor;
     }
     const leftValue = left[key] === "-" ? -Infinity : Number(left[key] ?? 0);
     const rightValue = right[key] === "-" ? -Infinity : Number(right[key] ?? 0);
@@ -1052,6 +1282,7 @@ function renderSessions() {
   els.sessionContextCounter.textContent = `${normalizeSessionContext(current.sessionContext).length} / ${SESSION_CONTEXT_MAX}`;
   els.sessionContextUpdated.textContent = `Updated: ${formatIsoTime(current.sessionContextUpdatedAt)}`;
   els.sessionContextState.textContent = defaultSessionContextState(current);
+  updateSessionContextControls(current);
   renderSessionQueries();
   renderSuggestedQueries();
 }
@@ -1357,6 +1588,73 @@ function renderAdvancedOperationalEvents() {
   }
 }
 
+function formatUnixTimestampSeconds(value) {
+  if (!Number.isFinite(Number(value))) {
+    return "-";
+  }
+  return new Date(Number(value) * 1000).toLocaleString();
+}
+
+function renderAdvancedDatabaseBackups() {
+  if (!els.databaseBackupSelect || !els.databaseBackupList || !els.databaseRestoreTarget) {
+    return;
+  }
+  const selectedValue = String(els.databaseBackupSelect.value || "");
+  els.databaseRestoreTarget.textContent = state.advancedDatabaseTarget || "-";
+  if (els.databaseBackupDir) {
+    els.databaseBackupDir.textContent = state.advancedDatabaseBackupDir || "-";
+  }
+  if (els.databaseBackupPolicy) {
+    const retention = Number(state.advancedDatabaseRetentionCount || 0);
+    els.databaseBackupPolicy.textContent = `Hourly automatic backups, keeping latest ${retention || 0} automatic snapshots. Manual and pre-restore backups are kept until removed manually.`;
+  }
+  const activeDbKind = String(state.systemStatus?.db_target_kind || "");
+  const unsafeDb = Boolean(activeDbKind && activeDbKind !== "live_app_db");
+  if (els.databaseTargetWarning) {
+    if (state.databaseTargetWarning) {
+      els.databaseTargetWarning.textContent = `Warning: ${state.databaseTargetWarning}. Backup and restore should only be used on the live app database.`;
+    } else if (activeDbKind) {
+      els.databaseTargetWarning.textContent = unsafeDb
+        ? `Warning: active DB kind is ${activeDbKind}.`
+        : "Active database target matches the live app database.";
+    } else {
+      els.databaseTargetWarning.textContent = "DB target status unknown.";
+    }
+  }
+  if (els.createDatabaseBackupBtn) {
+    els.createDatabaseBackupBtn.disabled = unsafeDb;
+  }
+  if (els.restoreDatabaseBtn) {
+    els.restoreDatabaseBtn.disabled = unsafeDb;
+  }
+  els.databaseBackupSelect.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = state.advancedDatabaseBackups.length ? "Select a backup" : "No backups found";
+  els.databaseBackupSelect.appendChild(placeholder);
+  state.advancedDatabaseBackups.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.name;
+    option.textContent = item.name;
+    els.databaseBackupSelect.appendChild(option);
+  });
+  if (selectedValue && state.advancedDatabaseBackups.some((item) => item.name === selectedValue)) {
+    els.databaseBackupSelect.value = selectedValue;
+  }
+  els.databaseBackupList.innerHTML = "";
+  state.advancedDatabaseBackups.forEach((item) => {
+    const li = document.createElement("li");
+    const label = item.managed ? item.kind : "legacy";
+    li.textContent = `[${label}] ${item.name} | ${formatUnixTimestampSeconds(item.mtime)} | ${Number(item.size_bytes || 0).toLocaleString()} bytes`;
+    els.databaseBackupList.appendChild(li);
+  });
+  if (!state.advancedDatabaseBackups.length) {
+    const li = document.createElement("li");
+    li.textContent = "No local SQLite backups found.";
+    els.databaseBackupList.appendChild(li);
+  }
+}
+
 async function loadSessionProfile(sessionId) {
   if (!sessionId) {
     return;
@@ -1379,6 +1677,7 @@ async function loadSessionProfile(sessionId) {
     if (state.activeSessionId === sessionId) {
       renderSessions();
       els.sessionContextState.textContent = defaultSessionContextState(session);
+      updateSessionContextControls(session);
     }
   } catch (error) {
     const detail = errorDetail(error);
@@ -1394,12 +1693,14 @@ async function loadSessionProfile(sessionId) {
         }
         renderSessions();
         els.sessionContextState.textContent = "No context saved for this session yet.";
+        updateSessionContextControls(activeSession());
       }
       persistSessions();
       return;
     }
     if (state.activeSessionId === sessionId) {
       els.sessionContextState.textContent = `Unable to load context: ${detail}`;
+      updateSessionContextControls(activeSession());
     }
   }
 }
@@ -1410,10 +1711,12 @@ async function saveSessionContext() {
   if (!context) {
     els.sessionContextState.textContent = "Session context is required.";
     updateQuerySelectionState();
+    updateSessionContextControls(session);
     return false;
   }
   if (context.length > SESSION_CONTEXT_MAX) {
     els.sessionContextState.textContent = `Session context must be <= ${SESSION_CONTEXT_MAX} characters.`;
+    updateSessionContextControls(session);
     return false;
   }
   const payload = {
@@ -1438,9 +1741,11 @@ async function saveSessionContext() {
     renderSessions();
     els.sessionContextState.textContent = "Session context saved.";
     updateQuerySelectionState();
+    updateSessionContextControls(session);
     return true;
   } catch (error) {
     els.sessionContextState.textContent = `Unable to save context: ${errorDetail(error)}`;
+    updateSessionContextControls(session);
     return false;
   }
 }
@@ -1516,7 +1821,54 @@ async function loadLatestIds() {
   els.latestAcquisitionId.textContent = state.latest.acquisition || "-";
   els.latestParseId.textContent = state.latest.parse || "-";
   bindLatestIdsToSession();
+  await loadCurrentParseStatus();
+  updateParseControls();
   persistSessions();
+}
+
+async function loadCurrentParseStatus() {
+  if (!state.latest.parse) {
+    state.currentParseStatus = null;
+    return;
+  }
+  try {
+    const result = await api(`/v1/parse/runs/${encodeURIComponent(state.latest.parse)}`);
+    state.currentParseStatus = result.data || null;
+  } catch {
+    state.currentParseStatus = null;
+  }
+}
+
+function updateParseControls() {
+  if (!els.startParseBtn || !els.advancedParseState) {
+    return;
+  }
+  const sessionId = activeSession()?.id || "";
+  const parseStatus = state.currentParseStatus;
+  const parseStage = parseStatus?.stage_status || "";
+  const parseActive = ["queued", "running"].includes(parseStage);
+  els.startParseBtn.disabled = state.serverOffline || !sessionId;
+  if (state.serverOffline) {
+    if (canOverwriteAdvancedParseState()) {
+      setAdvancedParseState("Parsing unavailable while the server is offline.");
+    }
+    return;
+  }
+  if (!sessionId) {
+    if (canOverwriteAdvancedParseState()) {
+      setAdvancedParseState("No active session is available yet. Discover and download documents first.");
+    }
+    return;
+  }
+  if (parseActive) {
+    if (canOverwriteAdvancedParseState()) {
+      setAdvancedParseState(parseStatus.message || `Parse ${parseStatus.parse_run_id} is already ${parseStage}.`);
+    }
+    return;
+  }
+  if (canOverwriteAdvancedParseState()) {
+    setAdvancedParseState(`Ready to parse all downloaded documents for session ${sessionId}. Latest parse: ${state.latest.parse || "-"}.`);
+  }
 }
 
 async function loadSystemStatus() {
@@ -1526,16 +1878,35 @@ async function loadSystemStatus() {
     state.systemStatus = data;
     els.authStatus.textContent = `Auth: ${data.auth_mode}`;
     els.aiStatus.textContent = `AI: ${data.ai_filter_active ? "ready" : "inactive"}`;
-    els.dbStatus.textContent = `DB: ${data.db_ready ? "ready" : "not ready"}`;
+    state.databaseTargetWarning = String(data.db_target_warning || "");
+    const dbTarget = String(data.database_target || data.db_target_resolved_path || data.db_target_url || "unknown");
+    const dbLabel = dbTarget.split("/").pop();
+    const dbDisplay = data.db_ready ? dbLabel : "not ready";
+    els.dbStatus.textContent = `DB: ${dbDisplay}`;
     els.footerSystem.textContent = `System: ${data.auth_mode}`;
     els.footerAi.textContent = `AI: ${data.ai_filter_active ? "ready" : "inactive"}`;
-    els.footerDb.textContent = `DB: ${data.db_ready ? "ready" : "not ready"}`;
+    els.footerDb.textContent = `DB: ${dbDisplay}`;
     els.footerUpdated.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+    if (els.databaseTargetWarning) {
+      if (state.databaseTargetWarning) {
+        els.databaseTargetWarning.textContent = `Warning: ${state.databaseTargetWarning}.`;
+      } else if (data.db_target_kind) {
+        els.databaseTargetWarning.textContent = `Active DB kind: ${data.db_target_kind}.`;
+      } else {
+        els.databaseTargetWarning.textContent = "DB target status unknown.";
+      }
+    }
     updateSuggestionAvailability();
+    renderAdvancedDatabaseBackups();
   } catch {
     state.systemStatus = null;
+    state.databaseTargetWarning = "";
     els.footerSystem.textContent = "System: error";
+    els.footerDb.textContent = "DB: error";
     els.footerUpdated.textContent = "Last update: error";
+    if (els.databaseTargetWarning) {
+      els.databaseTargetWarning.textContent = "DB target status unknown.";
+    }
     updateSuggestionAvailability();
   }
 }
@@ -1575,6 +1946,54 @@ function buildMetadataHtml(item) {
 
 function displayQueryStatus(status) {
   return status === "ranking_relevance" ? "ranking" : String(status || "waiting");
+}
+
+function providerStatusLabel(status) {
+  const value = String(status || "pending");
+  if (value === "ok") return "ok";
+  if (value === "empty") return "0 results";
+  if (value === "rate_limited") return "rate limited";
+  if (value === "timeout") return "timeout";
+  if (value === "failed") return "failed";
+  if (value === "disabled") return "disabled";
+  if (value === "skipped") return "skipped";
+  if (value === "running") return "running";
+  return "pending";
+}
+
+function providerSummaryLine(label, count, status, errorMessage) {
+  const suffix = `[${providerStatusLabel(status)}]`;
+  const detail = errorMessage ? ` - ${errorMessage}` : "";
+  return `${label}: ${count ?? 0} ${suffix}${detail}`;
+}
+
+function blockedReasonText(reason) {
+  const value = String(reason || "").trim();
+  if (value === "parsed_text_required") {
+    return "parsed text required";
+  }
+  if (value === "already_generated") {
+    return "already generated";
+  }
+  if (value === "paper_not_annotatable_in_session") {
+    return "paper not annotatable in session";
+  }
+  return value || "unknown reason";
+}
+
+function blockedSummaryText(blocked) {
+  const rows = Array.isArray(blocked) ? blocked : [];
+  if (!rows.length) {
+    return "";
+  }
+  const counts = new Map();
+  rows.forEach((item) => {
+    const reason = blockedReasonText(item?.reason);
+    counts.set(reason, Number(counts.get(reason) || 0) + 1);
+  });
+  return Array.from(counts.entries())
+    .map(([reason, count]) => `${count} ${reason}`)
+    .join(", ");
 }
 
 function activeDiscoverQueryTotals(session = activeSession()) {
@@ -1621,9 +2040,14 @@ function renderDiscoverRunQueries() {
   state.discoverRunQueries.forEach((item) => {
     const tr = document.createElement("tr");
     const providers = [
-      `OpenAlex: ${item.openalex_count ?? 0}`,
-      `Brave: ${item.brave_count ?? 0}`,
-      `Semantic Scholar: ${item.semantic_scholar_count ?? 0}`,
+      providerSummaryLine("OpenAlex", item.openalex_count, item.openalex_status, item.openalex_error_message),
+      providerSummaryLine("Brave", item.brave_count, item.brave_status, item.brave_error_message),
+      providerSummaryLine(
+        "Semantic Scholar",
+        item.semantic_scholar_count,
+        item.semantic_scholar_status,
+        item.semantic_scholar_error_message,
+      ),
     ].join(" | ");
     const reviewCounts = [
       `Accepted: ${item.accepted_count ?? 0}`,
@@ -1650,15 +2074,53 @@ function renderDiscoverRunQueries() {
 }
 
 function updateCitationAvailability(acceptedCount, remainingParentCount = 0) {
-  const disabled = acceptedCount <= 0 || remainingParentCount <= 0;
+  const session = activeSession();
+  const runId = session?.discoveryRunId || "";
+  const activeRunQueries = state.discoverRunQueries.filter((item) => item.run_id === runId);
+  const hasResumableCitation = activeRunQueries.some(
+    (item) => item.query === "citation expansion" && item.checkpoint_state === "resumable",
+  );
+  const disabled = state.serverOffline || !runId || acceptedCount <= 0 || remainingParentCount <= 0 || hasResumableCitation;
   els.runNextCitationBtn.disabled = disabled;
+  if (!runId) {
+    els.discoverCitationHint.textContent = "Run discovery before starting citation expansion.";
+    return;
+  }
   if (acceptedCount <= 0) {
     els.discoverCitationHint.textContent = "Need at least 1 accepted paper before running citation expansion.";
     return;
   }
+  if (state.serverOffline) {
+    els.discoverCitationHint.textContent = "Server is offline. Citation expansion is unavailable.";
+    return;
+  }
+  if (hasResumableCitation) {
+    els.discoverCitationHint.textContent = "A stopped citation expansion can be resumed. Use Resume Citation Expansion.";
+    return;
+  }
   els.discoverCitationHint.textContent = disabled
-    ? "No new accepted papers are available for citation expansion."
-    : `Citation expansion is available for ${remainingParentCount} accepted paper${remainingParentCount === 1 ? "" : "s"}.`;
+    ? "No accepted papers are newly eligible for citation expansion in the current context."
+    : `Citation expansion is available for ${remainingParentCount} accepted paper${remainingParentCount === 1 ? "" : "s"} in the current context.`;
+}
+
+function citationIterationErrorText(error) {
+  const detail = errorDetail(error);
+  if (detail.includes("run_not_found")) {
+    return "The bound discovery run no longer exists. Refresh session state.";
+  }
+  if (detail.includes("run_already_running")) {
+    return "Citation expansion cannot start while the discovery run is already running.";
+  }
+  if (detail.includes("citation_iteration_resumable_exists_use_resume")) {
+    return "A stopped citation expansion already exists. Use Resume Citation Expansion.";
+  }
+  if (detail.includes("Need at least 1 accepted paper before running citation expansion.")) {
+    return "Need at least 1 accepted paper before running citation expansion.";
+  }
+  if (detail.includes("No new accepted papers are available for citation expansion.")) {
+    return "No new accepted papers are available for citation expansion.";
+  }
+  return detail || "Unable to start citation expansion.";
 }
 
 async function loadDiscover(recoverOnNotFound = true) {
@@ -1677,28 +2139,11 @@ async function loadDiscover(recoverOnNotFound = true) {
     return;
   }
   let runResult;
-  let allResult;
-  let pendingResult;
-  let rejectedResult;
   let queryResult;
   try {
     [runResult, queryResult] = await Promise.all([
       api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}`),
       api(`/v1/sessions/${encodeURIComponent(session.id)}/queries`),
-    ]);
-    [allResult, pendingResult, rejectedResult] = await Promise.all([
-      fetchAllPages(async (offset, limit) => {
-        const response = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=all&limit=${limit}&offset=${offset}`);
-        return response.data || {};
-      }, API_FETCH_PAGE_SIZE),
-      fetchAllPages(async (offset, limit) => {
-        const response = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=needs_review&limit=${limit}&offset=${offset}`);
-        return response.data || {};
-      }, API_FETCH_PAGE_SIZE),
-      fetchAllPages(async (offset, limit) => {
-        const response = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/sources?status=rejected&limit=${limit}&offset=${offset}`);
-        return response.data || {};
-      }, API_FETCH_PAGE_SIZE),
     ]);
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
@@ -1718,29 +2163,26 @@ async function loadDiscover(recoverOnNotFound = true) {
     (item) => item.query === "citation expansion" && item.checkpoint_state === "resumable",
   );
   els.resumeCitationBtn.disabled = !hasResumableCitation;
-  const allItems = allResult || [];
-  const pendingItems = pendingResult || [];
-  const rejectedItems = rejectedResult || [];
-  const approvedCount = allItems.filter((item) => item.accepted).length;
-  const reviewedCount = allItems.length - pendingItems.length;
   const liveTotals = activeDiscoverQueryTotals(session);
   const citationScope = activeCitationScopeProgress(session);
-  const liveDiscovered = Math.max(allItems.length, liveTotals.discovered);
-  const liveApproved = Math.max(approvedCount, liveTotals.accepted);
-  const liveRejected = Math.max(rejectedItems.length, liveTotals.rejected);
-  const livePending = Math.max(pendingItems.length, liveTotals.pending);
-  const liveReviewed = Math.max(reviewedCount, liveApproved + liveRejected);
+  const liveDiscovered = liveTotals.discovered;
+  const liveApproved = liveTotals.accepted;
+  const liveRejected = liveTotals.rejected;
+  const livePending = liveTotals.pending;
+  const liveReviewed = liveApproved + liveRejected;
   const activeRunNumber = activeRunQueries[0]?.run_number ?? "-";
   els.discoverIterationLine.textContent = `Run: ${activeRunNumber}`;
-  els.discoverSummaryDiscovered.textContent = String(run.stage_status === "running" ? liveDiscovered : allItems.length);
-  els.discoverSummaryApproved.textContent = String(run.stage_status === "running" ? liveApproved : approvedCount);
-  els.discoverSummaryRejected.textContent = String(run.stage_status === "running" ? liveRejected : rejectedItems.length);
-  els.discoverSummaryReviewed.textContent = String(run.stage_status === "running" ? liveReviewed : reviewedCount);
-  els.discoverSummaryPending.textContent = String(run.stage_status === "running" ? livePending : pendingItems.length);
+  els.discoverSummaryDiscovered.textContent = String(liveDiscovered);
+  els.discoverSummaryApproved.textContent = String(liveApproved);
+  els.discoverSummaryRejected.textContent = String(liveRejected);
+  els.discoverSummaryReviewed.textContent = String(liveReviewed);
+  els.discoverSummaryPending.textContent = String(livePending);
   if (run.stage_status === "running" && citationScope && citationScope.total > 0) {
     els.discoverState.textContent = `Citation expansion running. Found so far: ${liveDiscovered}. Parents processed: ${citationScope.processed}/${citationScope.total}.`;
   } else if (run.stage_status === "running" && resultsRunId(session) && resultsRunId(session) !== discoverRunId(session)) {
-    els.discoverState.textContent = `New discovery run is in progress. Found so far: ${liveDiscovered}. Review/Documents/Library keep the accumulated session results.`;
+    session.resultsRunId = discoverRunId(session);
+    persistSessions();
+    els.discoverState.textContent = `New discovery run is in progress. Found so far: ${liveDiscovered}. Review/Documents/Library are updating live.`;
   } else if (run.stage_status === "running") {
     els.discoverState.textContent = `Searching. Found so far: ${liveDiscovered}.`;
   } else if (run.status === "completed" && discoverRunId(session) && resultsRunId(session) !== discoverRunId(session)) {
@@ -1755,7 +2197,7 @@ async function loadDiscover(recoverOnNotFound = true) {
   } else {
     stopDiscoverPolling();
   }
-  updateCitationAvailability(approvedCount, Number(run.citation_unexpanded_parent_count ?? 0));
+  updateCitationAvailability(liveApproved, Number(run.citation_unexpanded_parent_count ?? 0));
   renderActivity();
 }
 
@@ -1775,6 +2217,15 @@ function renderReviewDetail() {
     els.reviewAbstract.textContent = "Select a paper to review.";
     els.reviewMetadata.innerHTML = "Year: - | Journal: - | Citations: - | Authors: - | Link: -";
     els.reviewSignals.textContent = "No AI signals available.";
+    if (els.reviewAcceptBtn) {
+      els.reviewAcceptBtn.disabled = true;
+    }
+    if (els.reviewRejectBtn) {
+      els.reviewRejectBtn.disabled = true;
+    }
+    if (els.reviewLaterBtn) {
+      els.reviewLaterBtn.disabled = true;
+    }
     if (els.reviewCopyAbstractBtn) {
       els.reviewCopyAbstractBtn.disabled = true;
     }
@@ -1788,6 +2239,15 @@ function renderReviewDetail() {
   els.reviewAbstract.textContent = item.abstract || "No abstract available.";
   els.reviewMetadata.innerHTML = buildMetadataHtml(item);
   els.reviewSignals.textContent = reviewSignalText(item);
+  if (els.reviewAcceptBtn) {
+    els.reviewAcceptBtn.disabled = false;
+  }
+  if (els.reviewRejectBtn) {
+    els.reviewRejectBtn.disabled = false;
+  }
+  if (els.reviewLaterBtn) {
+    els.reviewLaterBtn.disabled = false;
+  }
   if (els.reviewCopyAbstractBtn) {
     els.reviewCopyAbstractBtn.disabled = !String(item.abstract || "").trim();
   }
@@ -1818,7 +2278,8 @@ function renderReviewRows() {
   state.reviewItems.forEach((item, index) => {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", index === state.reviewIndex);
-    tr.innerHTML = `<td>${escapeHtml(item.review_status || "-")}</td><td>${escapeHtml(formatLineageNumber(item))}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}${escapeHtml(item.title)}</td>`;
+    const docCell = renderDocumentBadgeCell(item);
+    tr.innerHTML = `<td>${escapeHtml(item.review_status || "-")}</td><td class="col-lineage">${escapeHtml(formatLineageNumber(item))}</td><td class="col-year">${item.year || "-"}</td><td class="col-citations">${item.citation_count ?? "-"}</td><td class="col-score">${Number(item.relevance_score || 0).toFixed(2)}</td><td>${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}${escapeHtml(item.title)}</td><td class="col-doc">${docCell}</td>`;
     tr.addEventListener("click", () => {
       state.reviewIndex = index;
       state.selectedReviewSourceId = item.id;
@@ -1837,6 +2298,7 @@ function renderReviewRows() {
   els.reviewBadge.textContent = String(state.reviewItems.length);
   renderReviewSortButtons();
   renderReviewDetail();
+  applyOfflineActionState();
 }
 
 function nextReviewSelectionHint() {
@@ -1856,7 +2318,29 @@ function nextReviewSelectionHint() {
   };
 }
 
+function reviewQueueRetainsDecision(queue, decision) {
+  if (queue === "all") {
+    return true;
+  }
+  if (decision === "accept") {
+    return queue === "accepted";
+  }
+  if (decision === "reject") {
+    return queue === "rejected";
+  }
+  if (decision === "later") {
+    return queue === "later";
+  }
+  return false;
+}
+
 async function loadReview(recoverOnNotFound = true, selectionHint = null) {
+  if (state.reviewLoadInFlight) {
+    state.reviewReloadQueued = true;
+    return;
+  }
+  state.reviewLoadInFlight = true;
+  try {
   const session = activeSession();
   const queue = state.reviewQueue || "pending";
   const status = REVIEW_STATUS_TO_API[queue] || "needs_review";
@@ -1871,8 +2355,8 @@ async function loadReview(recoverOnNotFound = true, selectionHint = null) {
   let result;
   try {
     const path = queue.startsWith("latest_auto_")
-      ? `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=200`
-      : sessionSourcesPath(session.id, status, 200);
+      ? `/v1/discovery/runs/${encodeURIComponent(runId)}/sources?status=${encodeURIComponent(status)}&limit=${REVIEW_FETCH_LIMIT}`
+      : sessionSourcesPath(session.id, status, REVIEW_FETCH_LIMIT);
     result = await api(path);
   } catch (error) {
     if (recoverOnNotFound && isRunNotFoundError(error)) {
@@ -1896,6 +2380,17 @@ async function loadReview(recoverOnNotFound = true, selectionHint = null) {
   renderReviewFilterChips();
   renderReviewRows();
   els.reviewState.textContent = state.reviewItems.length ? `Review queue loaded (${queue}).` : `No ${queue} review items.`;
+  } finally {
+    state.reviewLoadInFlight = false;
+    if (state.reviewReloadQueued) {
+      state.reviewReloadQueued = false;
+      window.setTimeout(() => {
+        loadReview().catch((error) => {
+          els.reviewState.textContent = `Unable to load review queue: ${errorDetail(error)}`;
+        });
+      }, 0);
+    }
+  }
 }
 
 async function submitReviewDecision(decision) {
@@ -1903,7 +2398,10 @@ async function submitReviewDecision(decision) {
   if (!item) {
     return;
   }
-  const selectionHint = decision === "reject" ? nextReviewSelectionHint() : null;
+  const queue = state.reviewQueue || "pending";
+  const selectionHint = reviewQueueRetainsDecision(queue, decision) ? null : nextReviewSelectionHint();
+  const reviewedTitle = item.title;
+  const decisionLabel = decision === "accept" ? "Accepted" : decision === "reject" ? "Rejected" : "Saved for later";
   beginBusy("Waiting for review");
   try {
     await api(`/v1/sources/${encodeURIComponent(item.id)}/review`, {
@@ -1913,8 +2411,7 @@ async function submitReviewDecision(decision) {
     });
     await loadReview(true, selectionHint);
     await loadDiscover();
-    await loadDocuments();
-    await loadLibrary();
+    els.reviewState.textContent = `${decisionLabel}: ${reviewedTitle}`;
   } finally {
     endBusy();
   }
@@ -1928,14 +2425,88 @@ function normalizeDocumentRows(acceptedSources, itemsMap) {
       rank: index + 1,
       lineage: source.lineage_number || "-",
       source,
+      previewablePdfArtifactId: source.previewable_pdf_artifact_id || null,
       acquisitionItem: item || null,
+      artifactKind: item?.artifact_kind || null,
+      artifactMimeType: item?.artifact_mime_type || null,
+      artifactQualityStatus: item?.artifact_quality_status || null,
+      artifactQualityReason: item?.artifact_quality_reason || null,
       status,
+      parseScopeStatus: item?.parse_scope_status || (isParsedReady(source.id) ? "parsed" : status === "pending" ? "no_artifact" : "unparsed_in_active_session"),
+      parseStatusDetail: item?.parse_status_detail || null,
       title: source.title,
       year: source.year || "-",
       score: Number(source.relevance_score || 0).toFixed(2),
       citations: source.citation_count ?? "-",
     };
   });
+}
+
+function documentParsePresentation(row) {
+  const value = row?.parseScopeStatus || "no_artifact";
+  if (value === "parsed") {
+    return { label: "Parsed", className: "parsed" };
+  }
+  if (value === "parse_running") {
+    return { label: "Parsing", className: "running" };
+  }
+  if (value === "parse_failed") {
+    return { label: "Failed", className: "failed" };
+  }
+  if (value === "unparsed_other_session") {
+    return { label: "Other session", className: "other-session" };
+  }
+  if (value === "unparsed_in_active_session") {
+    return { label: "Unparsed", className: "waiting" };
+  }
+  return { label: "No artifact", className: "no-artifact" };
+}
+
+function documentBadgeState(row) {
+  const sourceId = row?.source?.id || row?.source_id || row?.id || "";
+  const annotation = sourceId ? annotationForSource(sourceId) : null;
+  const currentPrompt = String(state.sessionSummaryPrompt || DEFAULT_SUMMARY_PROMPT).trim();
+  const snapshotPrompt = String(annotation?.summary_prompt_snapshot || "").trim();
+  const summaryUpToDate = Boolean(
+    annotation
+    && annotation.summary_status === "completed"
+    && annotation.ai_summary
+    && snapshotPrompt
+    && snapshotPrompt === currentPrompt,
+  );
+  return {
+    previewablePdfArtifactId: row?.previewablePdfArtifactId || row?.previewable_pdf_artifact_id || null,
+    parseScopeStatus: row?.parseScopeStatus || row?.parse_scope_status || null,
+    artifactQualityStatus: row?.artifactQualityStatus || row?.artifact_quality_status || null,
+    summaryUpToDate,
+  };
+}
+
+function renderDocumentBadgeCell(row) {
+  const badgeState = documentBadgeState(row);
+  const badges = [];
+  if (badgeState.previewablePdfArtifactId) {
+    badges.push('<span class="doc-badge pdf" title="PDF available" aria-label="PDF available">P</span>');
+  }
+  if (badgeState.parseScopeStatus === "parsed") {
+    badges.push('<span class="doc-badge parsed" title="Parsed text available" aria-label="Parsed text available">R</span>');
+  } else if (badgeState.parseScopeStatus === "parse_running") {
+    badges.push('<span class="doc-badge running" title="Parsing in progress" aria-label="Parsing in progress">G</span>');
+  } else if (badgeState.parseScopeStatus === "parse_failed") {
+    badges.push('<span class="doc-badge failed" title="Parsing failed" aria-label="Parsing failed">F</span>');
+  } else if (badgeState.parseScopeStatus === "unparsed_in_active_session") {
+    badges.push('<span class="doc-badge waiting" title="Downloaded but not parsed yet" aria-label="Downloaded but not parsed yet">U</span>');
+  }
+  if (badgeState.artifactQualityStatus === "html_invalid") {
+    badges.push('<span class="doc-badge bad-html" title="Bad HTML content" aria-label="Bad HTML content">H</span>');
+  }
+  if (badgeState.summaryUpToDate) {
+    badges.push('<span class="doc-badge summary-current" title="Summary available and up to date for the current prompt" aria-label="Summary available and up to date for the current prompt">S</span>');
+  }
+  if (!badges.length) {
+    return '<span class="doc-badge-placeholder" title="No document badges">-</span>';
+  }
+  return `<div class="doc-badge-stack">${badges.join("")}</div>`;
 }
 
 function selectedDocumentRow() {
@@ -1949,6 +2520,9 @@ function renderDocumentsDetail() {
     els.documentsDetailSummary.textContent = "Select a document row to inspect status, links, and available actions.";
     els.documentsDetailMetadata.innerHTML = "Year: - | Journal: - | Citations: - | Authors: - | Link: -";
     els.documentsRowActionBtn.disabled = true;
+    if (els.documentsOpenPdfBtn) {
+      els.documentsOpenPdfBtn.disabled = true;
+    }
     els.documentsRowActionBtn.textContent = "Download Selected";
     if (els.documentsBookmarkBtn) {
       els.documentsBookmarkBtn.textContent = "Bookmark";
@@ -1957,17 +2531,48 @@ function renderDocumentsDetail() {
     return;
   }
   els.documentsDetailTitle.textContent = `${isBookmarked(row.source.id) ? "[Bookmarked] " : ""}${row.title}`;
-  const detailBits = [`Status: ${row.status}`];
+  const parsePresentation = documentParsePresentation(row);
+  const detailBits = [`Status: ${row.status}`, `Parse: ${parsePresentation.label}`];
+  if (row.artifactKind || row.artifactQualityStatus) {
+    const artifactLabel = row.artifactQualityStatus === "pdf"
+      ? "PDF"
+      : row.artifactQualityStatus === "html_validated"
+        ? "HTML full text"
+        : row.artifactQualityStatus === "html_invalid"
+          ? "Bad HTML"
+          : row.artifactKind || "Unknown";
+    detailBits.push(`Content: ${artifactLabel}`);
+  }
+  if (row.acquisitionItem?.acq_run_id) {
+    detailBits.push(`Acquisition: ${row.acquisitionItem.acq_run_id}`);
+  }
+  if (row.acquisitionItem?.artifact_source_session_id && row.acquisitionItem.artifact_source_session_id !== activeSession()?.id) {
+    detailBits.push(`Artifact session: ${row.acquisitionItem.artifact_source_session_id}`);
+  }
+  if (row.acquisitionItem?.parse_run_id) {
+    detailBits.push(`Parse run: ${row.acquisitionItem.parse_run_id}`);
+  }
+  if (row.parseStatusDetail) {
+    detailBits.push(`Parse detail: ${row.parseStatusDetail}`);
+  }
+  if (row.artifactQualityReason) {
+    detailBits.push(`Artifact detail: ${row.artifactQualityReason}`);
+  }
   if (row.acquisitionItem?.last_error) {
     detailBits.push(`Last error: ${row.acquisitionItem.last_error}`);
   }
   els.documentsDetailSummary.textContent = detailBits.join(" | ");
   els.documentsDetailMetadata.innerHTML = buildMetadataHtml(row.source);
   els.documentsRowActionBtn.disabled = false;
+  if (els.documentsOpenPdfBtn) {
+    els.documentsOpenPdfBtn.disabled = !row.previewablePdfArtifactId;
+  }
   if (row.status === "pending") {
     els.documentsRowActionBtn.textContent = "Download Selected";
   } else if (row.status === "failed" || row.status === "partial") {
     els.documentsRowActionBtn.textContent = "Retry Selected";
+  } else if (row.previewablePdfArtifactId) {
+    els.documentsRowActionBtn.textContent = "Open PDF";
   } else {
     els.documentsRowActionBtn.textContent = "Open Source";
   }
@@ -1992,7 +2597,8 @@ function renderDocuments() {
     const doiCell = row.source.doi_url
       ? `<a href="${escapeHtml(row.source.doi_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.source.doi || "Open DOI")}</a>`
       : "-";
-    tr.innerHTML = `<td>${escapeHtml(row.lineage)}</td><td>${row.rank}</td><td>${row.score}</td><td>${row.year}</td><td>${row.citations}</td><td>${isBookmarked(row.source.id) ? '<span class="bookmark-chip">B</span> ' : ""}<span>${escapeHtml(row.title)}</span> <button type="button" class="mini-copy-btn" title="Copy title" aria-label="Copy title">Copy</button></td><td>${doiCell}</td><td>${row.status}</td>`;
+    const docCell = renderDocumentBadgeCell(row);
+    tr.innerHTML = `<td class="col-lineage">${escapeHtml(row.lineage)}</td><td class="col-score">${row.score}</td><td class="col-year">${row.year}</td><td class="col-citations">${row.citations}</td><td><div class="title-cell">${isBookmarked(row.source.id) ? '<span class="bookmark-chip">B</span>' : ""}<span class="title-cell-text">${escapeHtml(row.title)}</span><button type="button" class="mini-copy-btn title-cell-copy" title="Copy title" aria-label="Copy title">Copy</button></div></td><td class="col-doc">${docCell}</td><td>${doiCell}</td><td>${row.status}</td>`;
     tr.querySelector(".mini-copy-btn")?.addEventListener("click", async (event) => {
       event.stopPropagation();
       const ok = await copyTextToClipboard(row.title);
@@ -2051,7 +2657,7 @@ async function loadDocuments(recoverOnNotFound = true) {
           `/v1/acquisition/runs/${encodeURIComponent(session.acquisitionRunId)}/items?limit=${limit}&offset=${offset}`,
         );
         return response.data || {};
-      }, API_FETCH_PAGE_SIZE);
+      }, ACQUISITION_FETCH_PAGE_SIZE);
     } catch {
       session.acquisitionRunId = "";
       persistSessions();
@@ -2063,13 +2669,14 @@ async function loadDocuments(recoverOnNotFound = true) {
         `/v1/sessions/${encodeURIComponent(session.id)}/acquisition-items/latest?limit=${limit}&offset=${offset}`,
       );
       return response.data || {};
-    }, API_FETCH_PAGE_SIZE);
+    }, ACQUISITION_FETCH_PAGE_SIZE);
   } catch {
     latestItems = items;
   }
   state.currentAcquisitionStatus = statusData;
   const itemMap = new Map(latestItems.map((item) => [item.source_id, item]));
   state.documentRows = normalizeDocumentRows(accepted, itemMap);
+  await loadLibraryAnnotations(session.id, state.documentRows.map((row) => row.source.id));
   state.documentsPage = 0;
   if (!state.documentRows.some((row) => row.source.id === state.selectedDocumentSourceId)) {
     state.selectedDocumentSourceId = state.documentRows[0]?.source.id || "";
@@ -2094,12 +2701,19 @@ function selectedLibraryIds() {
 }
 
 async function loadLibraryAnnotations(sessionId, sourceIds) {
+  const ids = uniqueIds(sourceIds);
+  if (!ids.length) {
+    return;
+  }
   const params = new URLSearchParams();
-  params.set("limit", String(Math.max(sourceIds.length, 1)));
-  sourceIds.forEach((sourceId) => params.append("source_id", sourceId));
+  params.set("limit", String(ids.length));
+  ids.forEach((sourceId) => params.append("source_id", sourceId));
   const result = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/annotations?${params.toString()}`);
   const items = Array.isArray(result.data?.items) ? result.data.items : [];
-  state.paperAnnotations = Object.fromEntries(items.map((item) => [item.source_id, item]));
+  state.paperAnnotations = {
+    ...state.paperAnnotations,
+    ...Object.fromEntries(items.map((item) => [item.source_id, item])),
+  };
 }
 
 async function loadLibraryTagCatalog(sessionId) {
@@ -2128,6 +2742,96 @@ async function loadLibrarySummarySettings(sessionId) {
   }
 }
 
+function formatStructuredSummary(summaryJson) {
+  if (!summaryJson || typeof summaryJson !== "object") {
+    return '<div class="structured-summary-empty">No structured summary data available for this paper yet.</div>';
+  }
+  const renderValue = (value) => {
+    if (value === null || value === undefined || value === "") {
+      return '<span class="muted">-</span>';
+    }
+    if (typeof value === "boolean") {
+      return value ? "true" : "false";
+    }
+    return escapeHtml(String(value));
+  };
+  const renderField = (label, value) => (
+    `<div class="structured-summary-field"><span class="structured-summary-label">${escapeHtml(label)}:</span> ${renderValue(value)}</div>`
+  );
+  const renderObjectList = (items, labelMap) => {
+    if (!Array.isArray(items) || !items.length) {
+      return '<div class="structured-summary-field"><span class="muted">-</span></div>';
+    }
+    return `<ul class="structured-summary-list">${items.map((item) => {
+      const parts = Object.entries(labelMap)
+        .map(([key, label]) => {
+          const raw = item && typeof item === "object" ? item[key] : null;
+          if (raw === null || raw === undefined || raw === "") {
+            return "";
+          }
+          return `<span><span class="structured-summary-label">${escapeHtml(label)}:</span> ${escapeHtml(String(raw))}</span>`;
+        })
+        .filter(Boolean);
+      return `<li>${parts.length ? parts.join(" | ") : '<span class="muted">-</span>'}</li>`;
+    }).join("")}</ul>`;
+  };
+  const renderStringList = (items) => {
+    if (!Array.isArray(items) || !items.length) {
+      return '<div class="structured-summary-field"><span class="muted">-</span></div>';
+    }
+    return `<ul class="structured-summary-list">${items.map((item) => `<li>${escapeHtml(String(item))}</li>`).join("")}</ul>`;
+  };
+  const wastewaterSource = summaryJson.wastewater_source || {};
+  const waterComposition = summaryJson.water_composition || {};
+  const treatmentTarget = summaryJson.treatment_target || {};
+  const treatmentTechnology = summaryJson.treatment_technology || {};
+  const experiments = summaryJson.experiments || {};
+  const performance = summaryJson.performance || {};
+  return [
+    `<section class="structured-summary-section">
+      <div class="structured-summary-heading">Wastewater Source</div>
+      ${renderField("Fab Area", wastewaterSource.fab_area)}
+      ${renderField("Process Step", wastewaterSource.process_step)}
+      ${renderField("Tool or Equipment", wastewaterSource.tool_or_equipment)}
+      ${renderField("Waste Stream Name", wastewaterSource.waste_stream_name)}
+      ${renderField("Real or Synthetic Water", wastewaterSource.real_or_synthetic_water)}
+      ${renderField("Water Source Details", wastewaterSource.water_source_details)}
+    </section>`,
+    `<section class="structured-summary-section">
+      <div class="structured-summary-heading">Water Composition</div>
+      <div class="structured-summary-field"><span class="structured-summary-label">Components:</span></div>
+      ${renderObjectList(waterComposition.components, { component: "Component", value: "Value", unit: "Unit", context: "Context" })}
+      <div class="structured-summary-field"><span class="structured-summary-label">Water Quality Parameters:</span></div>
+      ${renderObjectList(waterComposition.water_quality_parameters, { parameter: "Parameter", value: "Value", unit: "Unit", context: "Context" })}
+    </section>`,
+    `<section class="structured-summary-section">
+      <div class="structured-summary-heading">Treatment Target</div>
+      <div class="structured-summary-field"><span class="structured-summary-label">Target Contaminants or Parameters:</span></div>
+      ${renderStringList(treatmentTarget.target_contaminants_or_parameters)}
+    </section>`,
+    `<section class="structured-summary-section">
+      <div class="structured-summary-heading">Treatment Technology</div>
+      ${renderField("Technology Name", treatmentTechnology.technology_name)}
+      ${renderField("Technology Category", treatmentTechnology.technology_category)}
+    </section>`,
+    `<section class="structured-summary-section">
+      <div class="structured-summary-heading">Experiments</div>
+      ${renderField("Used Real Wastewater", experiments.used_real_wastewater)}
+      ${renderField("Used Synthetic Wastewater", experiments.used_synthetic_wastewater)}
+      ${renderField("Experimental Scale", experiments.experimental_scale)}
+    </section>`,
+    `<section class="structured-summary-section">
+      <div class="structured-summary-heading">Performance</div>
+      <div class="structured-summary-field"><span class="structured-summary-label">Removal Results:</span></div>
+      ${renderObjectList(performance.removal_results, { target: "Target", metric: "Metric", value: "Value", unit: "Unit", conditions: "Conditions" })}
+      <div class="structured-summary-field"><span class="structured-summary-label">Key Findings:</span></div>
+      ${renderStringList(performance.key_findings)}
+      <div class="structured-summary-field"><span class="structured-summary-label">Limitations:</span></div>
+      ${renderStringList(performance.limitations)}
+    </section>`,
+  ].join("");
+}
+
 function renderTagList(container, tags, kind, onRemove) {
   if (!container) {
     return;
@@ -2144,6 +2848,51 @@ function renderTagList(container, tags, kind, onRemove) {
     chip.querySelector("button")?.addEventListener("click", async () => onRemove(tag));
     container.appendChild(chip);
   });
+}
+
+function renderSuggestedTagList(container, tags, onAddFreeform, onAddApproved) {
+  if (!container) {
+    return;
+  }
+  container.innerHTML = "";
+  if (!tags.length) {
+    container.innerHTML = '<span class="muted">No AI suggested tags.</span>';
+    return;
+  }
+  tags.forEach((tag) => {
+    const chip = document.createElement("span");
+    chip.className = "tag-chip";
+    chip.innerHTML = `<span>${escapeHtml(tag)}</span>`;
+    const addFreeformBtn = document.createElement("button");
+    addFreeformBtn.type = "button";
+    addFreeformBtn.textContent = "+Freeform";
+    addFreeformBtn.addEventListener("click", async () => onAddFreeform(tag));
+    chip.appendChild(addFreeformBtn);
+    const addApprovedBtn = document.createElement("button");
+    addApprovedBtn.type = "button";
+    addApprovedBtn.textContent = "+Approved";
+    const approvedAvailable = state.sessionApprovedTags.some((value) => value.toLowerCase() === String(tag).toLowerCase());
+    addApprovedBtn.disabled = !approvedAvailable;
+    addApprovedBtn.title = approvedAvailable ? `Add ${tag} to approved tags` : "Tag must exist in the approved session catalog";
+    addApprovedBtn.addEventListener("click", async () => onAddApproved(tag));
+    chip.appendChild(addApprovedBtn);
+    container.appendChild(chip);
+  });
+}
+
+function renderLibraryDetailTabState() {
+  if (els.libraryDetailsTabBtn) {
+    els.libraryDetailsTabBtn.classList.toggle("active", state.libraryDetailTab === "details");
+  }
+  if (els.librarySummaryPreviewTabBtn) {
+    els.librarySummaryPreviewTabBtn.classList.toggle("active", state.libraryDetailTab === "summary_preview");
+  }
+  if (els.libraryDetailsPanel) {
+    els.libraryDetailsPanel.hidden = state.libraryDetailTab !== "details";
+  }
+  if (els.librarySummaryPreviewPanel) {
+    els.librarySummaryPreviewPanel.hidden = state.libraryDetailTab !== "summary_preview";
+  }
 }
 
 function refreshApprovedTagSelect(selectedTag = "") {
@@ -2185,6 +2934,22 @@ async function saveSummaryPrompt() {
   els.librarySummaryPromptState.textContent = "Summary prompt saved.";
 }
 
+async function resetSummaryPrompt() {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/summary-settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt_template: DEFAULT_SUMMARY_PROMPT }),
+  });
+  state.sessionSummaryPrompt = result.data?.prompt_template || DEFAULT_SUMMARY_PROMPT;
+  if (els.librarySummaryPromptInput) {
+    els.librarySummaryPromptInput.value = state.sessionSummaryPrompt;
+  }
+  if (els.librarySummaryPromptState) {
+    els.librarySummaryPromptState.textContent = "Summary prompt reset to default.";
+  }
+}
+
 async function saveApprovedTags() {
   const session = activeSession();
   const tags = String(els.libraryApprovedTagsInput?.value || "")
@@ -2206,16 +2971,25 @@ async function saveApprovedTags() {
 
 function startSummaryPoll() {
   stopSummaryPoll();
-  if (!state.activeSessionId) {
+  if (!state.activeSessionId || state.activePage !== "library" || state.serverOffline) {
     return;
   }
   state.summaryPollTimer = window.setInterval(async () => {
-    if (!Object.values(state.paperAnnotations).some((item) => item.summary_status === "queued" || item.summary_status === "running")) {
+    if (state.activePage !== "library" || state.serverOffline || document.visibilityState === "hidden") {
+      stopSummaryPoll();
+      return;
+    }
+    if (!Object.values(state.paperAnnotations).some((item) => {
+      return item.summary_status === "queued"
+        || item.summary_status === "running"
+        || item.tag_suggestion_status === "queued"
+        || item.tag_suggestion_status === "running";
+    })) {
       stopSummaryPoll();
       return;
     }
     try {
-      await loadLibraryAnnotations(activeSession().id, state.libraryRows.map((item) => item.id));
+      await loadLibraryAnnotations(activeSession().id, libraryAnnotationTargetIds());
       renderLibraryRows();
     } catch {
       // Best effort.
@@ -2233,7 +3007,7 @@ function stopSummaryPoll() {
 async function queueSummaryGeneration(sourceIds, forceRegenerate = false) {
   const session = activeSession();
   if (!sourceIds.length) {
-    els.libraryState.textContent = "No papers selected for summary generation.";
+    setLibraryState("No papers selected for summary generation.", 5000);
     return;
   }
   const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/summaries/generate`, {
@@ -2243,12 +3017,56 @@ async function queueSummaryGeneration(sourceIds, forceRegenerate = false) {
   });
   const data = result.data || {};
   const blocked = Array.isArray(data.blocked) ? data.blocked : [];
-  els.libraryState.textContent = `Summary generation queued: ${data.queued_count || 0}. Blocked: ${blocked.length}.`;
-  await loadLibraryAnnotations(session.id, state.libraryRows.map((item) => item.id));
+  const blockedSummary = blockedSummaryText(blocked);
+  setLibraryState(
+    blockedSummary
+      ? `Summary generation queued: ${data.queued_count || 0}. Blocked: ${blocked.length} (${blockedSummary}).`
+      : `Summary generation queued: ${data.queued_count || 0}. Blocked: ${blocked.length}.`,
+    8000,
+  );
+  await loadLibraryAnnotations(session.id, uniqueIds([...sourceIds, ...libraryAnnotationTargetIds()]));
   renderLibraryRows();
   if ((data.queued_count || 0) > 0) {
     startSummaryPoll();
   }
+}
+
+async function queueTagGeneration(sourceIds, forceRegenerate = false) {
+  const session = activeSession();
+  if (!sourceIds.length) {
+    setLibraryState("No papers selected for tag generation.", 5000);
+    return;
+  }
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/tags/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_ids: sourceIds, force_regenerate: forceRegenerate }),
+  });
+  const data = result.data || {};
+  const blocked = Array.isArray(data.blocked) ? data.blocked : [];
+  const blockedSummary = blockedSummaryText(blocked);
+  setLibraryState(
+    blockedSummary
+      ? `Tag generation queued: ${data.queued_count || 0}. Blocked: ${blocked.length} (${blockedSummary}).`
+      : `Tag generation queued: ${data.queued_count || 0}. Blocked: ${blocked.length}.`,
+    8000,
+  );
+  await loadLibraryAnnotations(session.id, uniqueIds([...sourceIds, ...libraryAnnotationTargetIds()]));
+  renderLibraryRows();
+  if ((data.queued_count || 0) > 0) {
+    startSummaryPoll();
+  }
+}
+
+async function promoteSuggestedTag(sourceId, tag, target) {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/annotations/${encodeURIComponent(sourceId)}/suggested-tags/promote`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tag, target }),
+  });
+  state.paperAnnotations[sourceId] = result.data;
+  renderLibraryRows();
 }
 
 function renderLibraryDetail(item) {
@@ -2266,15 +3084,47 @@ function renderLibraryDetail(item) {
     if (els.librarySummaryText) {
       els.librarySummaryText.textContent = "Select a paper to inspect tags and summary.";
     }
+    if (els.librarySummaryPreviewStatus) {
+      els.librarySummaryPreviewStatus.textContent = "No summary generated.";
+    }
+    if (els.librarySummaryPreviewText) {
+      els.librarySummaryPreviewText.textContent = "Select a paper to inspect generated summary.";
+    }
+    if (els.librarySummaryStructuredText) {
+      els.librarySummaryStructuredText.innerHTML = formatStructuredSummary(null);
+    }
     if (els.libraryGenerateSummaryBtn) {
       els.libraryGenerateSummaryBtn.disabled = true;
     }
     if (els.libraryRegenerateSummaryBtn) {
       els.libraryRegenerateSummaryBtn.disabled = true;
     }
+    if (els.librarySummaryPreviewGenerateBtn) {
+      els.librarySummaryPreviewGenerateBtn.disabled = true;
+    }
+    if (els.librarySummaryPreviewRegenerateBtn) {
+      els.librarySummaryPreviewRegenerateBtn.disabled = true;
+    }
+    if (els.librarySummaryPreviewOpenPdfBtn) {
+      els.librarySummaryPreviewOpenPdfBtn.disabled = true;
+    }
+    if (els.libraryCopySummaryBtn) {
+      els.libraryCopySummaryBtn.disabled = true;
+    }
+    if (els.librarySuggestedTagsStatus) {
+      els.librarySuggestedTagsStatus.textContent = "No AI tags generated.";
+    }
+    if (els.libraryGenerateTagsBtn) {
+      els.libraryGenerateTagsBtn.disabled = true;
+    }
+    if (els.libraryRegenerateTagsBtn) {
+      els.libraryRegenerateTagsBtn.disabled = true;
+    }
     renderTagList(els.libraryFreeformTags, [], "freeform", async () => {});
     renderTagList(els.libraryApprovedTags, [], "approved", async () => {});
+    renderSuggestedTagList(els.librarySuggestedTags, [], async () => {}, async () => {});
     refreshApprovedTagSelect();
+    renderLibraryDetailTabState();
     return;
   }
   const annotation = annotationForSource(item.id);
@@ -2299,6 +3149,12 @@ function renderLibraryDetail(item) {
   if (els.librarySummaryText) {
     els.librarySummaryText.textContent = annotation.ai_summary || "No summary generated for this paper yet.";
   }
+  if (els.librarySummaryPreviewText) {
+    els.librarySummaryPreviewText.textContent = annotation.ai_summary || "No generated summary for this paper yet.";
+  }
+  if (els.librarySummaryStructuredText) {
+    els.librarySummaryStructuredText.innerHTML = formatStructuredSummary(annotation.ai_summary_json);
+  }
   if (els.librarySummaryStatus) {
     const reason = annotation.summary_block_reason === "parsed_text_required"
       ? "Summary unavailable until the paper is downloaded and parsed."
@@ -2306,28 +3162,97 @@ function renderLibraryDetail(item) {
     const error = annotation.summary_error ? ` Error: ${annotation.summary_error}` : "";
     els.librarySummaryStatus.textContent = `Status: ${annotation.summary_status}.${reason ? ` ${reason}` : ""}${error}`;
   }
+  if (els.librarySummaryPreviewStatus) {
+    const reason = annotation.summary_block_reason === "parsed_text_required"
+      ? "Summary unavailable until the paper is downloaded and parsed."
+      : "";
+    const error = annotation.summary_error ? ` Error: ${annotation.summary_error}` : "";
+    els.librarySummaryPreviewStatus.textContent = `Status: ${annotation.summary_status}.${reason ? ` ${reason}` : ""}${error}`;
+  }
   if (els.libraryGenerateSummaryBtn) {
     els.libraryGenerateSummaryBtn.disabled = !annotation.can_generate_summary || annotation.summary_status === "completed";
   }
   if (els.libraryRegenerateSummaryBtn) {
     els.libraryRegenerateSummaryBtn.disabled = !annotation.can_generate_summary;
   }
+  if (els.librarySummaryPreviewGenerateBtn) {
+    els.librarySummaryPreviewGenerateBtn.disabled = !annotation.can_generate_summary || annotation.summary_status === "completed";
+  }
+  if (els.librarySummaryPreviewRegenerateBtn) {
+    els.librarySummaryPreviewRegenerateBtn.disabled = !annotation.can_generate_summary;
+  }
+  if (els.librarySummaryPreviewOpenPdfBtn) {
+    els.librarySummaryPreviewOpenPdfBtn.disabled = !item.previewable_pdf_artifact_id;
+  }
+  if (els.libraryCopySummaryBtn) {
+    els.libraryCopySummaryBtn.disabled = !annotation.ai_summary;
+  }
+  renderSuggestedTagList(
+    els.librarySuggestedTags,
+    annotation.ai_suggested_tags || [],
+    async (tag) => {
+      await promoteSuggestedTag(item.id, tag, "freeform");
+      els.libraryState.textContent = `Added suggested tag to freeform tags: ${tag}`;
+    },
+    async (tag) => {
+      if (!state.sessionApprovedTags.some((value) => value.toLowerCase() === String(tag).toLowerCase())) {
+        els.libraryState.textContent = `Suggested tag is not in the approved session catalog: ${tag}`;
+        return;
+      }
+      await promoteSuggestedTag(item.id, tag, "approved");
+      els.libraryState.textContent = `Added suggested tag to approved tags: ${tag}`;
+    },
+  );
+  if (els.librarySuggestedTagsStatus) {
+    const reason = annotation.tag_suggestion_block_reason === "parsed_text_required"
+      ? "Tag generation unavailable until the paper is downloaded and parsed."
+      : "";
+    const error = annotation.tag_suggestion_error ? ` Error: ${annotation.tag_suggestion_error}` : "";
+    const count = (annotation.ai_suggested_tags || []).length;
+    els.librarySuggestedTagsStatus.textContent = `Status: ${annotation.tag_suggestion_status}.${count ? ` ${count} suggested.` : ""}${reason ? ` ${reason}` : ""}${error}`;
+  }
+  if (els.libraryGenerateTagsBtn) {
+    els.libraryGenerateTagsBtn.disabled = !annotation.can_generate_tags || annotation.tag_suggestion_status === "completed";
+  }
+  if (els.libraryRegenerateTagsBtn) {
+    els.libraryRegenerateTagsBtn.disabled = !annotation.can_generate_tags;
+  }
+  renderLibraryDetailTabState();
 }
 
 function renderLibraryRows() {
   const query = els.libraryQuery.value.trim().toLowerCase();
+  const parsedOnly = Boolean(els.libraryParsedOnlyCheckbox?.checked);
+  const pdfOnly = Boolean(els.libraryPdfOnlyCheckbox?.checked);
+  const summaryCurrentOnly = Boolean(els.librarySummaryCurrentOnlyCheckbox?.checked);
   const filtered = !query
     ? [...state.libraryRows]
     : state.libraryRows.filter((item) => `${item.title} ${item.abstract || ""} ${tagSearchBlob(item.id)}`.toLowerCase().includes(query));
-  state.libraryFilteredRows = sortedLibraryRows(filtered);
+  const scoped = filtered.filter((item) => {
+    const badgeState = documentBadgeState(item);
+    if (parsedOnly && badgeState.parseScopeStatus !== "parsed") {
+      return false;
+    }
+    if (pdfOnly && !badgeState.previewablePdfArtifactId) {
+      return false;
+    }
+    if (summaryCurrentOnly && !badgeState.summaryUpToDate) {
+      return false;
+    }
+    return true;
+  });
+  state.libraryFilteredRows = sortedLibraryRows(scoped);
   renderLibrarySortButtons();
   els.libraryRows.innerHTML = "";
   state.libraryFilteredRows.forEach((item, index) => {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", item.id === state.selectedLibrarySourceId);
     const annotation = annotationForSource(item.id);
-    const tagMarker = (annotation.freeform_tags?.length || annotation.approved_tags?.length) ? '<span class="bookmark-chip">T</span> ' : "";
-    tr.innerHTML = `<td>${escapeHtml(formatLineageNumber(item))}</td><td>${index + 1}</td><td>${Number(item.relevance_score || 0).toFixed(2)}</td><td>${item.year || "-"}</td><td>${item.citation_count ?? "-"}</td><td>${tagMarker}${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span> ' : ""}<span>${escapeHtml(item.title)}</span> <button type="button" class="mini-copy-btn" title="Copy title" aria-label="Copy title">Copy</button></td>`;
+    const tagMarker = (annotation.freeform_tags?.length || annotation.approved_tags?.length || annotation.ai_suggested_tags?.length)
+      ? '<span class="bookmark-chip">T</span> '
+      : "";
+    const docCell = renderDocumentBadgeCell(item);
+    tr.innerHTML = `<td class="col-lineage">${escapeHtml(formatLineageNumber(item))}</td><td class="col-score">${Number(item.relevance_score || 0).toFixed(2)}</td><td class="col-year">${item.year || "-"}</td><td class="col-citations">${item.citation_count ?? "-"}</td><td><div class="title-cell">${tagMarker}${isBookmarked(item.id) ? '<span class="bookmark-chip">B</span>' : ""}<span class="title-cell-text">${escapeHtml(item.title)}</span><button type="button" class="mini-copy-btn title-cell-copy" title="Copy title" aria-label="Copy title">Copy</button></div></td><td class="col-doc">${docCell}</td>`;
     tr.querySelector(".mini-copy-btn")?.addEventListener("click", async (event) => {
       event.stopPropagation();
       const ok = await copyTextToClipboard(item.title);
@@ -2420,12 +3345,19 @@ async function loadLibrary(recoverOnNotFound = true) {
     throw error;
   }
   state.libraryRows = result.data.items || [];
-  await loadLibraryAnnotations(session.id, state.libraryRows.map((item) => item.id));
+  await loadLibraryAnnotations(session.id, libraryAnnotationTargetIds(state.libraryRows));
   await loadLibraryTagCatalog(session.id);
   await loadLibrarySummarySettings(session.id);
   renderLibraryRows();
-  els.libraryState.textContent = state.libraryRows.length ? "Library export data loaded." : "No accepted sources available.";
-  if (Object.values(state.paperAnnotations).some((item) => item.summary_status === "queued" || item.summary_status === "running")) {
+  if (canOverwriteLibraryState()) {
+    setLibraryState(state.libraryRows.length ? "Library export data loaded." : "No accepted sources available.");
+  }
+  if (Object.values(state.paperAnnotations).some((item) => {
+    return item.summary_status === "queued"
+      || item.summary_status === "running"
+      || item.tag_suggestion_status === "queued"
+      || item.tag_suggestion_status === "running";
+  })) {
     startSummaryPoll();
   } else {
     stopSummaryPoll();
@@ -2436,7 +3368,6 @@ async function createDiscoveryRun() {
   const session = activeSession();
   const queries = activeQueries(session);
   const context = normalizeSessionContext(session.sessionContext || els.sessionContextInput.value);
-  const previousResultsRunId = resultsRunId(session);
   const providerLimits = normalizeProviderLimits(session.providerLimits);
   if (!queries.length) {
     els.discoverState.textContent = "Select at least one manual query.";
@@ -2468,12 +3399,8 @@ async function createDiscoveryRun() {
       }),
     });
     session.discoveryRunId = result.data.run_id;
-    if (previousResultsRunId && previousResultsRunId !== result.data.run_id) {
-      session.resultsRunId = previousResultsRunId;
-      els.discoverState.textContent = "Discovery started. Review/Documents/Library keep the accumulated session results while the new run executes.";
-    } else {
-      session.resultsRunId = result.data.run_id;
-    }
+    session.resultsRunId = result.data.run_id;
+    els.discoverState.textContent = "Discovery started. Review/Documents/Library will update live.";
     session.acquisitionRunId = "";
     session.exportSourceIds = [];
     persistSessions();
@@ -2485,36 +3412,31 @@ async function createDiscoveryRun() {
 
 async function createNextCitationIteration() {
   const session = activeSession();
-  const queries = activeQueries(session);
-  const previousResultsRunId = resultsRunId(session);
-  const providerLimits = normalizeProviderLimits(session.providerLimits);
+  if (!session) {
+    els.discoverState.textContent = "No active session is selected.";
+    return;
+  }
   if (!session.discoveryRunId) {
     els.discoverState.textContent = "Run discovery before starting citation expansion.";
     return;
   }
-  if (!queries.length) {
-    els.discoverState.textContent = "Select at least one manual query for citation expansion.";
-    return;
-  }
   beginBusy("Running citation expansion");
   setProgress(10, "Queued");
+  els.discoverState.textContent = "Citation expansion request sent. Waiting for worker startup.";
   try {
+    const providerLimits = normalizeProviderLimits(session.providerLimits || {});
     const result = await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/next-citation-iteration`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ selected_queries: queries, provider_limits: providerLimits }),
+      body: JSON.stringify({ selected_queries: activeQueries(session), provider_limits: providerLimits }),
     });
     session.discoveryRunId = result.data.run_id;
-    if (previousResultsRunId && previousResultsRunId !== result.data.run_id) {
-      session.resultsRunId = previousResultsRunId;
-      els.discoverState.textContent = "Citation expansion started. Review/Documents/Library keep the accumulated session results while the new run executes.";
-    } else {
-      session.resultsRunId = result.data.run_id;
-    }
+    session.resultsRunId = result.data.run_id;
+    els.discoverState.textContent = "Citation expansion started. Review/Documents/Library will update live.";
     persistSessions();
-    await refreshAll();
+    await refreshDiscoverSessionState();
   } catch (error) {
-    els.discoverState.textContent = error instanceof Error ? error.message : String(error);
+    els.discoverState.textContent = citationIterationErrorText(error);
   } finally {
     endBusy();
   }
@@ -2522,19 +3444,24 @@ async function createNextCitationIteration() {
 
 async function resumeCitationIteration() {
   const session = activeSession();
+  if (!session) {
+    els.discoverState.textContent = "No active session is selected.";
+    return;
+  }
   if (!session.discoveryRunId) {
     els.discoverState.textContent = "Run discovery first.";
     return;
   }
   beginBusy("Resuming citation expansion");
   setProgress(15, "Resuming");
+  els.discoverState.textContent = "Citation expansion resume request sent. Waiting for worker startup.";
   try {
     await api(`/v1/discovery/runs/${encodeURIComponent(session.discoveryRunId)}/citation-expansion/resume`, {
       method: "POST",
     });
-    await refreshAll();
+    await refreshDiscoverSessionState();
   } catch (error) {
-    els.discoverState.textContent = error instanceof Error ? error.message : String(error);
+    els.discoverState.textContent = citationIterationErrorText(error);
   } finally {
     endBusy();
   }
@@ -2564,6 +3491,46 @@ async function startAcquisition(retryFailedOnly, selectedSourceIds = null) {
     persistSessions();
     await loadLatestIds();
     await loadDocuments();
+  } finally {
+    endBusy();
+  }
+}
+
+async function startParseForLatestAcquisition() {
+  const sessionId = activeSession()?.id || "";
+  if (!sessionId) {
+    setAdvancedParseState("No active session is available yet. Discover and download documents first.", 5000);
+    return;
+  }
+  beginBusy("Starting parse");
+  try {
+    const result = await api("/v1/parse/runs/queue-all", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+      }),
+    });
+    const queuedRuns = Number(result.data?.queued_runs || 0);
+    if (queuedRuns > 0) {
+      const targets = Array.isArray(result.data?.queued_summary) ? result.data.queued_summary : [];
+      const summary = targets.length
+        ? targets.map((row) => `${row.acq_run_id} (${row.total_documents})`).join(", ")
+        : (Array.isArray(result.data?.acquisition_run_ids) ? result.data.acquisition_run_ids.join(", ") : "");
+      setAdvancedParseState(
+        `Queued ${queuedRuns} parse run${queuedRuns === 1 ? "" : "s"} for downloaded documents in session ${sessionId}${summary ? `: ${summary}` : ""}.`,
+        8000,
+      );
+    } else {
+      setAdvancedParseState(`No unparsed downloaded documents were found for session ${sessionId}.`, 8000);
+    }
+    await loadLatestIds();
+    await loadDocuments();
+    if (state.activePage === "advanced") {
+      await loadAdvancedOperationalEvents();
+    }
+  } catch (error) {
+    setAdvancedParseState(`Unable to start parse: ${errorDetail(error)}`, 8000);
   } finally {
     endBusy();
   }
@@ -2626,7 +3593,11 @@ async function stopRunningTask() {
     } else {
       els.discoverState.textContent = "Stop requested.";
     }
-    await refreshAll();
+    if (task.kind === "acquisition") {
+      await refreshAll();
+    } else {
+      await refreshDiscoverSessionState();
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (task.kind === "acquisition") {
@@ -2650,6 +3621,11 @@ async function handleSelectedDocumentAction() {
   }
   if (row.status === "failed" || row.status === "partial") {
     await startAcquisition(true, [row.source.id]);
+    return;
+  }
+  if (row.previewablePdfArtifactId) {
+    const result = await openPdfArtifactPreview(row.previewablePdfArtifactId);
+    els.documentsState.textContent = pdfPreviewStatusMessage(result, row.title);
     return;
   }
   const link = formatLink(row.source);
@@ -2891,6 +3867,78 @@ async function saveAiSettings() {
   }
 }
 
+async function loadAdvancedDatabaseBackups() {
+  try {
+    const result = await api("/v1/advanced/database-backups");
+    const data = result.data || {};
+    state.advancedDatabaseBackups = Array.isArray(data.items) ? data.items : [];
+    state.advancedDatabaseTarget = String(data.database_target || "");
+    state.advancedDatabaseBackupDir = String(data.backup_dir || "");
+    state.advancedDatabaseRetentionCount = Number(data.retention_count || 0);
+    els.databaseRestoreState.textContent = `Loaded ${Number(data.total || 0)} backup candidate(s).`;
+    renderAdvancedDatabaseBackups();
+  } catch (error) {
+    els.databaseRestoreState.textContent = `Unable to load database backups: ${errorDetail(error)}`;
+    state.advancedDatabaseBackups = [];
+    state.advancedDatabaseTarget = "";
+    state.advancedDatabaseBackupDir = "";
+    state.advancedDatabaseRetentionCount = 0;
+    renderAdvancedDatabaseBackups();
+  }
+}
+
+async function createAdvancedDatabaseBackup() {
+  beginBusy("Creating database backup");
+  try {
+    const result = await api("/v1/advanced/database-backups", { method: "POST" });
+    const data = result.data || {};
+    const backupName = String(data.backup?.name || "");
+    const pruned = Number(data.pruned_auto_backups || 0);
+    els.databaseRestoreState.textContent = pruned > 0
+      ? `Created backup ${backupName}. Pruned ${pruned} automatic backup(s).`
+      : `Created backup ${backupName}.`;
+    await loadAdvancedDatabaseBackups();
+  } catch (error) {
+    els.databaseRestoreState.textContent = `Backup failed: ${errorDetail(error)}`;
+  } finally {
+    endBusy();
+  }
+}
+
+async function restoreAdvancedDatabaseBackup() {
+  const backupName = String(els.databaseBackupSelect?.value || "").trim();
+  const confirmName = String(els.databaseRestoreConfirmInput?.value || "").trim();
+  if (!backupName) {
+    els.databaseRestoreState.textContent = "Select a backup file first.";
+    return;
+  }
+  if (!confirmName) {
+    els.databaseRestoreState.textContent = "Type the backup file name to confirm restore.";
+    return;
+  }
+  beginBusy("Restoring database");
+  try {
+    const result = await api("/v1/advanced/database-restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        backup_name: backupName,
+        confirm_backup_name: confirmName,
+      }),
+    });
+    const data = result.data || {};
+    els.databaseRestoreConfirmInput.value = "";
+    els.databaseRestoreState.textContent = `Restored ${data.restored_backup_name || backupName}. Snapshot: ${data.snapshot_path || "-"}.`;
+    await syncSessionsFromServer();
+    await refreshAll();
+    await loadAdvancedDatabaseBackups();
+  } catch (error) {
+    els.databaseRestoreState.textContent = `Restore failed: ${errorDetail(error)}`;
+  } finally {
+    endBusy();
+  }
+}
+
 async function loadAdvancedOperationalEvents() {
   if (state.advancedEventsPaused) {
     els.advancedEventsState.textContent = "Operational event polling paused.";
@@ -3009,8 +4057,13 @@ function connectLiveUpdates() {
   state.eventSource.addEventListener("queue_updated", async (event) => {
     const payload = JSON.parse(event.data || "{}");
     els.reviewBadge.textContent = String(payload.pending_review || 0);
-    await loadReview();
-    await loadDocuments();
+    if (state.activePage === "review") {
+      await loadReview();
+    } else if (state.activePage === "documents") {
+      await loadDocuments();
+    } else if (state.activePage === "library") {
+      await loadLibrary();
+    }
   });
 }
 
@@ -3052,26 +4105,47 @@ async function refreshAll() {
     } catch (error) {
       els.discoverState.textContent = `Unable to load discover data: ${errorDetail(error)}`;
     }
-    try {
-      await loadReview();
-    } catch (error) {
-      els.reviewState.textContent = `Unable to load review queue: ${errorDetail(error)}`;
+    if (state.activePage === "review") {
+      try {
+        await loadReview();
+      } catch (error) {
+        els.reviewState.textContent = `Unable to load review queue: ${errorDetail(error)}`;
+      }
     }
-    try {
-      await loadDocuments();
-    } catch (error) {
-      els.documentsState.textContent = `Unable to load documents: ${errorDetail(error)}`;
+    if (state.activePage === "documents") {
+      try {
+        await loadDocuments();
+      } catch (error) {
+        els.documentsState.textContent = `Unable to load documents: ${errorDetail(error)}`;
+      }
     }
-    try {
-      await loadLibrary();
-    } catch (error) {
-      els.libraryState.textContent = `Unable to load library: ${errorDetail(error)}`;
+    if (state.activePage === "library") {
+      try {
+        await loadLibrary();
+      } catch (error) {
+        els.libraryState.textContent = `Unable to load library: ${errorDetail(error)}`;
+      }
     }
     if (state.activePage === "advanced") {
+      await loadAdvancedDatabaseBackups();
       await loadAdvancedOperationalEvents();
     }
   } finally {
     endBusy();
+  }
+}
+
+async function refreshDiscoverSessionState() {
+  try {
+    await loadLatestIds();
+    try {
+      await ensureBoundDiscoveryRun();
+    } catch {
+      // Keep refresh best-effort; discover loader will surface actionable state.
+    }
+    await loadDiscover();
+  } catch (error) {
+    els.discoverState.textContent = `Unable to load discover data: ${errorDetail(error)}`;
   }
 }
 
@@ -3118,8 +4192,20 @@ function wireEvents() {
         await loadLibrary();
       }
       if (state.activePage === "advanced") {
+        await loadAdvancedDatabaseBackups();
         await loadAdvancedOperationalEvents();
       }
+    });
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      stopDiscoverPolling();
+      stopSummaryPoll();
+      return;
+    }
+    refreshAll().catch(() => {
+      // Best effort visibility recovery.
     });
   });
 
@@ -3258,6 +4344,7 @@ function wireEvents() {
     persistSessions();
     updateQuerySelectionState();
     els.sessionContextState.textContent = defaultSessionContextState(session);
+    updateSessionContextControls(session);
     updateSuggestionAvailability();
   });
   els.newSessionNameInput?.addEventListener("input", () => {
@@ -3289,8 +4376,22 @@ function wireEvents() {
   });
   els.generateQuerySuggestionsBtn.addEventListener("click", generateQuerySuggestions);
   els.runDiscoveryBtn.addEventListener("click", createDiscoveryRun);
-  els.runNextCitationBtn.addEventListener("click", createNextCitationIteration);
-  els.resumeCitationBtn.addEventListener("click", resumeCitationIteration);
+  els.runNextCitationBtn.addEventListener("click", async () => {
+    try {
+      await createNextCitationIteration();
+    } catch (error) {
+      console.error("runNextCitationBtn failed", error);
+      els.discoverState.textContent = citationIterationErrorText(error);
+    }
+  });
+  els.resumeCitationBtn.addEventListener("click", async () => {
+    try {
+      await resumeCitationIteration();
+    } catch (error) {
+      console.error("resumeCitationBtn failed", error);
+      els.discoverState.textContent = citationIterationErrorText(error);
+    }
+  });
   els.reviewAcceptBtn.addEventListener("click", () => submitReviewDecision("accept"));
   els.reviewRejectBtn.addEventListener("click", () => submitReviewDecision("reject"));
   els.reviewLaterBtn.addEventListener("click", () => submitReviewDecision("later"));
@@ -3316,14 +4417,21 @@ function wireEvents() {
     els.reviewState.textContent = ok ? `Copied abstract: ${item.title}` : "Unable to copy abstract.";
   });
   els.reviewFilterButtons.forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const next = button.dataset.reviewFilter || "pending";
       if (state.reviewQueue === next) {
         return;
       }
       state.reviewQueue = next;
       renderReviewFilterChips();
-      loadReview();
+      beginBusy("Loading review queue");
+      try {
+        await loadReview();
+      } catch (error) {
+        els.reviewState.textContent = `Unable to load ${next} review items: ${errorDetail(error) || "request failed"}`;
+      } finally {
+        endBusy();
+      }
     });
   });
   els.reviewSortButtons.forEach((button) => {
@@ -3376,6 +4484,14 @@ function wireEvents() {
     startAcquisition(true, ids);
   });
   els.documentsRowActionBtn.addEventListener("click", handleSelectedDocumentAction);
+  els.documentsOpenPdfBtn?.addEventListener("click", async () => {
+    const row = selectedDocumentRow();
+    if (!row?.previewablePdfArtifactId) {
+      return;
+    }
+    const result = await openPdfArtifactPreview(row.previewablePdfArtifactId);
+    els.documentsState.textContent = pdfPreviewStatusMessage(result, row.title);
+  });
   els.documentsBookmarkBtn?.addEventListener("click", async () => {
     const row = selectedDocumentRow();
     if (!row) {
@@ -3406,9 +4522,15 @@ function wireEvents() {
   els.batchUploadForm.addEventListener("submit", uploadBatchFiles);
   els.documentsExportCsvBtn.addEventListener("click", exportDocumentsCsv);
   els.libraryQuery.addEventListener("input", renderLibraryRows);
+  els.libraryParsedOnlyCheckbox?.addEventListener("change", renderLibraryRows);
+  els.libraryPdfOnlyCheckbox?.addEventListener("change", renderLibraryRows);
+  els.librarySummaryCurrentOnlyCheckbox?.addEventListener("change", renderLibraryRows);
   els.libraryExportSize.addEventListener("change", renderLibraryRows);
   els.libraryGenerateVisibleSummariesBtn?.addEventListener("click", async () => {
     await queueSummaryGeneration(state.libraryFilteredRows.map((item) => item.id), false);
+  });
+  els.libraryGenerateVisibleTagsBtn?.addEventListener("click", async () => {
+    await queueTagGeneration(state.libraryFilteredRows.map((item) => item.id), false);
   });
   els.libraryPromptToggleBtn?.addEventListener("click", () => {
     els.librarySummaryPromptPanel.hidden = !els.librarySummaryPromptPanel.hidden;
@@ -3417,6 +4539,7 @@ function wireEvents() {
     els.libraryApprovedTagsPanel.hidden = !els.libraryApprovedTagsPanel.hidden;
   });
   els.librarySaveSummaryPromptBtn?.addEventListener("click", saveSummaryPrompt);
+  els.libraryResetSummaryPromptBtn?.addEventListener("click", resetSummaryPrompt);
   els.librarySaveApprovedTagsBtn?.addEventListener("click", saveApprovedTags);
   els.libraryAddBtn.addEventListener("click", () => {
     if (state.selectedLibrarySourceId) {
@@ -3481,6 +4604,54 @@ function wireEvents() {
     }
     await queueSummaryGeneration([state.selectedLibrarySourceId], true);
   });
+  els.librarySummaryPreviewGenerateBtn?.addEventListener("click", async () => {
+    if (!state.selectedLibrarySourceId) {
+      return;
+    }
+    await queueSummaryGeneration([state.selectedLibrarySourceId], false);
+  });
+  els.librarySummaryPreviewRegenerateBtn?.addEventListener("click", async () => {
+    if (!state.selectedLibrarySourceId) {
+      return;
+    }
+    await queueSummaryGeneration([state.selectedLibrarySourceId], true);
+  });
+  els.librarySummaryPreviewOpenPdfBtn?.addEventListener("click", async () => {
+    const item = state.libraryFilteredRows.find((row) => row.id === state.selectedLibrarySourceId);
+    if (!item?.previewable_pdf_artifact_id) {
+      return;
+    }
+    const result = await openPdfArtifactPreview(item.previewable_pdf_artifact_id);
+    setLibraryState(pdfPreviewStatusMessage(result, item.title), 5000);
+  });
+  els.libraryCopySummaryBtn?.addEventListener("click", async () => {
+    if (!state.selectedLibrarySourceId) {
+      return;
+    }
+    const summary = annotationForSource(state.selectedLibrarySourceId).ai_summary || "";
+    const ok = await copyTextToClipboard(summary);
+    setLibraryState(ok ? "Copied generated summary." : "Unable to copy generated summary.", 5000);
+  });
+  els.libraryDetailsTabBtn?.addEventListener("click", () => {
+    state.libraryDetailTab = "details";
+    renderLibraryRows();
+  });
+  els.librarySummaryPreviewTabBtn?.addEventListener("click", () => {
+    state.libraryDetailTab = "summary_preview";
+    renderLibraryRows();
+  });
+  els.libraryGenerateTagsBtn?.addEventListener("click", async () => {
+    if (!state.selectedLibrarySourceId) {
+      return;
+    }
+    await queueTagGeneration([state.selectedLibrarySourceId], false);
+  });
+  els.libraryRegenerateTagsBtn?.addEventListener("click", async () => {
+    if (!state.selectedLibrarySourceId) {
+      return;
+    }
+    await queueTagGeneration([state.selectedLibrarySourceId], true);
+  });
   els.bookmarksCreateSessionBtn?.addEventListener("click", async () => {
     const bookmark = selectedBookmark();
     if (!bookmark) {
@@ -3507,6 +4678,10 @@ function wireEvents() {
   });
   els.saveAiSettingsBtn?.addEventListener("click", saveAiSettings);
   els.saveProviderSettingsBtn.addEventListener("click", saveProviderSettings);
+  els.startParseBtn?.addEventListener("click", startParseForLatestAcquisition);
+  els.createDatabaseBackupBtn?.addEventListener("click", createAdvancedDatabaseBackup);
+  els.refreshDatabaseBackupsBtn?.addEventListener("click", loadAdvancedDatabaseBackups);
+  els.restoreDatabaseBtn?.addEventListener("click", restoreAdvancedDatabaseBackup);
   els.advancedEventsPauseBtn.addEventListener("click", async () => {
     state.advancedEventsPaused = !state.advancedEventsPaused;
     renderAdvancedOperationalEvents();

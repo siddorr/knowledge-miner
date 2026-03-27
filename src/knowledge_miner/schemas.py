@@ -81,6 +81,12 @@ class DiscoveryRunQueryOut(BaseModel):
     openalex_count: int = 0
     brave_count: int = 0
     semantic_scholar_count: int = 0
+    openalex_status: str = "pending"
+    semantic_scholar_status: str = "pending"
+    brave_status: str = "pending"
+    openalex_error_message: str | None = None
+    semantic_scholar_error_message: str | None = None
+    brave_error_message: str | None = None
     accepted_count: int = 0
     rejected_count: int = 0
     pending_count: int = 0
@@ -144,6 +150,10 @@ class SourceOut(BaseModel):
     heuristic_recommendation: str
     heuristic_score: float
     parent_source: str | None
+    previewable_pdf_artifact_id: str | None = None
+    artifact_kind: str | None = None
+    artifact_quality_status: str | None = None
+    parse_scope_status: str | None = None
 
 
 class SourcesListResponse(BaseModel):
@@ -189,10 +199,20 @@ class AcquisitionRunStatusResponse(BaseModel):
 class AcquisitionItemOut(BaseModel):
     item_id: str
     source_id: str
+    acq_run_id: str | None = None
+    artifact_id: str | None = None
+    artifact_kind: str | None = None
+    artifact_mime_type: str | None = None
+    artifact_quality_status: str | None = None
+    artifact_quality_reason: str | None = None
     status: str
     attempt_count: int
     selected_url: str | None
     last_error: str | None
+    artifact_source_session_id: str | None = None
+    parse_scope_status: str | None = None
+    parse_status_detail: str | None = None
+    parse_run_id: str | None = None
 
 
 class AcquisitionItemsListResponse(BaseModel):
@@ -293,6 +313,17 @@ class ParseRunCreateRequest(BaseModel):
 class ParseRunCreateResponse(BaseModel):
     parse_run_id: str
     status: str
+
+
+class ParseAllDownloadedRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+
+
+class ParseAllDownloadedResponse(BaseModel):
+    queued_runs: int
+    parse_run_ids: list[str]
+    acquisition_run_ids: list[str]
+    queued_summary: list[dict] = Field(default_factory=list)
 
 
 class ParseRunStatusResponse(BaseModel):
@@ -434,10 +465,58 @@ class SystemStatusResponse(BaseModel):
     database_target: str
     db_target_url: str
     db_target_resolved_path: str | None
+    db_target_kind: str
+    db_target_warning: str | None
+    db_target_expected_for_role: str
+    db_target_matches_server_default: bool
     db_schema_ready: bool
     db_run_count: int | None
     process_pid: int
     hot_read_metrics: dict
+
+
+class DatabaseBackupCandidateOut(BaseModel):
+    name: str
+    path: str
+    size_bytes: int
+    mtime: int
+    kind: str
+    managed: bool
+
+
+class DatabaseBackupListResponse(BaseModel):
+    items: list[DatabaseBackupCandidateOut]
+    total: int
+    database_target: str
+    backup_dir: str | None = None
+    retention_count: int
+
+
+class DatabaseRestoreRequest(BaseModel):
+    backup_name: str
+    confirm_backup_name: str
+
+
+class DatabaseBackupCreateResponse(BaseModel):
+    ok: bool
+    backup: DatabaseBackupCandidateOut
+    database_target: str
+    backup_dir: str | None = None
+    pruned_auto_backups: int = 0
+
+
+class DatabaseRestoreResponse(BaseModel):
+    ok: bool
+    restored_backup_name: str
+    restored_from: str
+    snapshot_path: str
+    database_target: str
+    database_inode: int | None = None
+    database_mtime: int | None = None
+    snapshot_kind: str | None = None
+    repaired_query_rows: int
+    superseded_runs: int
+    superseded_query_rows: int
 
 
 class AISettingsUpdateRequest(BaseModel):
@@ -547,12 +626,20 @@ class PaperAnnotationOut(BaseModel):
     source_id: str
     freeform_tags: list[str] = Field(default_factory=list)
     approved_tags: list[str] = Field(default_factory=list)
+    ai_suggested_tags: list[str] = Field(default_factory=list)
     ai_summary: str | None = None
+    ai_summary_json: dict | None = None
+    summary_prompt_snapshot: str | None = None
     summary_status: str = "none"
+    tag_suggestion_status: str = "none"
     summary_generated_at: str | None = None
+    tag_suggestion_generated_at: str | None = None
     summary_error: str | None = None
+    tag_suggestion_error: str | None = None
     can_generate_summary: bool = False
     summary_block_reason: str | None = None
+    can_generate_tags: bool = False
+    tag_suggestion_block_reason: str | None = None
 
 
 class PaperAnnotationsListResponse(BaseModel):
@@ -600,3 +687,25 @@ class SummaryGenerationResponse(BaseModel):
     queued_count: int
     blocked_count: int
     blocked: list[SummaryGenerationBlockedOut] = Field(default_factory=list)
+
+
+class TagGenerationRequest(BaseModel):
+    source_ids: list[str] = Field(min_length=1)
+    force_regenerate: bool = False
+
+
+class TagGenerationBlockedOut(BaseModel):
+    source_id: str
+    reason: str
+
+
+class TagGenerationResponse(BaseModel):
+    session_id: str
+    queued_count: int
+    blocked_count: int
+    blocked: list[TagGenerationBlockedOut] = Field(default_factory=list)
+
+
+class SuggestedTagPromoteRequest(BaseModel):
+    tag: str = Field(min_length=1, max_length=64)
+    target: str = Field(pattern="^(freeform|approved)$")

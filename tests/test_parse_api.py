@@ -5,14 +5,15 @@ import logging
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+import pytest
+from sqlalchemy import func, select
 
 import knowledge_miner.main as main_module
 from knowledge_miner.config import settings
 from knowledge_miner.db import Base, SessionLocal, engine
 from knowledge_miner.main import app
 from knowledge_miner.models import AcquisitionRun, Artifact, DocumentChunk, ParsedDocument, Run, Source
-from knowledge_miner.parse import execute_parse_run
+from knowledge_miner.parse import create_parse_runs_for_session_downloads, execute_parse_run, resume_queued_parse_runs
 
 
 def setup_function():
@@ -181,6 +182,34 @@ def test_parse_endpoints_basic(monkeypatch, tmp_path):
     assert findings["summary"]["eligible_documents"] in {0, 1}
 
 
+def test_parse_rejects_invalid_html_placeholder(monkeypatch, tmp_path):
+    acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
+    object.__setattr__(settings, "artifacts_dir", artifacts_dir)
+    monkeypatch.setattr(main_module, "enqueue_parse_run", lambda parse_run_id: None)
+    with SessionLocal() as db:
+        artifact = db.get(Artifact, "artifact_parse_seed")
+        assert artifact is not None
+        artifact.quality_status = "html_invalid"
+        artifact.quality_reason = "html_placeholder_page"
+        db.commit()
+
+    client = TestClient(app)
+    created = client.post("/v1/parse/runs", json={"acq_run_id": acq_run_id}, headers=_auth_headers())
+    assert created.status_code == 202
+    parse_run_id = created.json()["parse_run_id"]
+
+    with SessionLocal() as db:
+        run = db.get(main_module.ParseRun, parse_run_id)  # type: ignore[attr-defined]
+        assert run is not None
+        execute_parse_run(db, run)
+
+    with SessionLocal() as db:
+        doc = db.scalars(select(ParsedDocument).where(ParsedDocument.parse_run_id == parse_run_id)).first()
+        assert doc is not None
+        assert doc.status == "failed"
+        assert doc.last_error == "html_invalid:html_placeholder_page"
+
+
 def test_parse_incremental_reuses_chunks_for_unchanged_document(monkeypatch, tmp_path):
     acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
     object.__setattr__(settings, "artifacts_dir", artifacts_dir)
@@ -211,6 +240,212 @@ def test_parse_incremental_reuses_chunks_for_unchanged_document(monkeypatch, tmp
         assert second_doc.parser_used == "cached_chunks"
         second_chunks = db.scalars(select(DocumentChunk).where(DocumentChunk.parsed_document_id == second_doc.id)).all()
         assert len(second_chunks) == len(first_chunks)
+
+
+def test_create_parse_run_reuses_existing_active_run(monkeypatch, tmp_path):
+    acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
+    object.__setattr__(settings, "artifacts_dir", artifacts_dir)
+    monkeypatch.setattr(main_module, "enqueue_parse_run", lambda parse_run_id: None)
+    client = TestClient(app)
+
+    first = client.post("/v1/parse/runs", json={"acq_run_id": acq_run_id}, headers=_auth_headers())
+    assert first.status_code == 202
+    second = client.post("/v1/parse/runs", json={"acq_run_id": acq_run_id}, headers=_auth_headers())
+    assert second.status_code == 202
+    assert second.json()["parse_run_id"] == first.json()["parse_run_id"]
+
+    with SessionLocal() as db:
+        count = db.scalar(select(func.count()).select_from(main_module.ParseRun).where(main_module.ParseRun.acq_run_id == acq_run_id))  # type: ignore[attr-defined]
+        assert count == 1
+
+
+def test_resume_queued_parse_runs_requeues_stale_running_run(monkeypatch, tmp_path):
+    acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
+    object.__setattr__(settings, "artifacts_dir", artifacts_dir)
+    monkeypatch.setattr(main_module, "enqueue_parse_run", lambda parse_run_id: None)
+    client = TestClient(app)
+    created = client.post("/v1/parse/runs", json={"acq_run_id": acq_run_id}, headers=_auth_headers())
+    parse_run_id = created.json()["parse_run_id"]
+
+    enqueued: list[str] = []
+    monkeypatch.setattr("knowledge_miner.parse.enqueue_parse_run", lambda run_id: enqueued.append(run_id))
+    with SessionLocal() as db:
+        run = db.get(main_module.ParseRun, parse_run_id)  # type: ignore[attr-defined]
+        assert run is not None
+        run.status = "running"
+        db.commit()
+
+    resumed = resume_queued_parse_runs()
+    assert resumed == [parse_run_id]
+    assert enqueued == [parse_run_id]
+
+    with SessionLocal() as db:
+        run = db.get(main_module.ParseRun, parse_run_id)  # type: ignore[attr-defined]
+        assert run is not None
+        assert run.status == "queued"
+
+
+def test_parse_persists_documents_before_final_indexing_failure(monkeypatch, tmp_path):
+    acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
+    object.__setattr__(settings, "artifacts_dir", artifacts_dir)
+    monkeypatch.setattr(main_module, "enqueue_parse_run", lambda parse_run_id: None)
+    client = TestClient(app)
+
+    created = client.post("/v1/parse/runs", json={"acq_run_id": acq_run_id}, headers=_auth_headers())
+    assert created.status_code == 202
+    parse_run_id = created.json()["parse_run_id"]
+    monkeypatch.setattr("knowledge_miner.parse._write_parse_output_artifacts", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("indexing_failed")))
+
+    with SessionLocal() as db:
+        run = db.get(main_module.ParseRun, parse_run_id)  # type: ignore[attr-defined]
+        assert run is not None
+        with pytest.raises(RuntimeError, match="indexing_failed"):
+            execute_parse_run(db, run)
+
+    with SessionLocal() as db:
+        run = db.get(main_module.ParseRun, parse_run_id)  # type: ignore[attr-defined]
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error_message == "indexing_failed"
+        doc = db.scalars(select(ParsedDocument).where(ParsedDocument.parse_run_id == parse_run_id)).first()
+        assert doc is not None
+        assert doc.status == "parsed"
+        assert doc.body_text is not None
+
+
+def test_create_parse_runs_for_session_downloads_targets_unparsed_downloads(monkeypatch, tmp_path):
+    acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
+    object.__setattr__(settings, "artifacts_dir", artifacts_dir)
+    monkeypatch.setattr(main_module, "enqueue_parse_run", lambda parse_run_id: None)
+
+    with SessionLocal() as db:
+        acq_run = db.get(AcquisitionRun, acq_run_id)
+        assert acq_run is not None
+        run = db.get(Run, acq_run.discovery_run_id)
+        assert run is not None
+        run.session_id = "session_parse_all"
+        db.commit()
+
+    with SessionLocal() as db:
+        queued = create_parse_runs_for_session_downloads(db, "session_parse_all")
+        assert len(queued) == 1
+        parse_run_id = queued[0].id
+
+    with SessionLocal() as db:
+        parse_run = db.get(main_module.ParseRun, parse_run_id)  # type: ignore[attr-defined]
+        assert parse_run is not None
+        execute_parse_run(db, parse_run)
+
+    with SessionLocal() as db:
+        queued = create_parse_runs_for_session_downloads(db, "session_parse_all")
+        assert queued == []
+
+
+def test_create_parse_runs_for_session_downloads_includes_queued_acquisition_with_artifacts(monkeypatch, tmp_path):
+    acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
+    object.__setattr__(settings, "artifacts_dir", artifacts_dir)
+    monkeypatch.setattr(main_module, "enqueue_parse_run", lambda parse_run_id: None)
+
+    with SessionLocal() as db:
+        acq_run = db.get(AcquisitionRun, acq_run_id)
+        assert acq_run is not None
+        acq_run.status = "queued"
+        run = db.get(Run, acq_run.discovery_run_id)
+        assert run is not None
+        run.session_id = "session_parse_all_queued"
+        db.commit()
+
+    with SessionLocal() as db:
+        queued = create_parse_runs_for_session_downloads(db, "session_parse_all_queued")
+        assert len(queued) == 1
+        assert queued[0].acq_run_id == acq_run_id
+
+
+def test_parse_reuses_cached_chunks_across_acquisition_runs(monkeypatch, tmp_path):
+    acq_run_id, artifacts_dir = _seed_acq_with_html(tmp_path)
+    object.__setattr__(settings, "artifacts_dir", artifacts_dir)
+    monkeypatch.setattr(main_module, "enqueue_parse_run", lambda parse_run_id: None)
+    client = TestClient(app)
+
+    first = client.post("/v1/parse/runs", json={"acq_run_id": acq_run_id}, headers=_auth_headers())
+    assert first.status_code == 202
+    first_id = first.json()["parse_run_id"]
+    with SessionLocal() as db:
+        first_run = db.get(main_module.ParseRun, first_id)  # type: ignore[attr-defined]
+        assert first_run is not None
+        execute_parse_run(db, first_run)
+
+        run = Run(
+            id="run_parse_reuse_b",
+            session_id="session_parse_reuse_b",
+            status="completed",
+            seed_queries=["reuse"],
+            max_iterations=1,
+            current_iteration=1,
+            accepted_total=1,
+            expanded_candidates_total=0,
+            citation_edges_total=0,
+            ai_filter_active=False,
+            ai_filter_warning=None,
+        )
+        source = Source(
+            id="doi:10.1000/parse-reuse-b",
+            run_id=run.id,
+            title="UPW parsing seed paper reused",
+            year=2024,
+            url="https://example.org/parse",
+            doi="10.1000/parse-reuse-b",
+            abstract="reuse",
+            type="academic",
+            source="openalex",
+            source_native_id="W_PARSE_REUSE",
+            patent_office=None,
+            patent_number=None,
+            iteration=1,
+            discovery_method="seed_search",
+            relevance_score=6.1,
+            accepted=True,
+            review_status="auto_accept",
+            ai_decision=None,
+            ai_confidence=None,
+            parent_source_id=None,
+            provenance_history=[],
+        )
+        acq = AcquisitionRun(
+            id="acq_parse_reuse_b",
+            discovery_run_id=run.id,
+            retry_failed_only=False,
+            status="completed",
+            total_sources=1,
+            downloaded_total=1,
+            partial_total=0,
+            failed_total=0,
+            skipped_total=0,
+        )
+        artifact = Artifact(
+            id="artifact_parse_reuse_b",
+            acq_run_id=acq.id,
+            source_id=source.id,
+            item_id=None,
+            kind="html",
+            path="acquisition/acq_parse_seed/doi:10.1000/parse-seed/source.html",
+            checksum_sha256="x",
+            size_bytes=1,
+            mime_type="text/html",
+        )
+        db.add_all([run, source, acq, artifact])
+        db.commit()
+
+    second = client.post("/v1/parse/runs", json={"acq_run_id": "acq_parse_reuse_b"}, headers=_auth_headers())
+    assert second.status_code == 202
+    second_id = second.json()["parse_run_id"]
+    with SessionLocal() as db:
+        second_run = db.get(main_module.ParseRun, second_id)  # type: ignore[attr-defined]
+        assert second_run is not None
+        execute_parse_run(db, second_run)
+        second_doc = db.scalars(select(ParsedDocument).where(ParsedDocument.parse_run_id == second_id)).first()
+        assert second_doc is not None
+        assert second_doc.parser_used == "cached_chunks"
 
 
 def test_parse_observability_logs(monkeypatch, tmp_path, caplog):

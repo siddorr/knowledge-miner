@@ -31,6 +31,23 @@ def _default_database_url() -> str:
         argv = " ".join(sys.argv).lower()
         return "pytest" in argv
 
+    def _server_runtime() -> bool:
+        argv = " ".join(sys.argv).lower()
+        return any(token in argv for token in ("uvicorn", "gunicorn", "hypercorn", "knowledge_miner.main:app"))
+
+    def _unsafe_direct_python_runtime() -> bool:
+        if _pytest_runtime() or _server_runtime():
+            return False
+        argv0 = Path(sys.argv[0]).name.lower() if sys.argv else ""
+        argv = " ".join(sys.argv).lower()
+        if argv0.startswith("python") and (len(sys.argv) <= 1 or sys.argv[1:2] == ["-c"]):
+            return True
+        if sys.argv[:1] == ["-"]:
+            return True
+        if "python - <<" in argv:
+            return True
+        return False
+
     def _sqlite_path_from_url(url: str) -> Path | None:
         raw = url.strip()
         if not raw.lower().startswith("sqlite:///") or raw.startswith("sqlite:///:memory:"):
@@ -44,13 +61,15 @@ def _default_database_url() -> str:
         if _pytest_runtime():
             sqlite_path = _sqlite_path_from_url(normalized)
             if sqlite_path is not None and sqlite_path.name == "knowledge_miner.db":
-                return f"sqlite:///{(project_root / 'test_knowledge_miner.db').resolve()}"
+                raise RuntimeError("pytest_must_not_target_live_knowledge_miner_db")
         return normalized
     app_env = os.getenv("APP_ENV", "development").lower()
     if app_env in {"production", "prod"}:
         return "postgresql+psycopg://knowledge_miner:knowledge_miner@localhost:5432/knowledge_miner"
     if _pytest_runtime():
         return f"sqlite:///{(project_root / 'test_knowledge_miner.db').resolve()}"
+    if _unsafe_direct_python_runtime():
+        raise RuntimeError("database_url_required_for_direct_python_runtime")
     return default_sqlite_url
 
 
@@ -83,6 +102,15 @@ class Settings:
     use_semantic_scholar: bool = _as_bool(os.getenv("USE_SEMANTIC_SCHOLAR"), default=True)
     semantic_scholar_base_url: str = os.getenv("SEMANTIC_SCHOLAR_BASE_URL", "https://api.semanticscholar.org/graph/v1")
     semantic_scholar_api_key: str | None = _optional_env("SEMANTIC_SCHOLAR_API_KEY")
+    semantic_scholar_timeout_seconds: float = float(os.getenv("SEMANTIC_SCHOLAR_TIMEOUT_SECONDS", "15"))
+    semantic_scholar_max_retries: int = int(os.getenv("SEMANTIC_SCHOLAR_MAX_RETRIES", "3"))
+    semantic_scholar_min_interval_seconds: float = float(os.getenv("SEMANTIC_SCHOLAR_MIN_INTERVAL_SECONDS", "1.0"))
+    semantic_scholar_cooldown_seconds: float = float(os.getenv("SEMANTIC_SCHOLAR_COOLDOWN_SECONDS", "30"))
+    semantic_scholar_cache_ttl_seconds: float = float(os.getenv("SEMANTIC_SCHOLAR_CACHE_TTL_SECONDS", "900"))
+    semantic_scholar_citations_page_limit: int = int(os.getenv("SEMANTIC_SCHOLAR_CITATIONS_PAGE_LIMIT", "1000"))
+    semantic_scholar_citations_max_pages: int = int(os.getenv("SEMANTIC_SCHOLAR_CITATIONS_MAX_PAGES", "10"))
+    semantic_scholar_citations_max_results: int = int(os.getenv("SEMANTIC_SCHOLAR_CITATIONS_MAX_RESULTS", "5000"))
+    semantic_scholar_citations_retry_multiplier: float = float(os.getenv("SEMANTIC_SCHOLAR_CITATIONS_RETRY_MULTIPLIER", "2.0"))
     brave_base_url: str = os.getenv("BRAVE_BASE_URL", "https://api.search.brave.com")
     brave_api_key: str | None = _optional_env("BRAVE_API_KEY")
     brave_search_count: int = int(os.getenv("BRAVE_SEARCH_COUNT", "20"))
@@ -106,6 +134,10 @@ class Settings:
     runtime_state_dir: str = os.getenv("RUNTIME_STATE_DIR", "./runtime")
     clean_on_startup: bool = _as_bool(os.getenv("CLEAN_ON_STARTUP"), default=app_env.lower() != "production")
     db_auto_migrate_on_start: bool = _as_bool(os.getenv("DB_AUTO_MIGRATE_ON_START"), default=app_env.lower() != "production")
+    db_backup_enabled: bool = _as_bool(os.getenv("DB_BACKUP_ENABLED"), default=app_env.lower() != "production")
+    db_backup_dir: str = os.getenv("DB_BACKUP_DIR", "./db_backups")
+    db_backup_interval_minutes: int = int(os.getenv("DB_BACKUP_INTERVAL_MINUTES", "60"))
+    db_backup_retention_count: int = int(os.getenv("DB_BACKUP_RETENTION_COUNT", "48"))
     enable_debug_endpoints: bool = _as_bool(os.getenv("ENABLE_DEBUG_ENDPOINTS"), default=False)
 
 
@@ -114,3 +146,42 @@ settings = Settings()
 
 def is_sqlite_url(database_url: str) -> bool:
     return database_url.strip().lower().startswith("sqlite")
+
+
+def classify_database_target(database_url: str) -> str:
+    normalized = _normalize_database_url(database_url)
+    raw = normalized.strip()
+    if not raw.lower().startswith("sqlite:///"):
+        return "non_sqlite_db"
+    if raw.startswith("sqlite:///:memory:"):
+        return "temp_test_db"
+    path = Path(raw[len("sqlite:///") :]).resolve()
+    name = path.name
+    if name == "knowledge_miner.db":
+        return "live_app_db"
+    if name == "test_knowledge_miner.db":
+        return "managed_test_db"
+    if name.startswith("tmp") or path.parent == Path("/tmp"):
+        return "temp_test_db"
+    return "unknown_sqlite_db"
+
+
+def expected_database_target_for_role() -> str:
+    argv = " ".join(sys.argv).lower()
+    if os.getenv("PYTEST_CURRENT_TEST") or "pytest" in argv:
+        return "managed_test_db"
+    if any(token in argv for token in ("uvicorn", "gunicorn", "hypercorn", "knowledge_miner.main:app")):
+        return "live_app_db"
+    return "explicit_required"
+
+
+def database_target_warning(database_url: str) -> str | None:
+    kind = classify_database_target(database_url)
+    expected = expected_database_target_for_role()
+    if expected == "live_app_db" and kind != "live_app_db":
+        return "server_not_using_live_app_database"
+    if expected == "managed_test_db" and kind == "live_app_db":
+        return "pytest_targeting_live_app_database"
+    if expected == "explicit_required":
+        return None
+    return None

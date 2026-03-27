@@ -181,6 +181,51 @@ def test_execute_acquisition_run_downloads_pdf(monkeypatch, tmp_path):
         object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
 
 
+def test_execute_acquisition_run_auto_enqueues_parse(monkeypatch, tmp_path):
+    run_id, _source_id = _seed_completed_run("https://publisher.example/paper.pdf")
+    original_artifacts_dir = settings.artifacts_dir
+    calls: list[tuple[str, str]] = []
+    try:
+        object.__setattr__(settings, "artifacts_dir", str(tmp_path))
+        with SessionLocal() as db:
+            acq_run = acquisition.create_acquisition_run(db, run_id, retry_failed_only=False)
+
+        def fake_download(url: str, *, timeout_seconds: float, max_bytes: int):  # noqa: ANN001
+            del timeout_seconds, max_bytes
+            return acquisition.DownloadResult(
+                kind="pdf",
+                mime_type="application/pdf",
+                content=b"%PDF-1.4 test",
+                url=url,
+                error=None,
+                retryable=False,
+            )
+
+        class DummyParseRun:
+            id = "parse_auto_test"
+            total_documents = 1
+
+        monkeypatch.setattr(acquisition, "_download_url", fake_download)
+        monkeypatch.setattr(
+            acquisition,
+            "create_parse_run",
+            lambda db, acq_run_id, *, retry_failed_only: calls.append(("create", acq_run_id)) or DummyParseRun(),
+        )
+        monkeypatch.setattr(
+            acquisition,
+            "enqueue_parse_run",
+            lambda parse_run_id: calls.append(("enqueue", parse_run_id)),
+        )
+        with SessionLocal() as db:
+            run = db.get(AcquisitionRun, acq_run.id)
+            assert run is not None
+            acquisition.execute_acquisition_run(db, run)
+
+        assert calls == [("create", acq_run.id), ("enqueue", "parse_auto_test")]
+    finally:
+        object.__setattr__(settings, "artifacts_dir", original_artifacts_dir)
+
+
 def test_execute_acquisition_run_falls_back_to_html(monkeypatch, tmp_path):
     run_id, _ = _seed_completed_run("https://publisher.example/landing", doi="10.1000/fallback")
     original_artifacts_dir = settings.artifacts_dir

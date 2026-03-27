@@ -16,10 +16,12 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .artifact_quality import classify_html_artifact
 from .config import settings
 from .db import SessionLocal
-from .models import AcquisitionItem, AcquisitionRun, Artifact, Run, Source
+from .models import AcquisitionItem, AcquisitionRun, Artifact, ParsedDocument, Run, Source
 from .observability import AcquisitionObservability
+from .parse import create_parse_run, enqueue_parse_run
 from .runtime_state import acquire_run_lock, clear_run_stop_request, is_primary_instance, is_run_stop_requested, release_run_lock
 
 logger = logging.getLogger("knowledge_miner")
@@ -135,22 +137,32 @@ def create_acquisition_run(
     db.add(acq_run)
     db.flush()
 
+    reused_count = 0
     for source in selected_sources:
-        db.add(
-            AcquisitionItem(
-                id=f"acq_item_{uuid.uuid4().hex[:12]}",
-                acq_run_id=acq_run.id,
-                source_id=source.id,
-                status="queued",
-                attempt_count=0,
-                selected_url=source.url,
-                selected_url_source=None,
-                resolution_attempts=[],
-                reason_code=None,
-                last_error=None,
-            )
+        item = AcquisitionItem(
+            id=f"acq_item_{uuid.uuid4().hex[:12]}",
+            acq_run_id=acq_run.id,
+            source_id=source.id,
+            status="queued",
+            attempt_count=0,
+            selected_url=source.url,
+            selected_url_source=None,
+            resolution_attempts=[],
+            reason_code=None,
+            last_error=None,
         )
+        reusable_artifact = find_reusable_artifact(db, source)
+        if reusable_artifact is not None:
+            item.status = "downloaded" if reusable_artifact.quality_status in {"pdf", "html_validated"} else "partial"
+            item.selected_url_source = "artifact_reuse"
+            item.resolution_attempts = [{"candidate_source": "artifact_reuse", "candidate_url": source.url or "", "candidate_rank": 1}]
+            reused_count += 1
+        db.add(item)
+        db.flush()
+        if reusable_artifact is not None:
+            db.add(_clone_artifact_for_item(acq_run_id=acq_run.id, item=item, source_id=source.id, artifact=reusable_artifact))
 
+    acq_run.downloaded_total = reused_count
     db.commit()
     db.refresh(acq_run)
     return acq_run
@@ -189,6 +201,10 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         db.commit()
 
         items = db.scalars(select(AcquisitionItem).where(AcquisitionItem.acq_run_id == run.id)).all()
+        artifacts_by_source = {
+            artifact.source_id: artifact
+            for artifact in db.scalars(select(Artifact).where(Artifact.acq_run_id == run.id).order_by(Artifact.created_at.desc(), Artifact.id.desc())).all()
+        }
         downloaded_total = 0
         partial_total = 0
         failed_total = 0
@@ -207,6 +223,14 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
             if run.retry_failed_only and item.status in {"downloaded", "partial", "skipped"}:
                 skipped_total += 1
                 observability.inc("skipped")
+                item.updated_at = datetime.now(UTC)
+                persist_progress()
+                continue
+
+            if item.status == "downloaded" and artifacts_by_source.get(item.source_id) is not None:
+                downloaded_total += 1
+                observability.inc("downloaded")
+                item.last_error = None
                 item.updated_at = datetime.now(UTC)
                 persist_progress()
                 continue
@@ -246,7 +270,17 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
                 observability.inc("resolved_via_repository")
 
             if outcome.kind == "pdf":
-                artifact = _persist_artifact(db, run.id, item, source.id, kind="pdf", mime_type=outcome.mime_type, content=outcome.content)
+                artifact = _persist_artifact(
+                    db,
+                    run.id,
+                    item,
+                    source.id,
+                    kind="pdf",
+                    mime_type=outcome.mime_type,
+                    content=outcome.content,
+                    quality_status=outcome.quality_status,
+                    quality_reason=outcome.quality_reason,
+                )
                 item.status = "downloaded"
                 item.last_error = None
                 downloaded_total += 1
@@ -268,18 +302,28 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
                     kind="html",
                     mime_type=outcome.mime_type,
                     content=outcome.content,
+                    quality_status=outcome.quality_status,
+                    quality_reason=outcome.quality_reason,
                 )
-                item.status = "partial"
-                partial_total += 1
-                observability.inc("partial")
-                observability.inc("manual_recovery_required")
+                if outcome.quality_status == "html_validated":
+                    item.status = "downloaded"
+                    item.last_error = None
+                    downloaded_total += 1
+                    observability.inc("downloaded")
+                    observability.inc("html_validated")
+                else:
+                    item.status = "partial"
+                    partial_total += 1
+                    observability.inc("partial")
+                    observability.inc("manual_recovery_required")
+                    observability.inc("html_invalid")
                 db.add(artifact)
                 observability.record_download(
                     acq_run_id=run.id,
                     source_id=source.id,
                     domain=domain,
                     latency_ms=latency_ms,
-                    status="partial",
+                    status=item.status,
                     error=outcome.error,
                 )
             elif outcome.error == "no_candidate_urls":
@@ -323,6 +367,7 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         db.commit()
         _write_manifest_file(db, run.id)
         _write_coverage_report_file(run.id, observability.snapshot())
+        _auto_enqueue_parse_run(db, run.id)
         observability.emit_summary(acq_run_id=run.id, status=run.status)
         clear_run_stop_request(base_dir=settings.runtime_state_dir, phase="acquisition", run_id=run.id)
     except RunStopRequested:
@@ -345,6 +390,23 @@ def execute_acquisition_run(db: Session, run: AcquisitionRun) -> None:
         raise
 
 
+def _auto_enqueue_parse_run(db: Session, acq_run_id: str) -> None:
+    artifact_exists = db.scalars(select(Artifact.id).where(Artifact.acq_run_id == acq_run_id).limit(1)).first()
+    if artifact_exists is None:
+        return
+    try:
+        parse_run = create_parse_run(db, acq_run_id, retry_failed_only=False)
+        enqueue_parse_run(parse_run.id)
+        logger.info(
+            "auto_parse_enqueued acq_run_id=%s parse_run_id=%s total_documents=%s",
+            acq_run_id,
+            parse_run.id,
+            parse_run.total_documents,
+        )
+    except Exception as exc:  # pragma: no cover - best-effort follow-up to acquisition completion
+        logger.warning("auto_parse_enqueue_failed acq_run_id=%s error=%s", acq_run_id, exc)
+
+
 class AcquisitionOutcome(NamedTuple):
     kind: str | None
     mime_type: str | None
@@ -355,6 +417,8 @@ class AcquisitionOutcome(NamedTuple):
     attempts: int
     error: str | None
     reason_code: str | None
+    quality_status: str | None = None
+    quality_reason: str | None = None
 
 
 def _acquire_source_content(source: Source, *, internal_repository_base_url: str | None = None) -> AcquisitionOutcome:
@@ -370,6 +434,8 @@ def _acquire_source_content(source: Source, *, internal_repository_base_url: str
             attempts=0,
             error="no_candidate_urls",
             reason_code="no_oa_found",
+            quality_status=None,
+            quality_reason=None,
         )
 
     max_bytes = int(getattr(settings, "acquisition_max_bytes", 25_000_000))
@@ -426,8 +492,14 @@ def _acquire_source_content(source: Source, *, internal_repository_base_url: str
                 attempts=attempts,
                 error=None,
                 reason_code=None,
+                quality_status="pdf",
+                quality_reason="publisher_pdf",
             )
         if effective_result.kind == "html" and html_fallback is None:
+            quality = classify_html_artifact(
+                html_text=(effective_result.content or b"").decode("utf-8", errors="ignore"),
+                url=effective_result.url,
+            )
             html_fallback = AcquisitionOutcome(
                 kind="html",
                 mime_type=effective_result.mime_type,
@@ -436,8 +508,10 @@ def _acquire_source_content(source: Source, *, internal_repository_base_url: str
                 selected_url_source=source_name,
                 resolution_attempts=resolution_attempts,
                 attempts=attempts,
-                error=None,
-                reason_code=None,
+                error=None if quality.accepted else "html_invalid",
+                reason_code=None if quality.accepted else "source_error",
+                quality_status=quality.status,
+                quality_reason=quality.reason,
             )
         if effective_result.error:
             last_error = effective_result.error
@@ -451,8 +525,10 @@ def _acquire_source_content(source: Source, *, internal_repository_base_url: str
             selected_url_source=html_fallback.selected_url_source,
             resolution_attempts=resolution_attempts,
             attempts=attempts,
-            error="pdf_unavailable_html_fallback",
-            reason_code="source_error",
+            error=None if html_fallback.quality_status == "html_validated" else "pdf_unavailable_html_fallback",
+            reason_code=None if html_fallback.quality_status == "html_validated" else "source_error",
+            quality_status=html_fallback.quality_status,
+            quality_reason=html_fallback.quality_reason,
         )
     return AcquisitionOutcome(
         kind=None,
@@ -464,6 +540,8 @@ def _acquire_source_content(source: Source, *, internal_repository_base_url: str
         attempts=attempts,
         error=last_error,
         reason_code=_reason_code_from_error(last_error),
+        quality_status=None,
+        quality_reason=None,
     )
 
 
@@ -651,6 +729,8 @@ def _persist_artifact(
     kind: str,
     mime_type: str | None,
     content: bytes | None,
+    quality_status: str | None = None,
+    quality_reason: str | None = None,
 ) -> Artifact:
     payload = content or b""
     checksum = hashlib.sha256(payload).hexdigest()
@@ -669,6 +749,94 @@ def _persist_artifact(
         checksum_sha256=checksum,
         size_bytes=len(payload),
         mime_type=mime_type,
+        quality_status=quality_status,
+        quality_reason=quality_reason,
+    )
+
+
+def _artifact_file_path(path_value: str | None) -> Path:
+    raw = (path_value or "").strip()
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    return Path(settings.artifacts_dir) / path
+
+
+def _normalize_doi(value: str | None) -> str | None:
+    normalized = (value or "").strip().lower()
+    return normalized or None
+
+
+def artifact_reuse_key(source: Source) -> tuple[str, str] | None:
+    normalized_doi = _normalize_doi(source.doi)
+    if normalized_doi:
+        return ("doi", normalized_doi)
+    normalized_url = _normalize_url(source.url or "")
+    if normalized_url:
+        return ("url", normalized_url)
+    return None
+
+
+def find_reusable_artifact(db: Session, source: Source) -> Artifact | None:
+    key = artifact_reuse_key(source)
+    if key is None:
+        return None
+
+    rows = db.execute(
+        select(Artifact, Source)
+        .join(Source, Source.id == Artifact.source_id)
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+    ).all()
+    best: Artifact | None = None
+    best_rank: tuple[int, int, str, str] | None = None
+    for artifact, candidate_source in rows:
+        if artifact_reuse_key(candidate_source) != key:
+            continue
+        path = _artifact_file_path(artifact.path)
+        if not path.exists() or not path.is_file():
+            continue
+        if artifact.quality_status not in {"pdf", "html_validated"}:
+            continue
+        rank = (
+            2 if artifact.quality_status == "pdf" else 1,
+            1 if _artifact_has_parsed_document(db, artifact.id) else 0,
+            str(artifact.created_at),
+            artifact.id,
+        )
+        if best_rank is None or rank > best_rank:
+            best = artifact
+            best_rank = rank
+    return best
+
+
+def _artifact_has_parsed_document(db: Session, artifact_id: str) -> bool:
+    return (
+        db.scalar(
+            select(ParsedDocument.id)
+            .where(
+                ParsedDocument.artifact_id == artifact_id,
+                ParsedDocument.status == "parsed",
+                ParsedDocument.body_text.is_not(None),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _clone_artifact_for_item(*, acq_run_id: str, item: AcquisitionItem, source_id: str, artifact: Artifact) -> Artifact:
+    return Artifact(
+        id=f"artifact_{uuid.uuid4().hex[:12]}",
+        acq_run_id=acq_run_id,
+        source_id=source_id,
+        item_id=item.id,
+        kind=artifact.kind,
+        path=artifact.path,
+        checksum_sha256=artifact.checksum_sha256,
+        size_bytes=artifact.size_bytes,
+        mime_type=artifact.mime_type,
+        quality_status=artifact.quality_status,
+        quality_reason=artifact.quality_reason,
     )
 
 
@@ -940,6 +1108,8 @@ def build_manifest_payload(db: Session, acq_run_id: str) -> dict:
                 "checksum_sha256": a.checksum_sha256,
                 "size_bytes": a.size_bytes,
                 "mime_type": a.mime_type,
+                "quality_status": a.quality_status,
+                "quality_reason": a.quality_reason,
             }
             for a in artifacts
         ],
@@ -1069,11 +1239,17 @@ def register_manual_upload(
         checksum_sha256=checksum,
         size_bytes=len(content),
         mime_type=mime_type,
+        quality_status="pdf" if kind == "pdf" else None,
+        quality_reason="manual_pdf" if kind == "pdf" else None,
     )
+    if kind == "html":
+        quality = classify_html_artifact(html_text=content.decode("utf-8", errors="ignore"))
+        artifact.quality_status = quality.status
+        artifact.quality_reason = quality.reason
     db.add(artifact)
-    item.status = "downloaded"
-    item.last_error = None
-    item.reason_code = None
+    item.status = "downloaded" if artifact.quality_status in {"pdf", "html_validated"} else "partial"
+    item.last_error = None if item.status == "downloaded" else "html_invalid"
+    item.reason_code = None if item.status == "downloaded" else "source_error"
     item.updated_at = datetime.now(UTC)
     _recompute_acquisition_totals(db, run)
     db.commit()
