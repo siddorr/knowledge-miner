@@ -989,6 +989,24 @@ Status:
 - Resolution:
   - `Advanced` now exposes a preset-based ChatGPT model selector wired to the existing AI settings API.
 
+63. [ ] P1 - Add guided summary prompt editor and summary model visibility in Library
+- Problem:
+  - Session summary prompt editing is currently only a raw textarea, which is cumbersome and error-prone for structured summary prompts.
+  - The summarization model is global, but the Library Summary UI does not clearly show which model will be used for new summaries or which model generated the current summary.
+- Scope:
+  - add a guided section-block editor for session summary settings in the Library Summary Prompt panel
+  - keep raw prompt editing available as an advanced fallback
+  - keep summary model selection global in AI settings
+  - show the current global summary model and the selected paper's last-used summary model in the Library Summary window
+- Acceptance criteria:
+  - users can modify summary behavior through a guided form instead of editing only raw prompt text
+  - raw prompt editing remains available
+  - summary generation continues using the global AI model
+  - the Library Summary UI shows:
+    - the current model configured for future summaries
+    - the model used for the selected paper's last generated summary
+  - existing summary routes and stored prompts remain backward-compatible
+
 ## GUI Spec Review Checklist
 
 - [x] Global shell is `header/status -> controls -> navigation -> workspace -> footer`

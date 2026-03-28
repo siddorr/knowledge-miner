@@ -1,68 +1,71 @@
-# Server Restart Instruction (First Attempt)
+# Server Start / Restart
 
-Default method: start in a live terminal session.
-Use these exact commands from a terminal.
+Current recommended methods are the repo scripts, not a hand-written uvicorn command.
 
-## 1) Go to project and activate venv
+## Recommended commands
+
+```bash
+cd /home/garik/Documents/git/knowledge-miner
+./run_server.sh
+```
+
+Routine restart after code/config changes:
+
+```bash
+cd /home/garik/Documents/git/knowledge-miner
+./restart_server.sh
+```
+
+Check current server/runtime state:
+
+```bash
+cd /home/garik/Documents/git/knowledge-miner
+./server_status.sh
+```
+
+These scripts already handle:
+1. venv activation
+2. `.env` loading if present
+3. stopping stale uvicorn processes
+4. runtime lock handling
+5. healthcheck verification
+
+## Manual start (only when you explicitly need it)
 
 ```bash
 cd /home/garik/Documents/git/knowledge-miner
 source .venv/bin/activate
-```
-
-## 2) Load environment variables
-
-```bash
 set -a
 [ -f .env ] && source .env
 set +a
-```
-
-## 3) Stop old server (if running)
-
-```bash
-pkill -f "[u]vicorn knowledge_miner.main:app" || true
-```
-
-## 4) Start server (live session, recommended)
-
-```bash
 python -m uvicorn knowledge_miner.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Expected line:
+Expected health response:
 
-`Uvicorn running on http://0.0.0.0:8000`
+`{"status":"ok"}`
 
-## 5) Verify health in another terminal
+## Manual health check
 
 ```bash
 curl -s http://127.0.0.1:8000/healthz
 ```
 
-Expected:
+## Notes
 
-`{"status":"ok"}`
-
-## Optional: background start (non-live)
-
-Use this only if you explicitly want detached mode:
-
-```bash
-cd /home/garik/Documents/git/knowledge-miner && source .venv/bin/activate && set -a; [ -f .env ] && source .env || true; set +a; pkill -f "[u]vicorn knowledge_miner.main:app" || true; nohup python -m uvicorn knowledge_miner.main:app --reload >/tmp/knowledge-miner-uvicorn.log 2>&1 &
-```
-
-## One-line restart (live-session, copy/paste)
-
-```bash
-cd /home/garik/Documents/git/knowledge-miner && source .venv/bin/activate && set -a; [ -f .env ] && source .env || true; set +a; pkill -f "[u]vicorn knowledge_miner.main:app" || true; python -m uvicorn knowledge_miner.main:app --reload
-```
+1. `run_server.sh` binds to `0.0.0.0:8000` by default.
+2. `restart_server.sh` is the normal way to apply code/config changes locally.
+3. `server_status.sh` is the quickest way to confirm PID, lock, and health status.
+4. Frontend assets use a version query param, but a hard refresh of `/hmi2` is still useful after UI changes.
 
 ## Common issues
 
 - `ModuleNotFoundError: No module named 'knowledge_miner'`
-  - You are not in project folder, or venv not activated.
+  - You are not in project folder, or venv not activated, or you bypassed the repo scripts incorrectly.
 - `No such option: --relo`
   - Typo: use `--reload`.
 - `SyntaxError` from `python -c "from ... import` on multiple lines
   - Keep `python -c` as a single-line command.
+- Healthcheck fails after restart
+  - inspect `knowledge-miner-uvicorn.log`
+  - then run `./server_status.sh`

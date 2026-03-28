@@ -7,21 +7,29 @@ Knowledge Miner is an end-to-end literature workflow for Ultrapure Water (UPW) i
 Current product includes:
 1. Discovery across research/web sources with citation expansion and deduplication.
 2. AI-first relevance decisioning with human review override.
-3. Document acquisition (PDF-first, HTML fallback) with manual recovery tools.
+3. Document acquisition (PDF-first, validated HTML fallback) with manual recovery tools.
 4. Batch PDF upload with auto-match to pending acquisition items.
 5. Full-text parse/chunk processing and search.
 6. Operator-driven discovery runs with explicit citation expansion and live run progress in `Discover`.
-7. Session-based HMI workflow with live updates, active-session switching, inline new-session creation, and per-session context persistence.
+7. Session-based `hmi2` workflow with `Discover`, `Review`, `Documents`, `Library Export`, `Bookmarks`, and `Advanced`.
 8. Direct Review -> Documents transition (no manual "send to documents" step).
 9. Global bookmarks workspace with bookmark-to-session branching.
 10. Session-scoped paper annotations in `Library Export`:
    - freeform tags
    - approved tags
    - AI suggested tags generated from parsed full text and kept separate until promoted
-   - AI paper summaries from parsed full text
-11. Run-context controls are kept in Advanced; task pages run on active session context.
-12. UI design authority now follows the in-repo `UI_SPEC.md`.
-13. Discover requires per-session research context; AI ranking and summaries use this context and store snapshots per session/run where applicable.
+   - AI paper summaries generated from parsed full text
+   - one canonical structured summary artifact per paper (`summary` plus machine-readable fields)
+   - formatted structured summary preview in the UI
+   - per-session summary prompt editing with reset-to-default support
+11. Document-state badges and Library filters for:
+   - PDF availability
+   - parse state
+   - bad HTML warning
+   - current up-to-date summary availability
+12. Run-context controls are kept in Advanced; task pages run on active session context.
+13. UI design authority now follows the in-repo `UI_SPEC.md`.
+14. Discover requires per-session research context; AI ranking and summaries use this context and store snapshots per session/run where applicable.
 
 ## Session And Citation Logic
 
@@ -62,6 +70,13 @@ pip install -e .[dev]
 ./run_server.sh
 ```
 
+Routine restart after code or config changes:
+
+```bash
+cd /home/garik/Documents/git/knowledge-miner
+./restart_server.sh
+```
+
 Open:
 1. API docs: `http://127.0.0.1:8000/docs`
 2. HMI2: `http://127.0.0.1:8000/hmi2`
@@ -75,9 +90,16 @@ Static asset cache strategy:
 1. `/hmi2` injects a version query param (`?v=<build stamp>`) for `gui.js` and `gui.css`.
 2. After restart/deploy, browsers fetch the updated frontend bundle automatically.
 
+Current HMI workflow highlights:
+1. Top shell is `header/status -> controls -> navigation -> workspace -> footer`.
+2. Session/file actions are grouped under `File`, with visible `Save`.
+3. `Review` is a two-pane screening workspace with queue filters and keyboard shortcuts.
+4. `Documents` distinguishes valid PDF, parsed state, and bad HTML via compact document badges.
+5. `Library Export` provides summary preview, structured summary display, annotation/tag tools, and export controls.
+
 SQLite local repair behavior:
 1. Local startup with `DB_AUTO_MIGRATE_ON_START=true` auto-creates missing feature tables such as bookmarks and paper annotations.
-2. Startup also backfills known incorrect persisted discovery query counters in SQLite local/dev databases.
+2. Startup also repairs known incorrect persisted discovery/acquisition state in SQLite local/dev databases where additive compatibility logic exists.
 3. Automatic SQLite backups are stored under `./db_backups/` hourly for the live app database, keeping the latest 48 automatic snapshots by default.
 4. `Advanced -> Database Restore` can create a manual backup on demand, list managed backups plus legacy backup files, snapshot the current DB before restore, and restore a selected backup in place.
 5. The running server should use `knowledge_miner.db`; `pytest` must not target that file, and direct `python -c` or heredoc inspection now requires an explicit `DATABASE_URL`.
@@ -150,6 +172,7 @@ Source of truth docs:
 7. `BACKLOG.md` - active implementation tasks
 8. `AGENTS.md` - contributor/AI operating rules
 9. `MANUAL_LIVE_LOGIC_TEST.md` - live logic-test procedure and artifact expectations
+10. `SERVER_RESTART.md` - current recommended start/restart procedure
 
 Archived legacy docs are in `archive/`.
 UI navigation/source-of-truth model is defined only in `UI_SPEC.md`; archived UI docs are explicitly deprecated.
