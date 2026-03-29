@@ -17,11 +17,15 @@ Current product includes:
 10. Session-scoped paper annotations in `Library Export`:
    - freeform tags
    - approved tags
-   - AI suggested tags generated from parsed full text and kept separate until promoted
+   - category-based tag review and assignment workflow with `Tag Spec` and `Tag Review`
+   - session-level candidate-tag generation across accepted parsed papers
+   - grouped approve/reject review by tag category
+   - session-approved tag catalog applied back to papers, with optional categorized free-text tags
    - AI paper summaries generated from parsed full text
    - one canonical structured summary artifact per paper (`summary` plus machine-readable fields)
    - formatted structured summary preview in the UI
-   - per-session summary prompt editing with reset-to-default support
+   - per-session structured summary builder with generated read-only prompt preview
+   - current summary-model visibility plus last-used model visibility
 11. Document-state badges and Library filters for:
    - PDF availability
    - parse state
@@ -48,17 +52,21 @@ Discovery and citation expansion follow different reuse rules inside a session:
 
 ## Library Tagging Logic
 
-1. Manual tags remain authoritative:
-   - `Freeform Tags` and `Approved Tags` change only through explicit operator actions.
-2. AI suggested tags:
-   - are generated from parsed full text in `Library`
-   - stay separate from manual tags
-   - do not auto-edit freeform or approved tags
-3. Promotion:
-   - suggested tags can be promoted to freeform tags one by one
-   - suggested tags can be promoted to approved tags only if the tag already exists in the session approved-tag catalog
-4. Session scope:
-   - suggested AI tags, manual tags, and summaries are session-scoped annotation state
+1. Tagging is a two-phase session workflow:
+   - `Tag Spec` defines editable categories, guidance, allowed tags, and per-category free-text policy.
+   - `Tag Review` generates candidate tags across all accepted parsed papers and groups them by category.
+2. Candidate review is session-level:
+   - operators approve or reject candidate tags once for the session
+   - rejected candidates persist and are suppressed on later candidate-generation reruns until reset
+3. Paper tagging uses the approved session vocabulary:
+   - `Apply Approved Tags to Papers` assigns approved tags back to accepted parsed papers by category
+   - per-paper assignment can also be run for one selected paper from `Library Export`
+   - categorized free-text tags may be assigned only in categories where the tag spec allows them
+4. Paper annotation state remains editable:
+   - `Approved Tags` and `Freeform Tags` are still shown per paper
+   - categorized tag storage is canonical, while flat tag lists remain compatibility views in the API/UI
+5. Session scope:
+   - tag spec, candidate review state, paper tags, and summaries are all session-scoped annotation state
 
 ## Quick Start
 
@@ -95,7 +103,7 @@ Current HMI workflow highlights:
 2. Session/file actions are grouped under `File`, with visible `Save`.
 3. `Review` is a two-pane screening workspace with queue filters and keyboard shortcuts.
 4. `Documents` distinguishes valid PDF, parsed state, and bad HTML via compact document badges.
-5. `Library Export` provides summary preview, structured summary display, annotation/tag tools, and export controls.
+5. `Library Export` provides summary preview, structured summary display, `Tag Spec`, `Tag Review`, per-paper tag tools, and export controls.
 
 SQLite local repair behavior:
 1. Local startup with `DB_AUTO_MIGRATE_ON_START=true` auto-creates missing feature tables such as bookmarks and paper annotations.

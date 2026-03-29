@@ -1,6 +1,6 @@
 # Current Scope
 
-Status date: 2026-03-27
+Status date: 2026-03-28
 
 ## Product State (Now)
 
@@ -18,9 +18,12 @@ Knowledge Miner is an end-to-end UPW literature workflow for semiconductor manuf
 11. Session-scoped paper annotations with:
  - freeform tags
  - approved tags
- - AI suggested tags
+ - category-based session tag spec
+ - grouped candidate-tag review and approval/rejection
+ - categorized paper tag assignment from approved session tags
  - structured AI summaries generated from parsed full text
- - per-session summary prompt settings
+ - per-session structured summary builder and generated prompt preview
+ - summary-model visibility for current and last-used model
 12. `hmi2` now surfaces document-state badges and Library filters for PDF availability, parse state, bad HTML, and current-summary availability.
 
 ## Approved Target UI Contract
@@ -45,10 +48,10 @@ Current implementation now matches the approved `UI_SPEC.md` across the primary 
 5. session/file controls are consolidated under `File` plus visible `Save`
 
 Remaining gaps are mainly polish and operability work tracked in `BACKLOG.md`, including:
-1. guided summary-prompt editing
-2. clearer summary-model visibility
-3. further `Advanced` isolation cleanup
-4. test-harness stabilization
+1. further tagging-result quality/debugging work
+2. further `Advanced` isolation cleanup
+3. test-harness stabilization
+4. additional operator-efficiency polish
 
 `UI_SPEC.md` remains the design source of truth; this document describes shipped product state and scope boundaries.
 
@@ -95,7 +98,7 @@ Remaining gaps are mainly polish and operability work tracked in `BACKLOG.md`, i
 - global and per-action busy/progress indicators
 - batch manual-upload recovery with auto DOI/title matching
 - bookmark workspace and bookmark-to-session branching
-- per-session library annotations, AI tag suggestion generation, summary generation, and structured summary preview
+- per-session library annotations, category-based tag spec/review/assignment, summary generation, and structured summary preview
 
 ## Out of Scope
 
@@ -130,6 +133,6 @@ This product boundary is implemented. Remaining work is primarily product harden
 1. Production hardening and deployment reliability.
 2. UX polish and operator efficiency improvements.
 3. Search quality and retrieval accuracy improvements.
-4. Summary prompt/editor ergonomics and summary-model visibility.
+4. Tag-assignment quality, observability, and operator debugging improvements.
 5. Test-harness stabilization for API/UI contract coverage.
 6. Backlog-driven enhancements tracked only in `BACKLOG.md`.
