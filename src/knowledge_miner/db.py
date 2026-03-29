@@ -37,6 +37,7 @@ REQUIRED_TABLES = (
     "parse_runs",
     "session_profiles",
     "session_tag_catalog",
+    "session_tag_specs",
     "session_summary_settings",
     "bookmarks",
     "paper_annotations",
@@ -370,6 +371,8 @@ def ensure_sqlite_schema_compatibility() -> None:
                 conn.execute(text("UPDATE paper_annotations SET ai_suggested_tags_json = '[]' WHERE ai_suggested_tags_json IS NULL"))
             if "ai_summary_json" not in annotation_columns:
                 conn.exec_driver_sql("ALTER TABLE paper_annotations ADD COLUMN ai_summary_json JSON")
+            if "summary_editor_snapshot_json" not in annotation_columns:
+                conn.exec_driver_sql("ALTER TABLE paper_annotations ADD COLUMN summary_editor_snapshot_json JSON")
             if "tag_suggestion_status" not in annotation_columns:
                 conn.exec_driver_sql("ALTER TABLE paper_annotations ADD COLUMN tag_suggestion_status VARCHAR")
                 conn.execute(text("UPDATE paper_annotations SET tag_suggestion_status = 'none' WHERE tag_suggestion_status IS NULL"))
@@ -381,6 +384,118 @@ def ensure_sqlite_schema_compatibility() -> None:
                 conn.exec_driver_sql("ALTER TABLE paper_annotations ADD COLUMN tag_suggestion_generated_at DATETIME")
             if "tag_suggestion_error" not in annotation_columns:
                 conn.exec_driver_sql("ALTER TABLE paper_annotations ADD COLUMN tag_suggestion_error TEXT")
+            if "freeform_tags_by_category_json" not in annotation_columns:
+                conn.exec_driver_sql("ALTER TABLE paper_annotations ADD COLUMN freeform_tags_by_category_json JSON")
+            if "approved_tags_by_category_json" not in annotation_columns:
+                conn.exec_driver_sql("ALTER TABLE paper_annotations ADD COLUMN approved_tags_by_category_json JSON")
+
+        if "session_profiles" in table_names:
+            session_profile_columns = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(session_profiles)").fetchall()
+            }
+            if "tag_candidate_status" not in session_profile_columns:
+                conn.exec_driver_sql("ALTER TABLE session_profiles ADD COLUMN tag_candidate_status VARCHAR")
+                conn.execute(text("UPDATE session_profiles SET tag_candidate_status = 'none' WHERE tag_candidate_status IS NULL"))
+            if "tag_candidate_generated_at" not in session_profile_columns:
+                conn.exec_driver_sql("ALTER TABLE session_profiles ADD COLUMN tag_candidate_generated_at DATETIME")
+            if "tag_candidate_error" not in session_profile_columns:
+                conn.exec_driver_sql("ALTER TABLE session_profiles ADD COLUMN tag_candidate_error TEXT")
+            if "tag_assignment_status" not in session_profile_columns:
+                conn.exec_driver_sql("ALTER TABLE session_profiles ADD COLUMN tag_assignment_status VARCHAR")
+                conn.execute(text("UPDATE session_profiles SET tag_assignment_status = 'none' WHERE tag_assignment_status IS NULL"))
+            if "tag_assignment_generated_at" not in session_profile_columns:
+                conn.exec_driver_sql("ALTER TABLE session_profiles ADD COLUMN tag_assignment_generated_at DATETIME")
+            if "tag_assignment_error" not in session_profile_columns:
+                conn.exec_driver_sql("ALTER TABLE session_profiles ADD COLUMN tag_assignment_error TEXT")
+
+        if "session_tag_catalog" in table_names:
+            tag_catalog_columns = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(session_tag_catalog)").fetchall()
+            }
+            if "category_key" not in tag_catalog_columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE session_tag_catalog ADD COLUMN category_key VARCHAR NOT NULL DEFAULT 'uncategorized_tags'"
+                )
+                conn.execute(
+                    text(
+                        "UPDATE session_tag_catalog SET category_key = 'uncategorized_tags' "
+                        "WHERE category_key IS NULL OR TRIM(category_key) = ''"
+                    )
+                )
+            conn.exec_driver_sql("DROP INDEX IF EXISTS ix_session_tag_catalog_session_id_tag")
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_session_tag_catalog_session_id_category_tag "
+                "ON session_tag_catalog (session_id, category_key, tag)"
+            )
+
+        if "session_tag_candidates" not in table_names:
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE session_tag_candidates (
+                    id VARCHAR PRIMARY KEY,
+                    session_id VARCHAR NOT NULL,
+                    category_key VARCHAR NOT NULL DEFAULT 'uncategorized_tags',
+                    tag VARCHAR NOT NULL,
+                    status VARCHAR NOT NULL DEFAULT 'candidate',
+                    source_count INTEGER NOT NULL DEFAULT 0,
+                    source_ids_json JSON NOT NULL DEFAULT '[]',
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_session_tag_candidates_session_id_category_tag "
+                "ON session_tag_candidates (session_id, category_key, tag)"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_session_tag_candidates_session_id_category_status_updated_at "
+                "ON session_tag_candidates (session_id, category_key, status, updated_at)"
+            )
+        else:
+            tag_candidate_columns = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(session_tag_candidates)").fetchall()
+            }
+            if "category_key" not in tag_candidate_columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE session_tag_candidates ADD COLUMN category_key VARCHAR NOT NULL DEFAULT 'uncategorized_tags'"
+                )
+                conn.execute(
+                    text(
+                        "UPDATE session_tag_candidates SET category_key = 'uncategorized_tags' "
+                        "WHERE category_key IS NULL OR TRIM(category_key) = ''"
+                    )
+                )
+            conn.exec_driver_sql("DROP INDEX IF EXISTS ix_session_tag_candidates_session_id_tag")
+            conn.exec_driver_sql("DROP INDEX IF EXISTS ix_session_tag_candidates_session_id_status_updated_at")
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_session_tag_candidates_session_id_category_tag "
+                "ON session_tag_candidates (session_id, category_key, tag)"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_session_tag_candidates_session_id_category_status_updated_at "
+                "ON session_tag_candidates (session_id, category_key, status, updated_at)"
+            )
+
+        if "session_tag_specs" not in table_names:
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE session_tag_specs (
+                    session_id VARCHAR PRIMARY KEY,
+                    category_config_json JSON NOT NULL,
+                    prompt_template TEXT NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """
+            )
+
+        if "session_summary_settings" in table_names:
+            summary_settings_columns = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(session_summary_settings)").fetchall()
+            }
+            if "editor_config_json" not in summary_settings_columns:
+                conn.exec_driver_sql("ALTER TABLE session_summary_settings ADD COLUMN editor_config_json JSON")
 
         if "artifacts" in table_names:
             artifact_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(artifacts)").fetchall()}

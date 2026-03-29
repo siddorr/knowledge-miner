@@ -288,18 +288,49 @@
           </select>
         </label>
         <button id="libraryGenerateVisibleSummariesBtn" type="button">Generate Summaries for Visible</button>
-        <button id="libraryGenerateVisibleTagsBtn" type="button">Generate Tags for Visible</button>
+        <button id="libraryGenerateVisibleTagsBtn" type="button">Generate Candidate Tags</button>
         <button id="libraryPromptToggleBtn" type="button">Summary Prompt</button>
         <button id="libraryApprovedTagsToggleBtn" type="button">Approved Tags</button>
       </div>
       <div id="librarySummaryPromptPanel" class="card" hidden>
+        <strong>Session Summary Prompt</strong>
+        <p class="muted">Current summary model: <code id="libraryCurrentSummaryModel">-</code></p>
         <label>
-          Session Summary Prompt
-          <textarea id="librarySummaryPromptInput" rows="6" placeholder="Describe what the AI summary should focus on for this session."></textarea>
+          Summary Focus
+          <textarea id="librarySummaryFocusInput" rows="3" placeholder="Describe the expected human-readable summary focus."></textarea>
         </label>
+        <div>
+          <strong>Extracted Fields</strong>
+          <div id="librarySummaryFieldsList"></div>
+          <div class="row">
+            <button id="libraryAddSummaryFieldBtn" type="button">Add Field</button>
+          </div>
+        </div>
+        <div>
+          <strong>Controlled Values</strong>
+          <div id="librarySummaryControlledValuesList"></div>
+          <div class="row">
+            <button id="libraryAddSummaryControlledValueBtn" type="button">Add Controlled Values</button>
+          </div>
+        </div>
+        <div>
+          <strong>Extraction Rules</strong>
+          <p id="librarySummaryLockedRulesText" class="muted">Extraction rules are system-controlled and not editable.</p>
+        </div>
+        <div>
+          <strong>Critical Constraints</strong>
+          <p id="librarySummaryLockedConstraintsText" class="muted">Critical constraints are system-controlled and not editable.</p>
+        </div>
         <div class="row">
           <button id="librarySaveSummaryPromptBtn" type="button">Save Prompt</button>
           <button id="libraryResetSummaryPromptBtn" type="button">Reset to Default</button>
+          <button id="libraryToggleRawSummaryPromptBtn" type="button">Show Generated Prompt</button>
+        </div>
+        <div id="libraryRawSummaryPromptWrap" hidden>
+          <label>
+            Generated Prompt
+            <textarea id="librarySummaryPromptInput" rows="10" readonly></textarea>
+          </label>
         </div>
         <p class="muted">Prompt must return one JSON object with a non-empty <code>summary</code> plus structured analysis fields.</p>
         <p id="librarySummaryPromptState" class="muted">Using the default summary prompt.</p>
@@ -329,6 +360,8 @@
           <div class="subtab-row">
             <button id="libraryDetailsTabBtn" type="button" class="subtab-btn active">Details</button>
             <button id="librarySummaryPreviewTabBtn" type="button" class="subtab-btn">Summary Preview</button>
+            <button id="libraryTagSpecTabBtn" type="button" class="subtab-btn">Tag Spec</button>
+            <button id="libraryTagReviewTabBtn" type="button" class="subtab-btn">Tag Review</button>
           </div>
           <div id="libraryDetailsPanel">
           <p id="libraryAbstract" class="detail-text">Select a paper to inspect and export.</p>
@@ -359,16 +392,16 @@
             <button id="libraryGenerateSummaryBtn" type="button">Generate Summary</button>
             <button id="libraryRegenerateSummaryBtn" type="button">Regenerate Summary</button>
           </div>
-          <h4>AI Suggested Tags</h4>
-          <p id="librarySuggestedTagsStatus" class="muted">No AI tags generated.</p>
-          <div id="librarySuggestedTags" class="tag-chip-list"></div>
+          <h4>Tag Workflow</h4>
+          <p class="muted">Use the Tag Review subtab to generate candidate tags across all accepted papers, approve or reject them once, and then apply approved tags back onto papers.</p>
           <div class="row">
-            <button id="libraryGenerateTagsBtn" type="button">Generate Tags</button>
-            <button id="libraryRegenerateTagsBtn" type="button">Regenerate Tags</button>
+            <button id="libraryApplyApprovedTagsOneBtn" type="button">Apply Approved Tags to This Paper</button>
+            <button id="libraryReapplyApprovedTagsOneBtn" type="button">Reapply Approved Tags to This Paper</button>
           </div>
           </div>
           <div id="librarySummaryPreviewPanel" hidden>
             <p id="librarySummaryPreviewStatus" class="muted">No summary generated.</p>
+            <p class="muted">Current model: <code id="librarySummaryCurrentModelValue">-</code> | Last generated with: <code id="librarySummaryLastModelValue">-</code></p>
             <h4>Narrative Summary</h4>
             <pre id="librarySummaryPreviewText" class="detail-text">Select a paper to inspect generated summary.</pre>
             <h4>Structured Data</h4>
@@ -378,6 +411,42 @@
               <button id="libraryCopySummaryBtn" type="button">Copy Summary</button>
               <button id="librarySummaryPreviewGenerateBtn" type="button">Generate Summary</button>
               <button id="librarySummaryPreviewRegenerateBtn" type="button">Regenerate Summary</button>
+            </div>
+          </div>
+          <div id="libraryTagSpecPanel" hidden>
+            <p class="muted">Define structured tagging categories, guidance, allowed tags, and whether each category permits free-text fallback.</p>
+            <div class="row">
+              <button id="libraryAddTagSpecCategoryBtn" type="button">Add Category</button>
+              <button id="librarySaveTagSpecBtn" type="button">Save Tag Spec</button>
+              <button id="libraryResetTagSpecBtn" type="button">Reset to Default</button>
+              <button id="libraryToggleRawTagPromptBtn" type="button">Show Generated Prompt</button>
+            </div>
+            <div id="libraryTagSpecCategories" class="tag-spec-grid"></div>
+            <div id="libraryRawTagPromptWrap" hidden>
+              <label>
+                Generated Tag Prompt
+                <textarea id="libraryTagPromptInput" rows="12" readonly></textarea>
+              </label>
+            </div>
+            <p id="libraryTagSpecState" class="muted">Using the default tag spec.</p>
+          </div>
+          <div id="libraryTagReviewPanel" hidden>
+            <p id="libraryTagCandidateStatus" class="muted">No candidate-tag generation has run yet.</p>
+            <p id="libraryTagAssignmentStatus" class="muted">Approved tags have not been applied to papers yet.</p>
+            <div class="summary-row">
+              <span>Pending: <strong id="libraryTagPendingCount">0</strong></span>
+              <span>Approved: <strong id="libraryTagApprovedCount">0</strong></span>
+              <span>Rejected: <strong id="libraryTagRejectedCount">0</strong></span>
+            </div>
+            <div class="row">
+              <button id="libraryGenerateCandidateTagsBtn" type="button">Generate Candidate Tags</button>
+              <button id="libraryRegenerateCandidateTagsBtn" type="button">Regenerate Candidate Tags</button>
+              <button id="libraryResetRejectedTagsBtn" type="button">Reset Rejected</button>
+            </div>
+            <div id="libraryTagCandidatesList" class="tag-review-list"></div>
+            <div class="row">
+              <button id="libraryApplyApprovedTagsBtn" type="button">Apply Approved Tags</button>
+              <button id="libraryReapplyApprovedTagsBtn" type="button">Reapply Approved Tags</button>
             </div>
           </div>
         </section>

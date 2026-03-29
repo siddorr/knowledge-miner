@@ -52,6 +52,18 @@ class AIPaperTagsResult:
     tags: list[str]
 
 
+@dataclass
+class AIStructuredPaperTagsResult:
+    tags_by_category: dict[str, list[str]]
+
+
+@dataclass
+class AIStructuredAssignedTagsResult:
+    approved_tags_by_category: dict[str, list[str]]
+    freeform_tags_by_category: dict[str, list[str]]
+    raw_response_json: dict[str, object]
+
+
 def describe_ai_filter_runtime(*, use_ai_filter: bool, api_key: str | None) -> tuple[bool, str | None]:
     if not use_ai_filter:
         return False, "AI filter disabled (USE_AI_FILTER=false); heuristic filtering only."
@@ -629,4 +641,345 @@ def generate_paper_tags(
     tags = [item for item in tags if item]
     if not tags:
         raise ValueError("paper_tags_empty")
+    return AIPaperTagsResult(tags=tags)
+
+
+def _normalize_category_key(value: str | None) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    normalized = []
+    for ch in text:
+        if ch.isalnum():
+            normalized.append(ch)
+        elif ch in {" ", "-", ".", "_"}:
+            normalized.append("_")
+    key = "".join(normalized).strip("_")
+    while "__" in key:
+        key = key.replace("__", "_")
+    if not key or not key[0].isalpha():
+        return ""
+    return key
+
+
+def _normalize_tag_text_list(values) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(values, list):
+        return normalized
+    for raw in values:
+        text = " ".join(str(raw or "").strip().split())
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    return normalized
+
+
+def _normalize_tags_by_category_payload(payload, valid_category_keys: set[str]) -> dict[str, list[str]]:
+    if not isinstance(payload, dict):
+        return {}
+    normalized: dict[str, list[str]] = {}
+    for raw_key, raw_values in payload.items():
+        key = _normalize_category_key(raw_key)
+        if key not in valid_category_keys:
+            continue
+        values = _normalize_tag_text_list(raw_values)
+        if values:
+            normalized[key] = values
+    return normalized
+
+
+def generate_structured_paper_tags(
+    *,
+    session_context: str,
+    category_config: list[dict],
+    prompt_template: str,
+    title: str,
+    body_text: str,
+    doi: str | None = None,
+    year: int | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float | None = None,
+) -> AIStructuredPaperTagsResult:
+    resolved_api_key = settings.ai_api_key if api_key is None else api_key
+    if not resolved_api_key:
+        raise AIAuthError("structured_tags_missing_api_key")
+    resolved_model = settings.ai_model if model is None else model
+    resolved_base_url = settings.ai_base_url if base_url is None else base_url
+    resolved_timeout = settings.ai_timeout_seconds if timeout_seconds is None else timeout_seconds
+    valid_category_keys = {
+        _normalize_category_key(row.get("key"))
+        for row in category_config
+        if isinstance(row, dict) and _normalize_category_key(row.get("key"))
+    }
+    if not valid_category_keys:
+        raise ValueError("structured_tags_categories_required")
+    url = f"{resolved_base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": resolved_model,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": "You generate structured reusable research tags for scientific papers. Return strict JSON only.",
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "Assign structured tags to this paper in the current research session.",
+                        "instructions": prompt_template,
+                        "session_context": session_context,
+                        "paper": {
+                            "title": title,
+                            "doi": doi or "",
+                            "year": year,
+                            "body_text": body_text[:30000],
+                        },
+                        "required_output": {
+                            "tags": {key: ["string"] for key in sorted(valid_category_keys)}
+                        },
+                    }
+                ),
+            },
+        ],
+    }
+    try:
+        with httpx.Client(timeout=resolved_timeout) as client:
+            response = client.post(url, headers=headers, json=payload)
+            if response.status_code in {401, 403}:
+                raise AIAuthError(f"structured_tags_http_{response.status_code}")
+            if response.status_code == 429:
+                raise AIRateLimitError("structured_tags_http_429")
+            if response.status_code >= 400:
+                raise AIProviderError(f"structured_tags_http_{response.status_code}")
+            body = response.json()
+    except httpx.TimeoutException as exc:
+        raise AITimeoutError("structured_tags_timeout") from exc
+    content = body["choices"][0]["message"]["content"]
+    parsed = json.loads(content)
+    tags_by_category = _normalize_tags_by_category_payload(parsed.get("tags"), valid_category_keys)
+    return AIStructuredPaperTagsResult(tags_by_category=tags_by_category)
+
+
+def assign_approved_structured_tags_to_paper(
+    *,
+    session_context: str,
+    category_config: list[dict],
+    approved_tags_by_category: dict[str, list[str]],
+    prompt_template: str,
+    title: str,
+    body_text: str,
+    doi: str | None = None,
+    year: int | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float | None = None,
+) -> AIStructuredAssignedTagsResult:
+    resolved_api_key = settings.ai_api_key if api_key is None else api_key
+    if not resolved_api_key:
+        raise AIAuthError("approved_structured_tags_missing_api_key")
+    resolved_model = settings.ai_model if model is None else model
+    resolved_base_url = settings.ai_base_url if base_url is None else base_url
+    resolved_timeout = settings.ai_timeout_seconds if timeout_seconds is None else timeout_seconds
+    valid_category_keys = {
+        _normalize_category_key(row.get("key"))
+        for row in category_config
+        if isinstance(row, dict) and _normalize_category_key(row.get("key"))
+    }
+    if not valid_category_keys:
+        raise ValueError("approved_structured_tags_categories_required")
+    approved_lookup = {
+        key: {tag.lower(): tag for tag in _normalize_tag_text_list(values)}
+        for key, values in approved_tags_by_category.items()
+        if key in valid_category_keys
+    }
+    allow_free_text_by_category = {
+        _normalize_category_key(row.get("key")): bool(row.get("allow_free_text", False))
+        for row in category_config
+        if isinstance(row, dict)
+    }
+    if not any(approved_lookup.values()) and not any(allow_free_text_by_category.get(key, False) for key in valid_category_keys):
+        raise ValueError("approved_structured_tags_required")
+    url = f"{resolved_base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": resolved_model,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": "You assign categorized approved research tags to scientific papers. Return strict JSON only.",
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "Assign approved and optional categorized free-text tags to this paper.",
+                        "instructions": [
+                            "Use approved tags when they clearly fit the paper.",
+                            "Only use approved tags from the provided category-specific approved lists.",
+                            "Free-text tags are allowed only in categories where allow_free_text is true.",
+                            "Keep free-text tags short and factual.",
+                            "Return strict JSON only.",
+                            prompt_template,
+                        ],
+                        "session_context": session_context,
+                        "approved_tags_by_category": approved_tags_by_category,
+                        "allow_free_text_by_category": allow_free_text_by_category,
+                        "paper": {
+                            "title": title,
+                            "doi": doi or "",
+                            "year": year,
+                            "body_text": body_text[:30000],
+                        },
+                        "required_output": {
+                            "approved_tags": {key: ["string"] for key in sorted(valid_category_keys)},
+                            "freeform_tags": {key: ["string"] for key in sorted(valid_category_keys)},
+                        },
+                    }
+                ),
+            },
+        ],
+    }
+    try:
+        with httpx.Client(timeout=resolved_timeout) as client:
+            response = client.post(url, headers=headers, json=payload)
+            if response.status_code in {401, 403}:
+                raise AIAuthError(f"approved_structured_tags_http_{response.status_code}")
+            if response.status_code == 429:
+                raise AIRateLimitError("approved_structured_tags_http_429")
+            if response.status_code >= 400:
+                raise AIProviderError(f"approved_structured_tags_http_{response.status_code}")
+            body = response.json()
+    except httpx.TimeoutException as exc:
+        raise AITimeoutError("approved_structured_tags_timeout") from exc
+    content = body["choices"][0]["message"]["content"]
+    parsed = json.loads(content)
+    raw_approved = _normalize_tags_by_category_payload(parsed.get("approved_tags"), valid_category_keys)
+    raw_freeform = _normalize_tags_by_category_payload(parsed.get("freeform_tags"), valid_category_keys)
+    approved_tags_by_category_out: dict[str, list[str]] = {}
+    for key, values in raw_approved.items():
+        lookup = approved_lookup.get(key, {})
+        picked: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            canonical = lookup.get(value.lower())
+            if not canonical or canonical.lower() in seen:
+                continue
+            seen.add(canonical.lower())
+            picked.append(canonical)
+        if picked:
+            approved_tags_by_category_out[key] = picked
+    freeform_tags_by_category_out = {
+        key: values
+        for key, values in raw_freeform.items()
+        if allow_free_text_by_category.get(key, False) and values
+    }
+    return AIStructuredAssignedTagsResult(
+        approved_tags_by_category=approved_tags_by_category_out,
+        freeform_tags_by_category=freeform_tags_by_category_out,
+        raw_response_json=parsed if isinstance(parsed, dict) else {},
+    )
+
+
+def assign_approved_tags_to_paper(
+    *,
+    session_context: str,
+    approved_tags: list[str],
+    title: str,
+    body_text: str,
+    doi: str | None = None,
+    year: int | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    timeout_seconds: float | None = None,
+) -> AIPaperTagsResult:
+    resolved_api_key = settings.ai_api_key if api_key is None else api_key
+    if not resolved_api_key:
+        raise AIAuthError("approved_tags_missing_api_key")
+    normalized_approved_tags = [str(tag or "").strip() for tag in approved_tags if str(tag or "").strip()]
+    if not normalized_approved_tags:
+        raise ValueError("approved_tags_required")
+    resolved_model = settings.ai_model if model is None else model
+    resolved_base_url = settings.ai_base_url if base_url is None else base_url
+    resolved_timeout = settings.ai_timeout_seconds if timeout_seconds is None else timeout_seconds
+    url = f"{resolved_base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": resolved_model,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You assign approved research tags to scientific papers. "
+                    "Return strict JSON only and never invent a tag outside the approved list."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "Assign zero or more approved session tags to this paper.",
+                        "instructions": [
+                            "Choose only from the approved_tags list.",
+                            "Do not invent or rewrite tags.",
+                            "Return only tags that clearly apply to the paper.",
+                            "Return strict JSON only.",
+                        ],
+                        "session_context": session_context,
+                        "approved_tags": normalized_approved_tags,
+                        "paper": {
+                            "title": title,
+                            "doi": doi or "",
+                            "year": year,
+                            "body_text": body_text[:30000],
+                        },
+                        "required_output": {
+                            "tags": ["string"],
+                        },
+                    }
+                ),
+            },
+        ],
+    }
+    try:
+        with httpx.Client(timeout=resolved_timeout) as client:
+            response = client.post(url, headers=headers, json=payload)
+            if response.status_code in {401, 403}:
+                raise AIAuthError(f"approved_tags_http_{response.status_code}")
+            if response.status_code == 429:
+                raise AIRateLimitError("approved_tags_http_429")
+            if response.status_code >= 400:
+                raise AIProviderError(f"approved_tags_http_{response.status_code}")
+            body = response.json()
+    except httpx.TimeoutException as exc:
+        raise AITimeoutError("approved_tags_timeout") from exc
+    content = body["choices"][0]["message"]["content"]
+    parsed = json.loads(content)
+    raw_tags = parsed.get("tags")
+    if not isinstance(raw_tags, list):
+        raise ValueError("approved_tags_invalid")
+    approved_lookup = {tag.lower(): tag for tag in normalized_approved_tags}
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in raw_tags:
+        key = " ".join(str(item or "").strip().split()).lower()
+        if not key or key not in approved_lookup or key in seen:
+            continue
+        seen.add(key)
+        tags.append(approved_lookup[key])
     return AIPaperTagsResult(tags=tags)

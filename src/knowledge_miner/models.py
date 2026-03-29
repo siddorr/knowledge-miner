@@ -176,6 +176,12 @@ class SessionProfile(Base):
     session_id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     session_context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tag_candidate_status: Mapped[str] = mapped_column(String, nullable=False, default="none")
+    tag_candidate_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tag_candidate_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tag_assignment_status: Mapped[str] = mapped_column(String, nullable=False, default="none")
+    tag_assignment_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tag_assignment_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -183,12 +189,45 @@ class SessionProfile(Base):
 class SessionTagCatalog(Base):
     __tablename__ = "session_tag_catalog"
     __table_args__ = (
-        Index("ix_session_tag_catalog_session_id_tag", "session_id", "tag", unique=True),
+        Index("ix_session_tag_catalog_session_id_category_tag", "session_id", "category_key", "tag", unique=True),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    category_key: Mapped[str] = mapped_column(String, nullable=False, default="uncategorized_tags")
     tag: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class SessionTagCandidate(Base):
+    __tablename__ = "session_tag_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('candidate','approved','rejected')",
+            name="ck_session_tag_candidates_status_values",
+        ),
+        Index("ix_session_tag_candidates_session_id_category_tag", "session_id", "category_key", "tag", unique=True),
+        Index("ix_session_tag_candidates_session_id_category_status_updated_at", "session_id", "category_key", "status", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    category_key: Mapped[str] = mapped_column(String, nullable=False, default="uncategorized_tags")
+    tag: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="candidate")
+    source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class SessionTagSpec(Base):
+    __tablename__ = "session_tag_specs"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    category_config_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    prompt_template: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -198,6 +237,7 @@ class SessionSummarySettings(Base):
 
     session_id: Mapped[str] = mapped_column(String, primary_key=True)
     prompt_template: Mapped[str] = mapped_column(Text, nullable=False)
+    editor_config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -222,12 +262,15 @@ class PaperAnnotation(Base):
     source_id: Mapped[str] = mapped_column(String, ForeignKey("sources.id"), nullable=False, index=True)
     freeform_tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     approved_tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    freeform_tags_by_category_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    approved_tags_by_category_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ai_suggested_tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     summary_status: Mapped[str] = mapped_column(String, nullable=False, default="none")
     tag_suggestion_status: Mapped[str] = mapped_column(String, nullable=False, default="none")
     summary_prompt_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_editor_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     summary_model: Mapped[str | None] = mapped_column(String, nullable=True)
     tag_suggestion_prompt_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     tag_suggestion_model: Mapped[str | None] = mapped_column(String, nullable=True)

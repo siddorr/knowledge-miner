@@ -67,6 +67,7 @@ from .discovery import (  # compatibility export for tests/patching
 )
 from .models import AcquisitionItem, AcquisitionRun, Artifact, CitationExpansionParent, DiscoveryRunQuery, DocumentChunk, ParseRun, ParsedDocument, Run, Source
 from .parse import create_parse_run, enqueue_parse_run, resume_queued_parse_runs
+from .routes.annotations import mark_interrupted_annotation_jobs_on_startup
 from .rate_limit import require_rate_limit
 from .logging_setup import configure_logging
 from .runtime_state import acquire_instance_lock, cleanup_runtime_state, log_cleanup_result
@@ -214,6 +215,13 @@ def validate_runtime_config() -> None:
         interrupted_run_ids = mark_interrupted_runs_on_startup()
         if interrupted_run_ids:
             logger.info("Interrupted runs marked on startup: %s", ",".join(interrupted_run_ids))
+        interrupted_annotation_jobs = mark_interrupted_annotation_jobs_on_startup()
+        if interrupted_annotation_jobs["summary_count"] or interrupted_annotation_jobs["tag_count"]:
+            logger.info(
+                "Interrupted annotation jobs marked on startup: summaries=%s tags=%s",
+                interrupted_annotation_jobs["summary_count"],
+                interrupted_annotation_jobs["tag_count"],
+            )
         resumed_parse_run_ids = resume_queued_parse_runs()
         if resumed_parse_run_ids:
             logger.info("Queued parse runs resumed on startup: %s", ",".join(resumed_parse_run_ids))

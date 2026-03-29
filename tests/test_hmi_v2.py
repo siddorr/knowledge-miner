@@ -74,14 +74,12 @@ def test_hmi2_shell_route_and_navigation():
     assert "Save Repository URL" in body
     assert "<th>DOI</th>" in body
     assert 'data-documents-sort="lineage"' in body
-    assert 'data-documents-sort="rank"' in body
     assert 'data-documents-sort="score"' in body
     assert 'data-documents-sort="year"' in body
     assert 'data-documents-sort="citations"' in body
     assert 'data-documents-sort="title"' in body
     assert 'data-documents-sort="status"' in body
     assert 'data-library-sort="lineage"' in body
-    assert 'data-library-sort="rank"' in body
     assert 'data-library-sort="relevance_score"' in body
     assert 'data-library-sort="year"' in body
     assert 'data-library-sort="citation_count"' in body
@@ -90,18 +88,49 @@ def test_hmi2_shell_route_and_navigation():
     assert 'id="libraryGenerateVisibleTagsBtn"' in body
     assert 'id="libraryPromptToggleBtn"' in body
     assert 'id="libraryApprovedTagsToggleBtn"' in body
+    assert 'id="librarySummaryFocusInput"' in body
+    assert 'id="librarySummaryFieldsList"' in body
+    assert 'id="libraryAddSummaryFieldBtn"' in body
+    assert 'id="librarySummaryControlledValuesList"' in body
+    assert 'id="libraryAddSummaryControlledValueBtn"' in body
+    assert 'id="librarySummaryLockedRulesText"' in body
+    assert 'id="librarySummaryLockedConstraintsText"' in body
+    assert 'id="libraryCurrentSummaryModel"' in body
+    assert 'id="libraryToggleRawSummaryPromptBtn"' in body
+    assert 'id="libraryRawSummaryPromptWrap"' in body
     assert 'id="librarySummaryPromptInput"' in body
     assert 'id="libraryApprovedTagsInput"' in body
     assert 'id="libraryFreeformTags"' in body
     assert 'id="libraryApprovedTags"' in body
     assert 'id="librarySummaryStatus"' in body
     assert 'id="librarySummaryText"' in body
+    assert 'id="librarySummaryCurrentModelValue"' in body
+    assert 'id="librarySummaryLastModelValue"' in body
     assert 'id="libraryGenerateSummaryBtn"' in body
     assert 'id="libraryRegenerateSummaryBtn"' in body
-    assert 'id="librarySuggestedTagsStatus"' in body
-    assert 'id="librarySuggestedTags"' in body
-    assert 'id="libraryGenerateTagsBtn"' in body
-    assert 'id="libraryRegenerateTagsBtn"' in body
+    assert 'id="libraryTagSpecTabBtn"' in body
+    assert 'id="libraryTagSpecPanel"' in body
+    assert 'id="libraryTagSpecCategories"' in body
+    assert 'id="libraryAddTagSpecCategoryBtn"' in body
+    assert 'id="librarySaveTagSpecBtn"' in body
+    assert 'id="libraryResetTagSpecBtn"' in body
+    assert 'id="libraryToggleRawTagPromptBtn"' in body
+    assert 'id="libraryRawTagPromptWrap"' in body
+    assert 'id="libraryTagPromptInput"' in body
+    assert 'id="libraryTagSpecState"' in body
+    assert 'id="libraryTagReviewTabBtn"' in body
+    assert 'id="libraryTagReviewPanel"' in body
+    assert 'id="libraryTagCandidateStatus"' in body
+    assert 'id="libraryTagAssignmentStatus"' in body
+    assert 'id="libraryTagPendingCount"' in body
+    assert 'id="libraryTagApprovedCount"' in body
+    assert 'id="libraryTagRejectedCount"' in body
+    assert 'id="libraryGenerateCandidateTagsBtn"' in body
+    assert 'id="libraryRegenerateCandidateTagsBtn"' in body
+    assert 'id="libraryResetRejectedTagsBtn"' in body
+    assert 'id="libraryTagCandidatesList"' in body
+    assert 'id="libraryApplyApprovedTagsBtn"' in body
+    assert 'id="libraryReapplyApprovedTagsBtn"' in body
     assert "Search matches title, abstract, and tags." in body
     assert "Download Selected" in body
     assert "Export ZIP with PDFs" in body

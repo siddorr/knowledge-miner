@@ -626,10 +626,13 @@ class PaperAnnotationOut(BaseModel):
     source_id: str
     freeform_tags: list[str] = Field(default_factory=list)
     approved_tags: list[str] = Field(default_factory=list)
+    freeform_tags_by_category: dict[str, list[str]] = Field(default_factory=dict)
+    approved_tags_by_category: dict[str, list[str]] = Field(default_factory=dict)
     ai_suggested_tags: list[str] = Field(default_factory=list)
     ai_summary: str | None = None
     ai_summary_json: dict | None = None
     summary_prompt_snapshot: str | None = None
+    summary_model: str | None = None
     summary_status: str = "none"
     tag_suggestion_status: str = "none"
     summary_generated_at: str | None = None
@@ -652,6 +655,8 @@ class PaperAnnotationsListResponse(BaseModel):
 class PaperAnnotationUpdateRequest(BaseModel):
     freeform_tags: list[str] | None = None
     approved_tags: list[str] | None = None
+    freeform_tags_by_category: dict[str, list[str]] | None = None
+    approved_tags_by_category: dict[str, list[str]] | None = None
 
 
 class SessionTagCatalogOut(BaseModel):
@@ -663,13 +668,60 @@ class SessionTagCatalogUpdateRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
-class SessionSummarySettingsOut(BaseModel):
+class TagSpecCategoryConfig(BaseModel):
+    key: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=160)
+    guidance: str = ""
+    allowed_tags: list[str] = Field(default_factory=list)
+    allow_free_text: bool = False
+
+
+class SessionTagSpecConfig(BaseModel):
+    categories: list[TagSpecCategoryConfig] = Field(default_factory=list)
+
+
+class SessionTagSpecOut(BaseModel):
     session_id: str
+    category_config: SessionTagSpecConfig
     prompt_template: str
 
 
+class SessionTagSpecUpdateRequest(BaseModel):
+    category_config: SessionTagSpecConfig
+
+
+class SummaryFieldConfig(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    path: str = Field(min_length=1, max_length=240)
+    label: str = Field(min_length=1, max_length=160)
+    description: str = ""
+    field_type: Literal["string", "boolean", "string_list", "object_list"]
+    enabled: bool = True
+    object_item_fields: list[str] = Field(default_factory=list)
+
+
+class SummaryControlledValueConfig(BaseModel):
+    field_path: str = Field(min_length=1, max_length=240)
+    allowed_values: list[str] = Field(default_factory=list)
+    fallback_policy: Literal["allow_free_text", "prefer_enum_only"] = "allow_free_text"
+
+
+class SessionSummaryEditorConfig(BaseModel):
+    summary_focus: str = ""
+    schema_fields: list[SummaryFieldConfig] = Field(default_factory=list)
+    controlled_values: list[SummaryControlledValueConfig] = Field(default_factory=list)
+
+
+class SessionSummarySettingsOut(BaseModel):
+    session_id: str
+    prompt_template: str
+    editor_config: SessionSummaryEditorConfig
+    current_global_summary_model: str
+
+
 class SessionSummarySettingsUpdateRequest(BaseModel):
-    prompt_template: str = Field(min_length=1, max_length=12000)
+    prompt_template: str | None = Field(default=None, min_length=1, max_length=12000)
+    editor_config: SessionSummaryEditorConfig | None = None
 
 
 class SummaryGenerationRequest(BaseModel):
@@ -709,3 +761,51 @@ class TagGenerationResponse(BaseModel):
 class SuggestedTagPromoteRequest(BaseModel):
     tag: str = Field(min_length=1, max_length=64)
     target: str = Field(pattern="^(freeform|approved)$")
+
+
+class SuggestedTagDismissRequest(BaseModel):
+    tag: str = Field(min_length=1, max_length=64)
+
+
+class SessionTagCandidateOut(BaseModel):
+    id: str
+    session_id: str
+    category_key: str
+    category_label: str | None = None
+    tag: str
+    status: str
+    source_count: int = 0
+    updated_at: str | None = None
+
+
+class SessionTagCandidateGroupOut(BaseModel):
+    category_key: str
+    category_label: str
+    pending_count: int = 0
+    approved_count: int = 0
+    rejected_count: int = 0
+    candidates: list[SessionTagCandidateOut] = Field(default_factory=list)
+
+
+class SessionTagReviewOut(BaseModel):
+    session_id: str
+    candidate_generation_status: str = "none"
+    candidate_generation_generated_at: str | None = None
+    candidate_generation_error: str | None = None
+    tag_assignment_status: str = "none"
+    tag_assignment_generated_at: str | None = None
+    tag_assignment_error: str | None = None
+    pending_count: int = 0
+    approved_count: int = 0
+    rejected_count: int = 0
+    candidates: list[SessionTagCandidateOut] = Field(default_factory=list)
+    groups: list[SessionTagCandidateGroupOut] = Field(default_factory=list)
+
+
+class SessionTagWorkflowRequest(BaseModel):
+    force_regenerate: bool = False
+
+
+class SessionTagWorkflowResponse(BaseModel):
+    session_id: str
+    status: str

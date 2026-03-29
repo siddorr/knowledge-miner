@@ -93,7 +93,13 @@ const state = {
   selectedBookmarkId: "",
   paperAnnotations: {},
   sessionApprovedTags: [],
+  sessionTagSpec: null,
   sessionSummaryPrompt: "",
+  sessionSummaryEditorConfig: null,
+  currentGlobalSummaryModel: "",
+  sessionTagReview: null,
+  summaryPromptRawMode: false,
+  tagPromptRawMode: false,
   summaryPollTimer: null,
   reviewLoadInFlight: false,
   reviewReloadQueued: false,
@@ -190,14 +196,22 @@ function readDom() {
     "libraryMatches", "libraryHighest", "libraryLowest", "libraryQuery", "libraryParsedOnlyCheckbox", "libraryPdfOnlyCheckbox", "librarySummaryCurrentOnlyCheckbox", "libraryExportSize", "libraryRows",
     "libraryTitle", "libraryAbstract", "libraryMetadata", "libraryAddBtn", "libraryRemoveBtn", "libraryBookmarkBtn", "libraryZipBtn",
     "libraryMetadataBtn", "libraryState", "libraryGenerateVisibleSummariesBtn", "libraryGenerateVisibleTagsBtn", "libraryPromptToggleBtn", "libraryApprovedTagsToggleBtn",
-    "librarySummaryPromptPanel", "librarySummaryPromptInput", "librarySaveSummaryPromptBtn", "libraryResetSummaryPromptBtn", "librarySummaryPromptState",
+    "librarySummaryPromptPanel", "librarySummaryFocusInput", "librarySummaryFieldsList", "libraryAddSummaryFieldBtn",
+    "librarySummaryControlledValuesList", "libraryAddSummaryControlledValueBtn", "librarySummaryLockedRulesText", "librarySummaryLockedConstraintsText",
+    "libraryCurrentSummaryModel", "libraryToggleRawSummaryPromptBtn",
+    "libraryRawSummaryPromptWrap", "librarySummaryPromptInput", "librarySaveSummaryPromptBtn", "libraryResetSummaryPromptBtn", "librarySummaryPromptState",
     "libraryApprovedTagsPanel", "libraryApprovedTagsInput", "librarySaveApprovedTagsBtn", "libraryApprovedTagsState",
     "libraryFilterHelp", "libraryFreeformTags", "libraryFreeformTagInput", "libraryAddFreeformTagBtn",
     "libraryApprovedTags", "libraryApprovedTagSelect", "libraryAddApprovedTagBtn",
-    "libraryDetailsTabBtn", "librarySummaryPreviewTabBtn", "libraryDetailsPanel", "librarySummaryPreviewPanel",
+    "libraryApplyApprovedTagsOneBtn", "libraryReapplyApprovedTagsOneBtn",
+    "libraryDetailsTabBtn", "librarySummaryPreviewTabBtn", "libraryTagSpecTabBtn", "libraryTagReviewTabBtn", "libraryDetailsPanel", "librarySummaryPreviewPanel", "libraryTagSpecPanel", "libraryTagReviewPanel",
     "librarySummaryStatus", "librarySummaryText", "libraryGenerateSummaryBtn", "libraryRegenerateSummaryBtn",
-    "librarySummaryPreviewStatus", "librarySummaryPreviewText", "librarySummaryStructuredText", "librarySummaryPreviewOpenPdfBtn", "libraryCopySummaryBtn", "librarySummaryPreviewGenerateBtn", "librarySummaryPreviewRegenerateBtn",
-    "librarySuggestedTagsStatus", "librarySuggestedTags", "libraryGenerateTagsBtn", "libraryRegenerateTagsBtn",
+    "librarySummaryPreviewStatus", "librarySummaryCurrentModelValue", "librarySummaryLastModelValue", "librarySummaryPreviewText",
+    "librarySummaryStructuredText", "librarySummaryPreviewOpenPdfBtn", "libraryCopySummaryBtn", "librarySummaryPreviewGenerateBtn", "librarySummaryPreviewRegenerateBtn",
+    "libraryTagSpecCategories", "libraryAddTagSpecCategoryBtn", "librarySaveTagSpecBtn", "libraryResetTagSpecBtn", "libraryToggleRawTagPromptBtn", "libraryRawTagPromptWrap", "libraryTagPromptInput", "libraryTagSpecState",
+    "libraryTagCandidateStatus", "libraryTagAssignmentStatus", "libraryTagPendingCount", "libraryTagApprovedCount", "libraryTagRejectedCount",
+    "libraryGenerateCandidateTagsBtn", "libraryRegenerateCandidateTagsBtn", "libraryResetRejectedTagsBtn", "libraryTagCandidatesList",
+    "libraryApplyApprovedTagsBtn", "libraryReapplyApprovedTagsBtn",
     "apiKeyInput", "saveApiKeyBtn", "apiKeyState", "aiModelSelect", "saveAiSettingsBtn", "aiSettingsState", "latestDiscoveryId", "latestAcquisitionId", "latestParseId", "startParseBtn", "advancedParseState",
     "openalexLimitInput", "braveCountInput", "braveAllowlistCheckbox", "saveProviderSettingsBtn", "providerSettingsState",
     "globalSearchInput", "globalSearchBtn", "globalSearchResults", "runLookupInput", "runLookupBtn", "runLookupResult",
@@ -466,10 +480,13 @@ function annotationForSource(sourceId) {
     source_id: sourceId,
     freeform_tags: [],
     approved_tags: [],
+    freeform_tags_by_category: {},
+    approved_tags_by_category: {},
     ai_suggested_tags: [],
     ai_summary: null,
     ai_summary_json: null,
     summary_prompt_snapshot: null,
+    summary_model: null,
     summary_status: "none",
     tag_suggestion_status: "none",
     summary_generated_at: null,
@@ -483,6 +500,155 @@ function annotationForSource(sourceId) {
   };
 }
 
+function defaultSummaryEditorConfig() {
+  return {
+    summary_focus: "Write a concise 1-3 sentence factual summary of the wastewater treatment topic, studied process, and explicit result using only paper-supported facts.",
+    schema_fields: [
+      { id: "summary", path: "summary", label: "Summary", description: "Concise human-readable summary.", field_type: "string", enabled: true, object_item_fields: [] },
+      { id: "fab_area", path: "wastewater_source.fab_area", label: "Fab Area", description: "Fab section or wastewater origin area.", field_type: "string", enabled: true, object_item_fields: [] },
+      { id: "process_step", path: "wastewater_source.process_step", label: "Process Step", description: "Process generating the wastewater.", field_type: "string", enabled: true, object_item_fields: [] },
+      { id: "tool_or_equipment", path: "wastewater_source.tool_or_equipment", label: "Tool or Equipment", description: "Specific fab tool or equipment.", field_type: "string", enabled: true, object_item_fields: [] },
+      { id: "waste_stream_name", path: "wastewater_source.waste_stream_name", label: "Waste Stream Name", description: "Named waste stream if given.", field_type: "string", enabled: true, object_item_fields: [] },
+      { id: "real_or_synthetic_water", path: "wastewater_source.real_or_synthetic_water", label: "Real or Synthetic Water", description: "Water source type.", field_type: "string", enabled: true, object_item_fields: [] },
+      { id: "water_source_details", path: "wastewater_source.water_source_details", label: "Water Source Details", description: "Short factual origin description.", field_type: "string", enabled: true, object_item_fields: [] },
+      { id: "components", path: "water_composition.components", label: "Components", description: "Reported composition components.", field_type: "object_list", enabled: true, object_item_fields: ["component", "value", "unit", "context"] },
+      { id: "water_quality_parameters", path: "water_composition.water_quality_parameters", label: "Water Quality Parameters", description: "Reported water-quality parameters.", field_type: "object_list", enabled: true, object_item_fields: ["parameter", "value", "unit", "context"] },
+      { id: "target_contaminants", path: "treatment_target.target_contaminants_or_parameters", label: "Target Contaminants or Parameters", description: "Treatment targets.", field_type: "string_list", enabled: true, object_item_fields: [] },
+      { id: "technology_name", path: "treatment_technology.technology_name", label: "Technology Name", description: "Named treatment process.", field_type: "string", enabled: true, object_item_fields: [] },
+      { id: "technology_category", path: "treatment_technology.technology_category", label: "Technology Category", description: "Technology category.", field_type: "string", enabled: true, object_item_fields: [] },
+      { id: "used_real_wastewater", path: "experiments.used_real_wastewater", label: "Used Real Wastewater", description: "Whether real wastewater was used.", field_type: "boolean", enabled: true, object_item_fields: [] },
+      { id: "used_synthetic_wastewater", path: "experiments.used_synthetic_wastewater", label: "Used Synthetic Wastewater", description: "Whether synthetic wastewater was used.", field_type: "boolean", enabled: true, object_item_fields: [] },
+      { id: "experimental_scale", path: "experiments.experimental_scale", label: "Experimental Scale", description: "Experimental scale.", field_type: "string", enabled: true, object_item_fields: [] },
+      { id: "removal_results", path: "performance.removal_results", label: "Removal Results", description: "Numeric removal results.", field_type: "object_list", enabled: true, object_item_fields: ["target", "metric", "value", "unit", "conditions"] },
+      { id: "key_findings", path: "performance.key_findings", label: "Key Findings", description: "Short factual findings.", field_type: "string_list", enabled: true, object_item_fields: [] },
+      { id: "limitations", path: "performance.limitations", label: "Limitations", description: "Explicit author-stated limitations.", field_type: "string_list", enabled: true, object_item_fields: [] },
+    ],
+    controlled_values: [
+      { field_path: "wastewater_source.real_or_synthetic_water", allowed_values: ["real", "synthetic", "both", "unclear"], fallback_policy: "allow_free_text" },
+      { field_path: "treatment_technology.technology_category", allowed_values: ["physical", "chemical", "physicochemical", "biological", "membrane", "electrochemical", "adsorption", "hybrid", "other", "unclear"], fallback_policy: "allow_free_text" },
+      { field_path: "experiments.experimental_scale", allowed_values: ["lab", "pilot", "full-scale", "unclear"], fallback_policy: "allow_free_text" },
+    ],
+  };
+}
+
+function cloneSummaryEditorConfig(config) {
+  return JSON.parse(JSON.stringify(config || defaultSummaryEditorConfig()));
+}
+
+function defaultTagSpecConfig() {
+  return {
+    categories: [
+      { key: "material_or_product_tags", label: "Material or Product Tags", guidance: "Use for precipitates, products, or key media.", allowed_tags: ["CaF2 precipitation", "calcium fluoride", "ion exchange resin", "struvite", "sulfuric acid concentration"], allow_free_text: true },
+      { key: "recovery_tags", label: "Recovery Tags", guidance: "Use for recovery, reuse, reclaim, or ZLD-related goals.", allowed_tags: ["IPA recovery", "KI solution recovery", "cobalt recovery", "metal recovery", "phosphate recovery", "water reclamation", "wastewater reuse", "ultrapure water", "zero liquid discharge"], allow_free_text: true },
+      { key: "source_tags", label: "Source Tags", guidance: "Use for wastewater origin, fab area, or source stream.", allowed_tags: ["semiconductor wastewater", "CMP wastewater", "hydrofluoric acid wastewater", "photolithography wastewater", "wafer cleaning wastewater", "plasma wet scrubber wastewater"], allow_free_text: true },
+      { key: "study_tags", label: "Study Tags", guidance: "Use for scale, modeling, or optimization study type.", allowed_tags: ["pilot-scale study", "process simulation", "thermodynamic modeling", "treatment optimization"], allow_free_text: true },
+      { key: "target_tags", label: "Target Tags", guidance: "Use for contaminant, parameter, or removal objective.", allowed_tags: ["fluoride removal", "PFOS removal", "SDS removal", "TOC removal", "TDS removal", "silica removal", "copper removal", "heavy metals removal", "nitrogen removal", "total nitrogen removal", "ammonium nitrogen removal", "orthophosphate removal", "organic removal", "photoresist removal", "contaminant degradation", "turbidity reduction"], allow_free_text: true },
+      { key: "technology_tags", label: "Technology Tags", guidance: "Use for treatment method or reactor/process used.", allowed_tags: ["reverse osmosis", "ultrafiltration", "membrane bioreactor", "MBR-RO", "advanced oxidation process", "UV oxidation", "adsorption", "ion exchange", "electrochemical treatment", "electrocoagulation", "electrodeionization", "chemical precipitation", "coagulation", "flocculation", "dissolved air flotation", "air stripping", "vacuum evaporation", "crystallization", "sequence batch reactor", "fluidized bed reactor", "aerobic treatment", "aerobic denitrification", "biological nutrient removal", "biological treatment", "biosorption"], allow_free_text: true },
+    ],
+  };
+}
+
+function cloneTagSpecConfig(config) {
+  return JSON.parse(JSON.stringify(config || defaultTagSpecConfig()));
+}
+
+function summaryFieldTypeOptions(selected) {
+  return ["string", "boolean", "string_list", "object_list"]
+    .map((value) => `<option value="${value}"${value === selected ? " selected" : ""}>${value}</option>`)
+    .join("");
+}
+
+function summaryFallbackPolicyOptions(selected) {
+  return ["allow_free_text", "prefer_enum_only"]
+    .map((value) => `<option value="${value}"${value === selected ? " selected" : ""}>${value}</option>`)
+    .join("");
+}
+
+function renderSummarySchemaFieldsEditor() {
+  if (!els.librarySummaryFieldsList) {
+    return;
+  }
+  const fields = Array.isArray(state.sessionSummaryEditorConfig?.schema_fields)
+    ? state.sessionSummaryEditorConfig.schema_fields
+    : [];
+  els.librarySummaryFieldsList.innerHTML = fields.map((field, index) => {
+    const isSummary = field.path === "summary";
+    return `
+      <div class="card">
+        <div class="row">
+          <label><input type="checkbox" data-summary-field-enabled="${index}"${field.enabled ? " checked" : ""}${isSummary ? " disabled" : ""}> Enabled</label>
+          <button type="button" data-summary-field-remove="${index}"${isSummary ? " disabled" : ""}>Remove</button>
+        </div>
+        <label>Label<input type="text" data-summary-field-label="${index}" value="${escapeHtml(field.label || "")}" placeholder="Field label"></label>
+        <label>Path<input type="text" data-summary-field-path="${index}" value="${escapeHtml(field.path || "")}" placeholder="root.nested_field"${isSummary ? " readonly" : ""}></label>
+        <label>Description<input type="text" data-summary-field-description="${index}" value="${escapeHtml(field.description || "")}" placeholder="Short extraction hint"></label>
+        <label>Type<select data-summary-field-type="${index}"${isSummary ? " disabled" : ""}>${summaryFieldTypeOptions(field.field_type || "string")}</select></label>
+        <label>Object Item Fields<input type="text" data-summary-field-items="${index}" value="${escapeHtml((field.object_item_fields || []).join(", "))}" placeholder="comma, separated, keys"${field.field_type === "object_list" ? "" : " disabled"}></label>
+      </div>`;
+  }).join("");
+}
+
+function renderSummaryControlledValuesEditor() {
+  if (!els.librarySummaryControlledValuesList) {
+    return;
+  }
+  const rows = Array.isArray(state.sessionSummaryEditorConfig?.controlled_values)
+    ? state.sessionSummaryEditorConfig.controlled_values
+    : [];
+  els.librarySummaryControlledValuesList.innerHTML = rows.map((row, index) => `
+    <div class="card">
+      <div class="row">
+        <strong>Controlled Values ${index + 1}</strong>
+        <button type="button" data-summary-controlled-remove="${index}">Remove</button>
+      </div>
+      <label>Field Path<input type="text" data-summary-controlled-path="${index}" value="${escapeHtml(row.field_path || "")}" placeholder="field.path"></label>
+      <label>Allowed Values<input type="text" data-summary-controlled-values="${index}" value="${escapeHtml((row.allowed_values || []).join(", "))}" placeholder="value1, value2, value3"></label>
+      <label>Fallback Policy<select data-summary-controlled-policy="${index}">${summaryFallbackPolicyOptions(row.fallback_policy || "allow_free_text")}</select></label>
+    </div>`).join("");
+}
+
+function updateSummaryPromptBuilderView() {
+  renderSummarySchemaFieldsEditor();
+  renderSummaryControlledValuesEditor();
+}
+
+function collectSummaryEditorConfigFromForm() {
+  const fields = Array.from(els.librarySummaryFieldsList?.querySelectorAll("[data-summary-field-label]") || []).map((input) => {
+    const index = Number.parseInt(input.getAttribute("data-summary-field-label") || "-1", 10);
+    const label = String(input.value || "").trim();
+    const path = String(els.librarySummaryFieldsList?.querySelector(`[data-summary-field-path="${index}"]`)?.value || "").trim();
+    const description = String(els.librarySummaryFieldsList?.querySelector(`[data-summary-field-description="${index}"]`)?.value || "").trim();
+    const type = String(els.librarySummaryFieldsList?.querySelector(`[data-summary-field-type="${index}"]`)?.value || "string").trim();
+    const enabledInput = els.librarySummaryFieldsList?.querySelector(`[data-summary-field-enabled="${index}"]`);
+    const itemsRaw = String(els.librarySummaryFieldsList?.querySelector(`[data-summary-field-items="${index}"]`)?.value || "").trim();
+    const objectItemFields = itemsRaw ? itemsRaw.split(",").map((value) => value.trim()).filter(Boolean) : [];
+    return {
+      id: state.sessionSummaryEditorConfig?.schema_fields?.[index]?.id || `field_${index + 1}`,
+      label,
+      path,
+      description,
+      field_type: type,
+      enabled: enabledInput ? Boolean(enabledInput.checked) : true,
+      object_item_fields: type === "object_list" ? objectItemFields : [],
+    };
+  });
+  const controlledValues = Array.from(els.librarySummaryControlledValuesList?.querySelectorAll("[data-summary-controlled-path]") || []).map((input) => {
+    const index = Number.parseInt(input.getAttribute("data-summary-controlled-path") || "-1", 10);
+    const fieldPath = String(input.value || "").trim();
+    const valuesRaw = String(els.librarySummaryControlledValuesList?.querySelector(`[data-summary-controlled-values="${index}"]`)?.value || "").trim();
+    return {
+      field_path: fieldPath,
+      allowed_values: valuesRaw ? valuesRaw.split(",").map((value) => value.trim()).filter(Boolean) : [],
+      fallback_policy: String(els.librarySummaryControlledValuesList?.querySelector(`[data-summary-controlled-policy="${index}"]`)?.value || "allow_free_text"),
+    };
+  });
+  return {
+    summary_focus: String(els.librarySummaryFocusInput?.value || "").trim(),
+    schema_fields: fields,
+    controlled_values: controlledValues,
+  };
+}
+
 function isParsedReady(sourceId) {
   const annotation = annotationForSource(sourceId);
   return annotation.summary_block_reason !== "parsed_text_required"
@@ -491,7 +657,7 @@ function isParsedReady(sourceId) {
 
 function tagSearchBlob(sourceId) {
   const annotation = annotationForSource(sourceId);
-  return `${(annotation.freeform_tags || []).join(" ")} ${(annotation.approved_tags || []).join(" ")} ${(annotation.ai_suggested_tags || []).join(" ")}`.toLowerCase();
+  return `${(annotation.freeform_tags || []).join(" ")} ${(annotation.approved_tags || []).join(" ")}`.toLowerCase();
 }
 
 function discoverRunId(session = activeSession()) {
@@ -892,6 +1058,11 @@ function clearOfflineState() {
 function renderActivity() {
   let text = "Idle";
   let active = false;
+  const annotationJobs = Object.values(state.paperAnnotations || {});
+  const summaryActive = annotationJobs.some((item) => item.summary_status === "queued" || item.summary_status === "running");
+  const tagActive = annotationJobs.some((item) => item.tag_suggestion_status === "queued" || item.tag_suggestion_status === "running");
+  const candidateActive = ["queued", "running"].includes(String(state.sessionTagReview?.candidate_generation_status || ""));
+  const assignmentActive = ["queued", "running"].includes(String(state.sessionTagReview?.tag_assignment_status || ""));
   if (state.serverOffline) {
     text = `Offline: ${state.offlineMessage || "server unavailable"}`;
   } else if (state.inFlight > 0) {
@@ -902,6 +1073,15 @@ function renderActivity() {
     active = true;
   } else if (state.currentDiscoveryStatus?.stage_status === "running") {
     text = state.currentDiscoveryStatus.message || "Searching providers";
+    active = true;
+  } else if (summaryActive) {
+    text = "Generating summaries";
+    active = true;
+  } else if (candidateActive) {
+    text = "Generating candidate tags";
+    active = true;
+  } else if (assignmentActive || tagActive) {
+    text = "Applying approved tags";
     active = true;
   } else if (state.currentDiscoveryStatus?.stage_status === "waiting_user") {
     text = state.currentDiscoveryStatus.message || "Waiting for review";
@@ -2729,11 +2909,67 @@ async function loadLibraryTagCatalog(sessionId) {
   }
 }
 
+async function loadLibraryTagReview(sessionId) {
+  const result = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/tag-review`);
+  state.sessionTagReview = result.data || {
+    session_id: sessionId,
+    candidate_generation_status: "none",
+    tag_assignment_status: "none",
+    pending_count: 0,
+    approved_count: 0,
+    rejected_count: 0,
+    candidates: [],
+  };
+}
+
+async function loadLibraryTagSpec(sessionId) {
+  const result = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/tag-spec`);
+  state.sessionTagSpec = result.data || {
+    session_id: sessionId,
+    category_config: cloneTagSpecConfig(),
+    prompt_template: "",
+  };
+  if (els.libraryTagPromptInput) {
+    els.libraryTagPromptInput.value = String(state.sessionTagSpec.prompt_template || "");
+  }
+  if (els.libraryRawTagPromptWrap) {
+    els.libraryRawTagPromptWrap.hidden = !state.tagPromptRawMode;
+  }
+  if (els.libraryToggleRawTagPromptBtn) {
+    els.libraryToggleRawTagPromptBtn.textContent = state.tagPromptRawMode ? "Hide Generated Prompt" : "Show Generated Prompt";
+  }
+  if (els.libraryTagSpecState) {
+    const count = Array.isArray(state.sessionTagSpec?.category_config?.categories)
+      ? state.sessionTagSpec.category_config.categories.length
+      : 0;
+    els.libraryTagSpecState.textContent = count ? `${count} tag categories configured.` : "Using the default tag spec.";
+  }
+  renderTagSpecEditor();
+}
+
 async function loadLibrarySummarySettings(sessionId) {
   const result = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/summary-settings`);
   state.sessionSummaryPrompt = String(result.data?.prompt_template || "");
+  state.sessionSummaryEditorConfig = cloneSummaryEditorConfig(result.data?.editor_config || defaultSummaryEditorConfig());
+  state.currentGlobalSummaryModel = String(result.data?.current_global_summary_model || state.aiSettings?.ai_model || "");
   if (els.librarySummaryPromptInput) {
     els.librarySummaryPromptInput.value = state.sessionSummaryPrompt;
+  }
+  if (els.librarySummaryFocusInput) {
+    els.librarySummaryFocusInput.value = String(state.sessionSummaryEditorConfig?.summary_focus || "");
+  }
+  updateSummaryPromptBuilderView();
+  if (els.libraryCurrentSummaryModel) {
+    els.libraryCurrentSummaryModel.textContent = state.currentGlobalSummaryModel || "-";
+  }
+  if (els.librarySummaryCurrentModelValue) {
+    els.librarySummaryCurrentModelValue.textContent = state.currentGlobalSummaryModel || "-";
+  }
+  if (els.libraryRawSummaryPromptWrap) {
+    els.libraryRawSummaryPromptWrap.hidden = !state.summaryPromptRawMode;
+  }
+  if (els.libraryToggleRawSummaryPromptBtn) {
+    els.libraryToggleRawSummaryPromptBtn.textContent = state.summaryPromptRawMode ? "Hide Generated Prompt" : "Show Generated Prompt";
   }
   if (els.librarySummaryPromptState) {
     els.librarySummaryPromptState.textContent = state.sessionSummaryPrompt
@@ -2746,7 +2982,8 @@ function formatStructuredSummary(summaryJson) {
   if (!summaryJson || typeof summaryJson !== "object") {
     return '<div class="structured-summary-empty">No structured summary data available for this paper yet.</div>';
   }
-  const renderValue = (value) => {
+  const humanizeKey = (key) => String(key || "").replace(/_/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
+  const renderScalar = (value) => {
     if (value === null || value === undefined || value === "") {
       return '<span class="muted">-</span>';
     }
@@ -2755,81 +2992,33 @@ function formatStructuredSummary(summaryJson) {
     }
     return escapeHtml(String(value));
   };
-  const renderField = (label, value) => (
-    `<div class="structured-summary-field"><span class="structured-summary-label">${escapeHtml(label)}:</span> ${renderValue(value)}</div>`
-  );
-  const renderObjectList = (items, labelMap) => {
-    if (!Array.isArray(items) || !items.length) {
-      return '<div class="structured-summary-field"><span class="muted">-</span></div>';
+  const renderNode = (key, value, depth = 0) => {
+    const label = humanizeKey(key);
+    if (Array.isArray(value)) {
+      if (!value.length) {
+        return `<div class="structured-summary-field"><span class="structured-summary-label">${escapeHtml(label)}:</span> <span class="muted">-</span></div>`;
+      }
+      const items = value.map((item) => {
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          const objectParts = Object.entries(item).map(([childKey, childValue]) => {
+            return `<span><span class="structured-summary-label">${escapeHtml(humanizeKey(childKey))}:</span> ${renderScalar(childValue)}</span>`;
+          });
+          return `<li>${objectParts.join(" | ")}</li>`;
+        }
+        return `<li>${renderScalar(item)}</li>`;
+      }).join("");
+      return `<div class="structured-summary-field"><span class="structured-summary-label">${escapeHtml(label)}:</span></div><ul class="structured-summary-list">${items}</ul>`;
     }
-    return `<ul class="structured-summary-list">${items.map((item) => {
-      const parts = Object.entries(labelMap)
-        .map(([key, label]) => {
-          const raw = item && typeof item === "object" ? item[key] : null;
-          if (raw === null || raw === undefined || raw === "") {
-            return "";
-          }
-          return `<span><span class="structured-summary-label">${escapeHtml(label)}:</span> ${escapeHtml(String(raw))}</span>`;
-        })
-        .filter(Boolean);
-      return `<li>${parts.length ? parts.join(" | ") : '<span class="muted">-</span>'}</li>`;
-    }).join("")}</ul>`;
-  };
-  const renderStringList = (items) => {
-    if (!Array.isArray(items) || !items.length) {
-      return '<div class="structured-summary-field"><span class="muted">-</span></div>';
+    if (value && typeof value === "object") {
+      const children = Object.entries(value).map(([childKey, childValue]) => renderNode(childKey, childValue, depth + 1)).join("");
+      return `<section class="structured-summary-section"><div class="structured-summary-heading">${escapeHtml(label)}</div>${children || '<div class="structured-summary-field"><span class="muted">-</span></div>'}</section>`;
     }
-    return `<ul class="structured-summary-list">${items.map((item) => `<li>${escapeHtml(String(item))}</li>`).join("")}</ul>`;
+    if (depth === 0 && key === "summary") {
+      return `<section class="structured-summary-section"><div class="structured-summary-heading">${escapeHtml(label)}</div><div class="structured-summary-field">${renderScalar(value)}</div></section>`;
+    }
+    return `<div class="structured-summary-field"><span class="structured-summary-label">${escapeHtml(label)}:</span> ${renderScalar(value)}</div>`;
   };
-  const wastewaterSource = summaryJson.wastewater_source || {};
-  const waterComposition = summaryJson.water_composition || {};
-  const treatmentTarget = summaryJson.treatment_target || {};
-  const treatmentTechnology = summaryJson.treatment_technology || {};
-  const experiments = summaryJson.experiments || {};
-  const performance = summaryJson.performance || {};
-  return [
-    `<section class="structured-summary-section">
-      <div class="structured-summary-heading">Wastewater Source</div>
-      ${renderField("Fab Area", wastewaterSource.fab_area)}
-      ${renderField("Process Step", wastewaterSource.process_step)}
-      ${renderField("Tool or Equipment", wastewaterSource.tool_or_equipment)}
-      ${renderField("Waste Stream Name", wastewaterSource.waste_stream_name)}
-      ${renderField("Real or Synthetic Water", wastewaterSource.real_or_synthetic_water)}
-      ${renderField("Water Source Details", wastewaterSource.water_source_details)}
-    </section>`,
-    `<section class="structured-summary-section">
-      <div class="structured-summary-heading">Water Composition</div>
-      <div class="structured-summary-field"><span class="structured-summary-label">Components:</span></div>
-      ${renderObjectList(waterComposition.components, { component: "Component", value: "Value", unit: "Unit", context: "Context" })}
-      <div class="structured-summary-field"><span class="structured-summary-label">Water Quality Parameters:</span></div>
-      ${renderObjectList(waterComposition.water_quality_parameters, { parameter: "Parameter", value: "Value", unit: "Unit", context: "Context" })}
-    </section>`,
-    `<section class="structured-summary-section">
-      <div class="structured-summary-heading">Treatment Target</div>
-      <div class="structured-summary-field"><span class="structured-summary-label">Target Contaminants or Parameters:</span></div>
-      ${renderStringList(treatmentTarget.target_contaminants_or_parameters)}
-    </section>`,
-    `<section class="structured-summary-section">
-      <div class="structured-summary-heading">Treatment Technology</div>
-      ${renderField("Technology Name", treatmentTechnology.technology_name)}
-      ${renderField("Technology Category", treatmentTechnology.technology_category)}
-    </section>`,
-    `<section class="structured-summary-section">
-      <div class="structured-summary-heading">Experiments</div>
-      ${renderField("Used Real Wastewater", experiments.used_real_wastewater)}
-      ${renderField("Used Synthetic Wastewater", experiments.used_synthetic_wastewater)}
-      ${renderField("Experimental Scale", experiments.experimental_scale)}
-    </section>`,
-    `<section class="structured-summary-section">
-      <div class="structured-summary-heading">Performance</div>
-      <div class="structured-summary-field"><span class="structured-summary-label">Removal Results:</span></div>
-      ${renderObjectList(performance.removal_results, { target: "Target", metric: "Metric", value: "Value", unit: "Unit", conditions: "Conditions" })}
-      <div class="structured-summary-field"><span class="structured-summary-label">Key Findings:</span></div>
-      ${renderStringList(performance.key_findings)}
-      <div class="structured-summary-field"><span class="structured-summary-label">Limitations:</span></div>
-      ${renderStringList(performance.limitations)}
-    </section>`,
-  ].join("");
+  return Object.entries(summaryJson).map(([key, value]) => renderNode(key, value, 0)).join("");
 }
 
 function renderTagList(container, tags, kind, onRemove) {
@@ -2850,7 +3039,97 @@ function renderTagList(container, tags, kind, onRemove) {
   });
 }
 
-function renderSuggestedTagList(container, tags, onAddFreeform, onAddApproved) {
+function renderTagGroups(container, groups, kind, onRemove) {
+  if (!container) {
+    return;
+  }
+  const entries = Object.entries(groups || {}).filter(([, tags]) => Array.isArray(tags) && tags.length);
+  if (!entries.length) {
+    container.innerHTML = `<span class="muted">No ${kind} tags.</span>`;
+    return;
+  }
+  container.innerHTML = entries.map(([categoryKey, tags]) => `
+    <section class="tag-group-card">
+      <div class="tag-group-heading">${escapeHtml(categoryKey.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase()))}</div>
+      <div class="tag-chip-list" data-tag-group="${escapeHtml(categoryKey)}"></div>
+    </section>
+  `).join("");
+  entries.forEach(([categoryKey, tags]) => {
+    const group = container.querySelector(`[data-tag-group="${CSS.escape(categoryKey)}"]`);
+    tags.forEach((tag) => {
+      const chip = document.createElement("span");
+      chip.className = `tag-chip${kind === "approved" ? " approved" : ""}`;
+      chip.innerHTML = `<span>${escapeHtml(tag)}</span><button type="button" aria-label="Remove ${escapeHtml(tag)}">&times;</button>`;
+      chip.querySelector("button")?.addEventListener("click", async () => onRemove(categoryKey, tag));
+      group?.appendChild(chip);
+    });
+  });
+}
+
+function renderTagSpecEditor() {
+  if (!els.libraryTagSpecCategories) {
+    return;
+  }
+  const rows = Array.isArray(state.sessionTagSpec?.category_config?.categories)
+    ? state.sessionTagSpec.category_config.categories
+    : [];
+  els.libraryTagSpecCategories.innerHTML = rows.map((row, index) => `
+    <div class="tag-spec-row">
+      <label>Key<input type="text" data-tag-spec-key="${index}" value="${escapeHtml(row.key || "")}" placeholder="category_key"></label>
+      <label>Label<input type="text" data-tag-spec-label="${index}" value="${escapeHtml(row.label || "")}" placeholder="Category Label"></label>
+      <label>Guidance<input type="text" data-tag-spec-guidance="${index}" value="${escapeHtml(row.guidance || "")}" placeholder="Short category guidance"></label>
+      <label>Allowed Tags<textarea data-tag-spec-tags="${index}" rows="4" placeholder="One tag per line">${escapeHtml((row.allowed_tags || []).join("\n"))}</textarea></label>
+      <label><input type="checkbox" data-tag-spec-free="${index}"${row.allow_free_text ? " checked" : ""}> Allow free text</label>
+      <button type="button" data-tag-spec-remove="${index}">Remove</button>
+    </div>
+  `).join("");
+}
+
+function collectTagSpecFromForm() {
+  const rows = Array.from(els.libraryTagSpecCategories?.querySelectorAll("[data-tag-spec-key]") || []).map((input) => {
+    const index = Number.parseInt(input.getAttribute("data-tag-spec-key") || "-1", 10);
+    const tagsRaw = String(els.libraryTagSpecCategories?.querySelector(`[data-tag-spec-tags="${index}"]`)?.value || "");
+    return {
+      key: String(input.value || "").trim(),
+      label: String(els.libraryTagSpecCategories?.querySelector(`[data-tag-spec-label="${index}"]`)?.value || "").trim(),
+      guidance: String(els.libraryTagSpecCategories?.querySelector(`[data-tag-spec-guidance="${index}"]`)?.value || "").trim(),
+      allowed_tags: tagsRaw.split("\n").map((value) => value.trim()).filter(Boolean),
+      allow_free_text: Boolean(els.libraryTagSpecCategories?.querySelector(`[data-tag-spec-free="${index}"]`)?.checked),
+    };
+  });
+  return { category_config: { categories: rows } };
+}
+
+function renderTagReviewList() {
+  if (!els.libraryTagCandidatesList) {
+    return;
+  }
+  const review = state.sessionTagReview || {};
+  const groups = Array.isArray(review.groups) ? review.groups : [];
+  const visibleGroups = groups.filter((group) => Array.isArray(group.candidates) && group.candidates.length);
+  if (!visibleGroups.length) {
+    els.libraryTagCandidatesList.innerHTML = '<p class="muted">No pending candidate tags.</p>';
+    return;
+  }
+  els.libraryTagCandidatesList.innerHTML = visibleGroups.map((group) => `
+    <section class="tag-review-group">
+      <div class="tag-review-group-heading">${escapeHtml(group.category_label || group.category_key || "Category")}</div>
+      <div class="tag-review-group-meta">Pending ${Number(group.pending_count || 0)} | Approved ${Number(group.approved_count || 0)} | Rejected ${Number(group.rejected_count || 0)}</div>
+      ${(group.candidates || []).map((item) => `
+        <div class="tag-review-row">
+          <span class="tag-review-label">${escapeHtml(item.tag)}</span>
+          <span class="tag-review-count">${Number(item.source_count || 0)}</span>
+          <span class="tag-review-actions">
+            <button type="button" data-tag-candidate-approve="${escapeHtml(item.id)}">Approve</button>
+            <button type="button" data-tag-candidate-reject="${escapeHtml(item.id)}">Reject</button>
+          </span>
+        </div>
+      `).join("")}
+    </section>
+  `).join("");
+}
+
+function renderSuggestedTagList(container, tags, onApprove, onDismiss) {
   if (!container) {
     return;
   }
@@ -2861,21 +3140,27 @@ function renderSuggestedTagList(container, tags, onAddFreeform, onAddApproved) {
   }
   tags.forEach((tag) => {
     const chip = document.createElement("span");
-    chip.className = "tag-chip";
-    chip.innerHTML = `<span>${escapeHtml(tag)}</span>`;
-    const addFreeformBtn = document.createElement("button");
-    addFreeformBtn.type = "button";
-    addFreeformBtn.textContent = "+Freeform";
-    addFreeformBtn.addEventListener("click", async () => onAddFreeform(tag));
-    chip.appendChild(addFreeformBtn);
-    const addApprovedBtn = document.createElement("button");
-    addApprovedBtn.type = "button";
-    addApprovedBtn.textContent = "+Approved";
-    const approvedAvailable = state.sessionApprovedTags.some((value) => value.toLowerCase() === String(tag).toLowerCase());
-    addApprovedBtn.disabled = !approvedAvailable;
-    addApprovedBtn.title = approvedAvailable ? `Add ${tag} to approved tags` : "Tag must exist in the approved session catalog";
-    addApprovedBtn.addEventListener("click", async () => onAddApproved(tag));
-    chip.appendChild(addApprovedBtn);
+    chip.className = "tag-chip suggested-tag-chip";
+    chip.innerHTML = `<span class="suggested-tag-label">${escapeHtml(tag)}</span>`;
+    const actions = document.createElement("span");
+    actions.className = "suggested-tag-actions";
+    const approveBtn = document.createElement("button");
+    approveBtn.type = "button";
+    approveBtn.className = "suggested-tag-approve-btn";
+    approveBtn.textContent = "v";
+    approveBtn.title = `Approve ${tag}`;
+    approveBtn.setAttribute("aria-label", `Approve ${tag}`);
+    approveBtn.addEventListener("click", async () => onApprove(tag));
+    actions.appendChild(approveBtn);
+    const dismissBtn = document.createElement("button");
+    dismissBtn.type = "button";
+    dismissBtn.className = "suggested-tag-dismiss-btn";
+    dismissBtn.textContent = "x";
+    dismissBtn.title = `Dismiss ${tag}`;
+    dismissBtn.setAttribute("aria-label", `Dismiss ${tag}`);
+    dismissBtn.addEventListener("click", async () => onDismiss(tag));
+    actions.appendChild(dismissBtn);
+    chip.appendChild(actions);
     container.appendChild(chip);
   });
 }
@@ -2887,11 +3172,23 @@ function renderLibraryDetailTabState() {
   if (els.librarySummaryPreviewTabBtn) {
     els.librarySummaryPreviewTabBtn.classList.toggle("active", state.libraryDetailTab === "summary_preview");
   }
+  if (els.libraryTagSpecTabBtn) {
+    els.libraryTagSpecTabBtn.classList.toggle("active", state.libraryDetailTab === "tag_spec");
+  }
+  if (els.libraryTagReviewTabBtn) {
+    els.libraryTagReviewTabBtn.classList.toggle("active", state.libraryDetailTab === "tag_review");
+  }
   if (els.libraryDetailsPanel) {
     els.libraryDetailsPanel.hidden = state.libraryDetailTab !== "details";
   }
   if (els.librarySummaryPreviewPanel) {
     els.librarySummaryPreviewPanel.hidden = state.libraryDetailTab !== "summary_preview";
+  }
+  if (els.libraryTagSpecPanel) {
+    els.libraryTagSpecPanel.hidden = state.libraryDetailTab !== "tag_spec";
+  }
+  if (els.libraryTagReviewPanel) {
+    els.libraryTagReviewPanel.hidden = state.libraryDetailTab !== "tag_review";
   }
 }
 
@@ -2920,33 +3217,91 @@ async function saveAnnotation(sourceId, payload) {
 
 async function saveSummaryPrompt() {
   const session = activeSession();
-  const promptTemplate = String(els.librarySummaryPromptInput?.value || "").trim();
-  if (!promptTemplate) {
-    els.librarySummaryPromptState.textContent = "Summary prompt cannot be empty.";
-    return;
-  }
+  const editorConfig = collectSummaryEditorConfigFromForm();
   const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/summary-settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt_template: promptTemplate }),
+    body: JSON.stringify({ editor_config: editorConfig }),
   });
-  state.sessionSummaryPrompt = result.data?.prompt_template || promptTemplate;
-  els.librarySummaryPromptState.textContent = "Summary prompt saved.";
+  state.sessionSummaryPrompt = String(result.data?.prompt_template || "");
+  state.sessionSummaryEditorConfig = cloneSummaryEditorConfig(result.data?.editor_config || editorConfig);
+  state.currentGlobalSummaryModel = String(result.data?.current_global_summary_model || state.currentGlobalSummaryModel || "");
+  if (els.librarySummaryPromptInput) {
+    els.librarySummaryPromptInput.value = state.sessionSummaryPrompt;
+  }
+  if (els.librarySummaryFocusInput) {
+    els.librarySummaryFocusInput.value = String(state.sessionSummaryEditorConfig?.summary_focus || "");
+  }
+  updateSummaryPromptBuilderView();
+  if (els.libraryCurrentSummaryModel) {
+    els.libraryCurrentSummaryModel.textContent = state.currentGlobalSummaryModel || "-";
+  }
+  if (els.librarySummaryCurrentModelValue) {
+    els.librarySummaryCurrentModelValue.textContent = state.currentGlobalSummaryModel || "-";
+  }
+  els.librarySummaryPromptState.textContent = "Summary prompt builder saved.";
 }
 
 async function resetSummaryPrompt() {
   const session = activeSession();
+  const editorConfig = cloneSummaryEditorConfig(defaultSummaryEditorConfig());
   const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/summary-settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt_template: DEFAULT_SUMMARY_PROMPT }),
+    body: JSON.stringify({ editor_config: editorConfig }),
   });
   state.sessionSummaryPrompt = result.data?.prompt_template || DEFAULT_SUMMARY_PROMPT;
+  state.sessionSummaryEditorConfig = cloneSummaryEditorConfig(result.data?.editor_config || editorConfig);
+  state.currentGlobalSummaryModel = String(result.data?.current_global_summary_model || state.currentGlobalSummaryModel || "");
   if (els.librarySummaryPromptInput) {
     els.librarySummaryPromptInput.value = state.sessionSummaryPrompt;
   }
+  if (els.librarySummaryFocusInput) {
+    els.librarySummaryFocusInput.value = String(state.sessionSummaryEditorConfig?.summary_focus || "");
+  }
+  updateSummaryPromptBuilderView();
+  if (els.libraryCurrentSummaryModel) {
+    els.libraryCurrentSummaryModel.textContent = state.currentGlobalSummaryModel || "-";
+  }
+  if (els.librarySummaryCurrentModelValue) {
+    els.librarySummaryCurrentModelValue.textContent = state.currentGlobalSummaryModel || "-";
+  }
   if (els.librarySummaryPromptState) {
     els.librarySummaryPromptState.textContent = "Summary prompt reset to default.";
+  }
+}
+
+async function saveTagSpec() {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/tag-spec`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(collectTagSpecFromForm()),
+  });
+  state.sessionTagSpec = result.data || state.sessionTagSpec;
+  if (els.libraryTagPromptInput) {
+    els.libraryTagPromptInput.value = String(state.sessionTagSpec?.prompt_template || "");
+  }
+  renderTagSpecEditor();
+  if (els.libraryTagSpecState) {
+    els.libraryTagSpecState.textContent = "Tag spec saved.";
+  }
+}
+
+async function resetTagSpec() {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/tag-spec`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ category_config: cloneTagSpecConfig() }),
+  });
+  state.sessionTagSpec = result.data || state.sessionTagSpec;
+  if (els.libraryTagPromptInput) {
+    els.libraryTagPromptInput.value = String(state.sessionTagSpec?.prompt_template || "");
+  }
+  renderTagSpecEditor();
+  if (els.libraryTagSpecState) {
+    els.libraryTagSpecState.textContent = "Tag spec reset to default.";
   }
 }
 
@@ -2979,17 +3334,21 @@ function startSummaryPoll() {
       stopSummaryPoll();
       return;
     }
-    if (!Object.values(state.paperAnnotations).some((item) => {
+    const annotationActive = Object.values(state.paperAnnotations).some((item) => {
       return item.summary_status === "queued"
         || item.summary_status === "running"
         || item.tag_suggestion_status === "queued"
         || item.tag_suggestion_status === "running";
-    })) {
+    });
+    const reviewActive = ["queued", "running"].includes(String(state.sessionTagReview?.candidate_generation_status || ""))
+      || ["queued", "running"].includes(String(state.sessionTagReview?.tag_assignment_status || ""));
+    if (!annotationActive && !reviewActive) {
       stopSummaryPoll();
       return;
     }
     try {
       await loadLibraryAnnotations(activeSession().id, libraryAnnotationTargetIds());
+      await loadLibraryTagReview(activeSession().id);
       renderLibraryRows();
     } catch {
       // Best effort.
@@ -3058,12 +3417,116 @@ async function queueTagGeneration(sourceIds, forceRegenerate = false) {
   }
 }
 
+async function queueSessionTagCandidates(forceRegenerate = false) {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/tag-review/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force_regenerate: forceRegenerate }),
+  });
+  await loadLibraryTagReview(session.id);
+  renderLibraryRows();
+  setLibraryState(
+    result.data?.status === "queued"
+      ? `Candidate tag generation queued for all accepted papers.`
+      : "Candidate tag generation requested.",
+    8000,
+  );
+  startSummaryPoll();
+}
+
+async function applyApprovedTags(forceRegenerate = false) {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/tags/apply-approved`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force_regenerate: forceRegenerate }),
+  });
+  await loadLibraryTagReview(session.id);
+  renderLibraryRows();
+  setLibraryState(
+    result.data?.status === "queued"
+      ? "Approved-tag assignment queued for all accepted papers."
+      : "Approved-tag assignment requested.",
+    8000,
+  );
+  startSummaryPoll();
+}
+
+async function applyApprovedTagsForSelectedPaper(forceRegenerate = false) {
+  const session = activeSession();
+  const sourceId = state.selectedLibrarySourceId;
+  if (!sourceId) {
+    setLibraryState("No paper selected for approved-tag assignment.", 5000);
+    return;
+  }
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/annotations/${encodeURIComponent(sourceId)}/tags/apply-approved`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force_regenerate: forceRegenerate }),
+  });
+  await loadLibraryAnnotations(session.id, uniqueIds([sourceId, ...libraryAnnotationTargetIds()]));
+  await loadLibraryTagReview(session.id);
+  renderLibraryRows();
+  setLibraryState(
+    result.data?.status === "queued"
+      ? "Approved-tag assignment queued for the selected paper."
+      : "Approved-tag assignment requested for the selected paper.",
+    8000,
+  );
+  startSummaryPoll();
+}
+
+async function approveTagCandidate(candidateId) {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/tag-candidates/${encodeURIComponent(candidateId)}/approve`, {
+    method: "POST",
+  });
+  state.sessionTagReview = result.data || state.sessionTagReview;
+  await loadLibraryTagCatalog(session.id);
+  renderLibraryRows();
+}
+
+async function rejectTagCandidate(candidateId) {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/tag-candidates/${encodeURIComponent(candidateId)}/reject`, {
+    method: "POST",
+  });
+  state.sessionTagReview = result.data || state.sessionTagReview;
+  renderLibraryRows();
+}
+
+async function resetRejectedTagCandidates() {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/tag-candidates/reset-rejections`, {
+    method: "POST",
+  });
+  state.sessionTagReview = result.data || state.sessionTagReview;
+  renderLibraryRows();
+  setLibraryState("Rejected candidate tags reset.", 5000);
+}
+
 async function promoteSuggestedTag(sourceId, tag, target) {
   const session = activeSession();
   const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/annotations/${encodeURIComponent(sourceId)}/suggested-tags/promote`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ tag, target }),
+  });
+  state.paperAnnotations[sourceId] = result.data;
+  if (target === "approved" && !state.sessionApprovedTags.some((value) => value.toLowerCase() === String(tag).toLowerCase())) {
+    state.sessionApprovedTags = state.sessionApprovedTags.concat([tag]).sort((left, right) => left.localeCompare(right));
+  }
+  refreshApprovedTagSelect();
+  renderLibraryRows();
+}
+
+async function dismissSuggestedTag(sourceId, tag) {
+  const session = activeSession();
+  const result = await api(`/v1/sessions/${encodeURIComponent(session.id)}/annotations/${encodeURIComponent(sourceId)}/suggested-tags/dismiss`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tag }),
   });
   state.paperAnnotations[sourceId] = result.data;
   renderLibraryRows();
@@ -3090,6 +3553,12 @@ function renderLibraryDetail(item) {
     if (els.librarySummaryPreviewText) {
       els.librarySummaryPreviewText.textContent = "Select a paper to inspect generated summary.";
     }
+    if (els.librarySummaryCurrentModelValue) {
+      els.librarySummaryCurrentModelValue.textContent = state.currentGlobalSummaryModel || "-";
+    }
+    if (els.librarySummaryLastModelValue) {
+      els.librarySummaryLastModelValue.textContent = "-";
+    }
     if (els.librarySummaryStructuredText) {
       els.librarySummaryStructuredText.innerHTML = formatStructuredSummary(null);
     }
@@ -3111,19 +3580,32 @@ function renderLibraryDetail(item) {
     if (els.libraryCopySummaryBtn) {
       els.libraryCopySummaryBtn.disabled = true;
     }
-    if (els.librarySuggestedTagsStatus) {
-      els.librarySuggestedTagsStatus.textContent = "No AI tags generated.";
+    if (els.libraryApplyApprovedTagsOneBtn) {
+      els.libraryApplyApprovedTagsOneBtn.disabled = true;
     }
-    if (els.libraryGenerateTagsBtn) {
-      els.libraryGenerateTagsBtn.disabled = true;
+    if (els.libraryReapplyApprovedTagsOneBtn) {
+      els.libraryReapplyApprovedTagsOneBtn.disabled = true;
     }
-    if (els.libraryRegenerateTagsBtn) {
-      els.libraryRegenerateTagsBtn.disabled = true;
-    }
-    renderTagList(els.libraryFreeformTags, [], "freeform", async () => {});
-    renderTagList(els.libraryApprovedTags, [], "approved", async () => {});
-    renderSuggestedTagList(els.librarySuggestedTags, [], async () => {}, async () => {});
+    renderTagGroups(els.libraryFreeformTags, {}, "freeform", async () => {});
+    renderTagGroups(els.libraryApprovedTags, {}, "approved", async () => {});
     refreshApprovedTagSelect();
+    renderTagSpecEditor();
+    renderTagReviewList();
+    if (els.libraryTagCandidateStatus) {
+      els.libraryTagCandidateStatus.textContent = "No candidate-tag generation has run yet.";
+    }
+    if (els.libraryTagAssignmentStatus) {
+      els.libraryTagAssignmentStatus.textContent = "Approved tags have not been applied to papers yet.";
+    }
+    if (els.libraryTagPendingCount) {
+      els.libraryTagPendingCount.textContent = "0";
+    }
+    if (els.libraryTagApprovedCount) {
+      els.libraryTagApprovedCount.textContent = "0";
+    }
+    if (els.libraryTagRejectedCount) {
+      els.libraryTagRejectedCount.textContent = "0";
+    }
     renderLibraryDetailTabState();
     return;
   }
@@ -3135,14 +3617,28 @@ function renderLibraryDetail(item) {
     els.libraryBookmarkBtn.textContent = isBookmarked(item.id) ? "Remove Bookmark" : "Bookmark";
     els.libraryBookmarkBtn.disabled = false;
   }
-  renderTagList(els.libraryFreeformTags, annotation.freeform_tags || [], "freeform", async (tag) => {
-    const nextTags = (annotation.freeform_tags || []).filter((value) => value !== tag);
-    await saveAnnotation(item.id, { freeform_tags: nextTags, approved_tags: annotation.approved_tags || [] });
+  renderTagGroups(els.libraryFreeformTags, annotation.freeform_tags_by_category || {}, "freeform", async (categoryKey, tag) => {
+    const nextGroups = JSON.parse(JSON.stringify(annotation.freeform_tags_by_category || {}));
+    nextGroups[categoryKey] = (nextGroups[categoryKey] || []).filter((value) => value !== tag);
+    if (!nextGroups[categoryKey].length) {
+      delete nextGroups[categoryKey];
+    }
+    await saveAnnotation(item.id, {
+      freeform_tags_by_category: nextGroups,
+      approved_tags_by_category: annotation.approved_tags_by_category || {},
+    });
     els.libraryState.textContent = `Removed tag: ${tag}`;
   });
-  renderTagList(els.libraryApprovedTags, annotation.approved_tags || [], "approved", async (tag) => {
-    const nextTags = (annotation.approved_tags || []).filter((value) => value !== tag);
-    await saveAnnotation(item.id, { freeform_tags: annotation.freeform_tags || [], approved_tags: nextTags });
+  renderTagGroups(els.libraryApprovedTags, annotation.approved_tags_by_category || {}, "approved", async (categoryKey, tag) => {
+    const nextGroups = JSON.parse(JSON.stringify(annotation.approved_tags_by_category || {}));
+    nextGroups[categoryKey] = (nextGroups[categoryKey] || []).filter((value) => value !== tag);
+    if (!nextGroups[categoryKey].length) {
+      delete nextGroups[categoryKey];
+    }
+    await saveAnnotation(item.id, {
+      freeform_tags_by_category: annotation.freeform_tags_by_category || {},
+      approved_tags_by_category: nextGroups,
+    });
     els.libraryState.textContent = `Removed approved tag: ${tag}`;
   });
   refreshApprovedTagSelect();
@@ -3151,6 +3647,12 @@ function renderLibraryDetail(item) {
   }
   if (els.librarySummaryPreviewText) {
     els.librarySummaryPreviewText.textContent = annotation.ai_summary || "No generated summary for this paper yet.";
+  }
+  if (els.librarySummaryCurrentModelValue) {
+    els.librarySummaryCurrentModelValue.textContent = state.currentGlobalSummaryModel || "-";
+  }
+  if (els.librarySummaryLastModelValue) {
+    els.librarySummaryLastModelValue.textContent = annotation.summary_model || "-";
   }
   if (els.librarySummaryStructuredText) {
     els.librarySummaryStructuredText.innerHTML = formatStructuredSummary(annotation.ai_summary_json);
@@ -3187,35 +3689,45 @@ function renderLibraryDetail(item) {
   if (els.libraryCopySummaryBtn) {
     els.libraryCopySummaryBtn.disabled = !annotation.ai_summary;
   }
-  renderSuggestedTagList(
-    els.librarySuggestedTags,
-    annotation.ai_suggested_tags || [],
-    async (tag) => {
-      await promoteSuggestedTag(item.id, tag, "freeform");
-      els.libraryState.textContent = `Added suggested tag to freeform tags: ${tag}`;
-    },
-    async (tag) => {
-      if (!state.sessionApprovedTags.some((value) => value.toLowerCase() === String(tag).toLowerCase())) {
-        els.libraryState.textContent = `Suggested tag is not in the approved session catalog: ${tag}`;
-        return;
-      }
-      await promoteSuggestedTag(item.id, tag, "approved");
-      els.libraryState.textContent = `Added suggested tag to approved tags: ${tag}`;
-    },
-  );
-  if (els.librarySuggestedTagsStatus) {
-    const reason = annotation.tag_suggestion_block_reason === "parsed_text_required"
-      ? "Tag generation unavailable until the paper is downloaded and parsed."
-      : "";
-    const error = annotation.tag_suggestion_error ? ` Error: ${annotation.tag_suggestion_error}` : "";
-    const count = (annotation.ai_suggested_tags || []).length;
-    els.librarySuggestedTagsStatus.textContent = `Status: ${annotation.tag_suggestion_status}.${count ? ` ${count} suggested.` : ""}${reason ? ` ${reason}` : ""}${error}`;
+  if (els.libraryApplyApprovedTagsOneBtn) {
+    els.libraryApplyApprovedTagsOneBtn.disabled = !annotation.can_generate_tags || annotation.tag_suggestion_status === "completed";
   }
-  if (els.libraryGenerateTagsBtn) {
-    els.libraryGenerateTagsBtn.disabled = !annotation.can_generate_tags || annotation.tag_suggestion_status === "completed";
+  if (els.libraryReapplyApprovedTagsOneBtn) {
+    els.libraryReapplyApprovedTagsOneBtn.disabled = !annotation.can_generate_tags;
   }
-  if (els.libraryRegenerateTagsBtn) {
-    els.libraryRegenerateTagsBtn.disabled = !annotation.can_generate_tags;
+  const review = state.sessionTagReview || {};
+  if (els.libraryTagCandidateStatus) {
+    const error = review.candidate_generation_error ? ` Error: ${review.candidate_generation_error}` : "";
+    els.libraryTagCandidateStatus.textContent = `Candidate generation: ${review.candidate_generation_status || "none"}.${error}`;
+  }
+  if (els.libraryTagAssignmentStatus) {
+    const error = review.tag_assignment_error ? ` Error: ${review.tag_assignment_error}` : "";
+    els.libraryTagAssignmentStatus.textContent = `Approved tag assignment: ${review.tag_assignment_status || "none"}.${error}`;
+  }
+  if (els.libraryTagPendingCount) {
+    els.libraryTagPendingCount.textContent = String(review.pending_count || 0);
+  }
+  if (els.libraryTagApprovedCount) {
+    els.libraryTagApprovedCount.textContent = String(review.approved_count || 0);
+  }
+  if (els.libraryTagRejectedCount) {
+    els.libraryTagRejectedCount.textContent = String(review.rejected_count || 0);
+  }
+  renderTagReviewList();
+  if (els.libraryGenerateCandidateTagsBtn) {
+    els.libraryGenerateCandidateTagsBtn.disabled = review.candidate_generation_status === "queued" || review.candidate_generation_status === "running";
+  }
+  if (els.libraryRegenerateCandidateTagsBtn) {
+    els.libraryRegenerateCandidateTagsBtn.disabled = review.candidate_generation_status === "queued" || review.candidate_generation_status === "running";
+  }
+  if (els.libraryResetRejectedTagsBtn) {
+    els.libraryResetRejectedTagsBtn.disabled = !Number(review.rejected_count || 0);
+  }
+  if (els.libraryApplyApprovedTagsBtn) {
+    els.libraryApplyApprovedTagsBtn.disabled = !Number(review.approved_count || 0) || review.tag_assignment_status === "queued" || review.tag_assignment_status === "running";
+  }
+  if (els.libraryReapplyApprovedTagsBtn) {
+    els.libraryReapplyApprovedTagsBtn.disabled = !Number(review.approved_count || 0) || review.tag_assignment_status === "queued" || review.tag_assignment_status === "running";
   }
   renderLibraryDetailTabState();
 }
@@ -3248,7 +3760,7 @@ function renderLibraryRows() {
     const tr = document.createElement("tr");
     tr.classList.toggle("active", item.id === state.selectedLibrarySourceId);
     const annotation = annotationForSource(item.id);
-    const tagMarker = (annotation.freeform_tags?.length || annotation.approved_tags?.length || annotation.ai_suggested_tags?.length)
+    const tagMarker = (annotation.freeform_tags?.length || annotation.approved_tags?.length)
       ? '<span class="bookmark-chip">T</span> '
       : "";
     const docCell = renderDocumentBadgeCell(item);
@@ -3288,6 +3800,7 @@ function resetSessionBoundPaneState() {
   state.paperAnnotations = {};
   state.sessionApprovedTags = [];
   state.sessionSummaryPrompt = "";
+  state.sessionTagReview = null;
   state.selectedDocumentSourceId = "";
   state.selectedReviewSourceId = "";
   state.selectedLibrarySourceId = "";
@@ -3347,17 +3860,23 @@ async function loadLibrary(recoverOnNotFound = true) {
   state.libraryRows = result.data.items || [];
   await loadLibraryAnnotations(session.id, libraryAnnotationTargetIds(state.libraryRows));
   await loadLibraryTagCatalog(session.id);
+  await loadLibraryTagSpec(session.id);
   await loadLibrarySummarySettings(session.id);
+  await loadLibraryTagReview(session.id);
   renderLibraryRows();
   if (canOverwriteLibraryState()) {
     setLibraryState(state.libraryRows.length ? "Library export data loaded." : "No accepted sources available.");
   }
-  if (Object.values(state.paperAnnotations).some((item) => {
-    return item.summary_status === "queued"
-      || item.summary_status === "running"
-      || item.tag_suggestion_status === "queued"
-      || item.tag_suggestion_status === "running";
-  })) {
+  if (
+    Object.values(state.paperAnnotations).some((item) => {
+      return item.summary_status === "queued"
+        || item.summary_status === "running"
+        || item.tag_suggestion_status === "queued"
+        || item.tag_suggestion_status === "running";
+    })
+    || ["queued", "running"].includes(String(state.sessionTagReview?.candidate_generation_status || ""))
+    || ["queued", "running"].includes(String(state.sessionTagReview?.tag_assignment_status || ""))
+  ) {
     startSummaryPoll();
   } else {
     stopSummaryPoll();
@@ -3837,10 +4356,17 @@ async function loadAiSettings() {
     if (els.aiModelSelect) {
       const model = AI_MODEL_PRESETS.includes(data.ai_model) ? data.ai_model : AI_MODEL_PRESETS[0];
       els.aiModelSelect.value = model;
+      state.currentGlobalSummaryModel = String(data.ai_model || model || "");
+      if (els.libraryCurrentSummaryModel) {
+        els.libraryCurrentSummaryModel.textContent = state.currentGlobalSummaryModel || "-";
+      }
+      if (els.librarySummaryCurrentModelValue) {
+        els.librarySummaryCurrentModelValue.textContent = state.currentGlobalSummaryModel || "-";
+      }
       if (data.ai_model && !AI_MODEL_PRESETS.includes(data.ai_model)) {
         els.aiSettingsState.textContent = `Current model '${data.ai_model}' is custom. Choose a supported preset to replace it.`;
       } else {
-        els.aiSettingsState.textContent = `AI settings loaded. Current model: ${data.ai_model || model}.`;
+        els.aiSettingsState.textContent = `AI settings loaded. Current model for summaries and AI tasks: ${data.ai_model || model}.`;
       }
     }
   } catch {
@@ -3860,7 +4386,14 @@ async function saveAiSettings() {
       body: JSON.stringify({ ai_model: model }),
     });
     state.aiSettings = result.data || null;
-    els.aiSettingsState.textContent = `AI model saved: ${result.data?.ai_model || model}.`;
+    state.currentGlobalSummaryModel = String(result.data?.ai_model || model);
+    if (els.libraryCurrentSummaryModel) {
+      els.libraryCurrentSummaryModel.textContent = state.currentGlobalSummaryModel || "-";
+    }
+    if (els.librarySummaryCurrentModelValue) {
+      els.librarySummaryCurrentModelValue.textContent = state.currentGlobalSummaryModel || "-";
+    }
+    els.aiSettingsState.textContent = `AI model saved for summaries and AI tasks: ${result.data?.ai_model || model}.`;
     await loadSystemStatus();
   } finally {
     endBusy();
@@ -4530,16 +5063,139 @@ function wireEvents() {
     await queueSummaryGeneration(state.libraryFilteredRows.map((item) => item.id), false);
   });
   els.libraryGenerateVisibleTagsBtn?.addEventListener("click", async () => {
-    await queueTagGeneration(state.libraryFilteredRows.map((item) => item.id), false);
+    state.libraryDetailTab = "tag_review";
+    renderLibraryRows();
+    await queueSessionTagCandidates(false);
   });
   els.libraryPromptToggleBtn?.addEventListener("click", () => {
     els.librarySummaryPromptPanel.hidden = !els.librarySummaryPromptPanel.hidden;
+  });
+  els.libraryToggleRawSummaryPromptBtn?.addEventListener("click", () => {
+    state.summaryPromptRawMode = !state.summaryPromptRawMode;
+    if (els.libraryRawSummaryPromptWrap) {
+      els.libraryRawSummaryPromptWrap.hidden = !state.summaryPromptRawMode;
+    }
+    if (els.libraryToggleRawSummaryPromptBtn) {
+      els.libraryToggleRawSummaryPromptBtn.textContent = state.summaryPromptRawMode ? "Hide Generated Prompt" : "Show Generated Prompt";
+    }
+  });
+  els.libraryToggleRawTagPromptBtn?.addEventListener("click", () => {
+    state.tagPromptRawMode = !state.tagPromptRawMode;
+    if (els.libraryRawTagPromptWrap) {
+      els.libraryRawTagPromptWrap.hidden = !state.tagPromptRawMode;
+    }
+    if (els.libraryToggleRawTagPromptBtn) {
+      els.libraryToggleRawTagPromptBtn.textContent = state.tagPromptRawMode ? "Hide Generated Prompt" : "Show Generated Prompt";
+    }
+  });
+  els.libraryAddSummaryFieldBtn?.addEventListener("click", () => {
+    state.sessionSummaryEditorConfig = collectSummaryEditorConfigFromForm();
+    const nextIndex = (state.sessionSummaryEditorConfig?.schema_fields?.length || 0) + 1;
+    state.sessionSummaryEditorConfig.schema_fields.push({
+      id: `custom_field_${nextIndex}`,
+      path: `custom.field_${nextIndex}`,
+      label: `Custom Field ${nextIndex}`,
+      description: "",
+      field_type: "string",
+      enabled: true,
+      object_item_fields: [],
+    });
+    updateSummaryPromptBuilderView();
+  });
+  els.libraryAddSummaryControlledValueBtn?.addEventListener("click", () => {
+    state.sessionSummaryEditorConfig = collectSummaryEditorConfigFromForm();
+    state.sessionSummaryEditorConfig.controlled_values.push({
+      field_path: "",
+      allowed_values: [],
+      fallback_policy: "allow_free_text",
+    });
+    updateSummaryPromptBuilderView();
+  });
+  els.librarySummaryFieldsList?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-summary-field-remove]");
+    if (!button) {
+      return;
+    }
+    const index = Number.parseInt(button.getAttribute("data-summary-field-remove") || "-1", 10);
+    if (index < 0) {
+      return;
+    }
+    state.sessionSummaryEditorConfig = collectSummaryEditorConfigFromForm();
+    state.sessionSummaryEditorConfig.schema_fields.splice(index, 1);
+    updateSummaryPromptBuilderView();
+  });
+  els.librarySummaryFieldsList?.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement)) {
+      return;
+    }
+    const index = Number.parseInt(target.getAttribute("data-summary-field-type") || "-1", 10);
+    if (index < 0) {
+      return;
+    }
+    const itemsInput = els.librarySummaryFieldsList?.querySelector(`[data-summary-field-items="${index}"]`);
+    if (itemsInput instanceof HTMLInputElement) {
+      itemsInput.disabled = target.value !== "object_list";
+      if (target.value !== "object_list") {
+        itemsInput.value = "";
+      }
+    }
+  });
+  els.librarySummaryControlledValuesList?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-summary-controlled-remove]");
+    if (!button) {
+      return;
+    }
+    const index = Number.parseInt(button.getAttribute("data-summary-controlled-remove") || "-1", 10);
+    if (index < 0) {
+      return;
+    }
+    state.sessionSummaryEditorConfig = collectSummaryEditorConfigFromForm();
+    state.sessionSummaryEditorConfig.controlled_values.splice(index, 1);
+    updateSummaryPromptBuilderView();
   });
   els.libraryApprovedTagsToggleBtn?.addEventListener("click", () => {
     els.libraryApprovedTagsPanel.hidden = !els.libraryApprovedTagsPanel.hidden;
   });
   els.librarySaveSummaryPromptBtn?.addEventListener("click", saveSummaryPrompt);
   els.libraryResetSummaryPromptBtn?.addEventListener("click", resetSummaryPrompt);
+  els.libraryAddTagSpecCategoryBtn?.addEventListener("click", () => {
+    const config = state.sessionTagSpec?.category_config || cloneTagSpecConfig();
+    const nextIndex = (config.categories?.length || 0) + 1;
+    config.categories.push({
+      key: `custom_category_${nextIndex}`,
+      label: `Custom Category ${nextIndex}`,
+      guidance: "",
+      allowed_tags: [],
+      allow_free_text: true,
+    });
+    state.sessionTagSpec = {
+      ...(state.sessionTagSpec || {}),
+      category_config: config,
+      prompt_template: state.sessionTagSpec?.prompt_template || "",
+    };
+    renderTagSpecEditor();
+  });
+  els.libraryTagSpecCategories?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-tag-spec-remove]");
+    if (!button) {
+      return;
+    }
+    const index = Number.parseInt(button.getAttribute("data-tag-spec-remove") || "-1", 10);
+    if (index < 0) {
+      return;
+    }
+    const config = collectTagSpecFromForm().category_config;
+    config.categories.splice(index, 1);
+    state.sessionTagSpec = {
+      ...(state.sessionTagSpec || {}),
+      category_config: config,
+      prompt_template: state.sessionTagSpec?.prompt_template || "",
+    };
+    renderTagSpecEditor();
+  });
+  els.librarySaveTagSpecBtn?.addEventListener("click", saveTagSpec);
+  els.libraryResetTagSpecBtn?.addEventListener("click", resetTagSpec);
   els.librarySaveApprovedTagsBtn?.addEventListener("click", saveApprovedTags);
   els.libraryAddBtn.addEventListener("click", () => {
     if (state.selectedLibrarySourceId) {
@@ -4570,9 +5226,11 @@ function wireEvents() {
       return;
     }
     const annotation = annotationForSource(state.selectedLibrarySourceId);
+    const nextGroups = JSON.parse(JSON.stringify(annotation.freeform_tags_by_category || {}));
+    nextGroups.uncategorized_tags = (nextGroups.uncategorized_tags || []).concat([nextTag]);
     await saveAnnotation(state.selectedLibrarySourceId, {
-      freeform_tags: (annotation.freeform_tags || []).concat([nextTag]),
-      approved_tags: annotation.approved_tags || [],
+      freeform_tags_by_category: nextGroups,
+      approved_tags_by_category: annotation.approved_tags_by_category || {},
     });
     els.libraryFreeformTagInput.value = "";
     els.libraryState.textContent = `Added tag: ${nextTag}`;
@@ -4586,9 +5244,11 @@ function wireEvents() {
       return;
     }
     const annotation = annotationForSource(state.selectedLibrarySourceId);
+    const nextGroups = JSON.parse(JSON.stringify(annotation.approved_tags_by_category || {}));
+    nextGroups.uncategorized_tags = (nextGroups.uncategorized_tags || []).concat([nextTag]);
     await saveAnnotation(state.selectedLibrarySourceId, {
-      freeform_tags: annotation.freeform_tags || [],
-      approved_tags: (annotation.approved_tags || []).concat([nextTag]),
+      freeform_tags_by_category: annotation.freeform_tags_by_category || {},
+      approved_tags_by_category: nextGroups,
     });
     els.libraryState.textContent = `Added approved tag: ${nextTag}`;
   });
@@ -4640,17 +5300,47 @@ function wireEvents() {
     state.libraryDetailTab = "summary_preview";
     renderLibraryRows();
   });
-  els.libraryGenerateTagsBtn?.addEventListener("click", async () => {
-    if (!state.selectedLibrarySourceId) {
-      return;
-    }
-    await queueTagGeneration([state.selectedLibrarySourceId], false);
+  els.libraryTagSpecTabBtn?.addEventListener("click", () => {
+    state.libraryDetailTab = "tag_spec";
+    renderLibraryRows();
   });
-  els.libraryRegenerateTagsBtn?.addEventListener("click", async () => {
-    if (!state.selectedLibrarySourceId) {
+  els.libraryTagReviewTabBtn?.addEventListener("click", () => {
+    state.libraryDetailTab = "tag_review";
+    renderLibraryRows();
+  });
+  els.libraryGenerateCandidateTagsBtn?.addEventListener("click", async () => {
+    await queueSessionTagCandidates(false);
+  });
+  els.libraryRegenerateCandidateTagsBtn?.addEventListener("click", async () => {
+    await queueSessionTagCandidates(true);
+  });
+  els.libraryResetRejectedTagsBtn?.addEventListener("click", async () => {
+    await resetRejectedTagCandidates();
+  });
+  els.libraryApplyApprovedTagsBtn?.addEventListener("click", async () => {
+    await applyApprovedTags(false);
+  });
+  els.libraryReapplyApprovedTagsBtn?.addEventListener("click", async () => {
+    await applyApprovedTags(true);
+  });
+  els.libraryApplyApprovedTagsOneBtn?.addEventListener("click", async () => {
+    await applyApprovedTagsForSelectedPaper(false);
+  });
+  els.libraryReapplyApprovedTagsOneBtn?.addEventListener("click", async () => {
+    await applyApprovedTagsForSelectedPaper(true);
+  });
+  els.libraryTagCandidatesList?.addEventListener("click", async (event) => {
+    const approveButton = event.target.closest("[data-tag-candidate-approve]");
+    if (approveButton) {
+      await approveTagCandidate(approveButton.getAttribute("data-tag-candidate-approve") || "");
+      setLibraryState("Candidate tag approved.", 5000);
       return;
     }
-    await queueTagGeneration([state.selectedLibrarySourceId], true);
+    const rejectButton = event.target.closest("[data-tag-candidate-reject]");
+    if (rejectButton) {
+      await rejectTagCandidate(rejectButton.getAttribute("data-tag-candidate-reject") || "");
+      setLibraryState("Candidate tag rejected.", 5000);
+    }
   });
   els.bookmarksCreateSessionBtn?.addEventListener("click", async () => {
     const bookmark = selectedBookmark();
